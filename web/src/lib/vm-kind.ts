@@ -42,6 +42,16 @@ export function platformLabelOf(kind: VmKind): 'Claude' | 'GPT' {
   return kind === 'codex' ? 'GPT' : 'Claude'
 }
 
+/** 创建请求的 platform/family 载荷，取值与后端 `stampVmKind` 解析的一致。 */
+export function kindPayload(kind: VmKind): {
+  platform: 'openai' | 'anthropic'
+  family: VmKind
+} {
+  return kind === 'codex'
+    ? { platform: 'openai', family: 'codex' }
+    : { platform: 'anthropic', family: 'claude' }
+}
+
 export function indexVms(vms: Vm[] | undefined | null): Map<string, Vm> {
   const map = new Map<string, Vm>()
   for (const vm of vms || []) {

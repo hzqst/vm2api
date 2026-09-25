@@ -1,3 +1,5 @@
+import type { VmKind } from '@/lib/vm-kind'
+
 export const KERNELS = [
   {
     id: 'ubuntu-24.04',
@@ -165,6 +167,15 @@ export const VM_LOCALES: [string, string][] = [
 
 export const VM_CONCURRENCY_OPTIONS = [1, 2, 4, 8, 16, 20, 32]
 export const VM_WEIGHT_OPTIONS = [1, 2, 3, 5]
+
+/**
+ * 创建槽位的平台类型。Claude 槽走订阅转 Claude，GPT 槽走 Codex / ChatGPT 订阅
+ * （槽内换 `kin-codex-kernel`，凭证用 Codex OAuth 或 auth.json 导入）。
+ */
+export const VM_CREATE_TYPES: [VmKind, string][] = [
+  ['claude', 'Claude 槽'],
+  ['codex', 'GPT 槽（Codex）'],
+]
 
 /** 创建槽位「之后」的 5 档，决定 start / auto_allocate_proxy / activate 三个布尔。 */
 export const VM_CREATE_AFTER: [string, string][] = [
