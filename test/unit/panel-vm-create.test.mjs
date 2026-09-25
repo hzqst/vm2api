@@ -125,6 +125,29 @@ test('create preserves Tokyo timezone in the VM, fingerprint, and CLI seed files
   }
 })
 
+test('create stamps a Codex slot when the caller asks for openai/codex', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-create-codex-'))
+  try {
+    const { handlePanel, response } = makeCreateHandler(root, {
+      name: 'codex-slot',
+      platform: 'openai',
+      family: 'codex',
+      start: false,
+      auto_allocate_proxy: false,
+    })
+    await handlePanel({ method: 'POST' }, {}, new URL('http://localhost/api/panel/vms/create'))
+    assert.equal(response.status, 200, response.body?.error?.message || JSON.stringify(response.body))
+    const vm = response.body?.data?.vm
+    const saved = JSON.parse(fs.readFileSync(path.join(root, 'vms', `${vm.id}.json`), 'utf8'))
+    assert.equal(saved.platform, 'openai')
+    assert.equal(saved.family, 'codex')
+    assert.equal(saved.codex_kernel, true)
+    assert.equal(Object.hasOwn(saved, 'claude'), false)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('create returns the persisted VM when runtime start fails', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-create-boot-'))
   const proxy = {

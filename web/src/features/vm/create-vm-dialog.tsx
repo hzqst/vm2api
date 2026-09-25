@@ -4,6 +4,7 @@ import { toast } from 'sonner'
 import { api } from '@/lib/api'
 import { importErrorMessage } from '@/lib/import-errors'
 import { validTimezone } from '@/lib/timezone'
+import { kindPayload, type VmKind } from '@/lib/vm-kind'
 import { nextVmSeq, vmIdOf, vmNameOf } from '@/lib/vm-name'
 import { Button } from '@/components/ui/button'
 import {
@@ -29,8 +30,10 @@ import {
 import { dashboardQueryOptions } from '@/features/overview/queries'
 import {
   KERNELS,
+  kernelProfile,
   VM_CONCURRENCY_OPTIONS,
   VM_CREATE_AFTER,
+  VM_CREATE_TYPES,
   VM_LOCALES,
   VM_REGION_AUTO,
   VM_REGIONS,
@@ -95,6 +98,7 @@ export function CreateVmFields({
   const listed = useQuery(vmsListQueryOptions())
   const vms = dash.data?.vms ?? listed.data?.items ?? []
 
+  const [kind, setKind] = useState<VmKind>('claude')
   const [template, setTemplate] = useState<string>(DEFAULT_TEMPLATE.id)
   const [name, setName] = useState('')
   const [kernel, setKernel] = useState<string>(DEFAULT_TEMPLATE.kernel)
@@ -146,8 +150,12 @@ export function CreateVmFields({
           max_concurrency: conc,
           weight,
           ...deriveAfter(after),
-          platform: 'anthropic',
-          family: 'claude',
+          ...kindPayload(kind),
+          // Claude 槽的默认文案是「内核 · Go slot worker」，对 GPT 槽不成立。
+          note:
+            kind === 'codex'
+              ? `${kernelProfile(kernel)?.name || kernel} · Codex 槽`
+              : undefined,
         }),
       })
       return {
@@ -178,6 +186,22 @@ export function CreateVmFields({
 
   return (
     <div className='space-y-3'>
+      <div className='space-y-1'>
+        <Label>类型</Label>
+        <Select value={kind} onValueChange={(v) => setKind(v as VmKind)}>
+          <SelectTrigger>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {VM_CREATE_TYPES.map(([v, l]) => (
+              <SelectItem key={v} value={v}>
+                {l}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
       <div className='space-y-1'>
         <Label>模板</Label>
         <Select value={template} onValueChange={applyTemplate}>

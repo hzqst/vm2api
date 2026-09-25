@@ -209,6 +209,12 @@ async function commitImportedCodexVm({ cfg, vmPath, existing, account }) {
     email: saved.email || null,
     expires_at: saved.expires_at || null,
   }
+  // Claude 槽在启动路由里靠 vmHasClaudeCredential 自动开调度，Codex 槽没有对应
+  // 逻辑，导入凭证后若不开这个开关，codex-slot-pool 会一直拒收。
+  if (existing.codex.has_access) {
+    existing.schedulable = true
+    existing.schedule_disabled_reason = null
+  }
   stampVmKind(existing)
   atomicWriteJson(vmPath, existing, { mode: 0o600 })
   let catalog = null

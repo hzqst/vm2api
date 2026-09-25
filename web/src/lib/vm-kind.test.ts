@@ -6,6 +6,7 @@ import {
   isCodexVm,
   isGptCatalogId,
   kindFromModel,
+  kindPayload,
   platformLabel,
   compactEmail,
   slotAccountLabel,
@@ -40,6 +41,29 @@ describe('vmKindOf', () => {
       isCodexVm({ id: 'b', inference_engine: 'codex' } as unknown as Vm)
     ).toBe(true)
     expect(isCodexVm({ id: 'c', runtime: { codex_kernel: '1' } })).toBe(true)
+  })
+})
+
+describe('kindPayload', () => {
+  it('maps Codex slots to openai/codex so the backend stamps a GPT slot', () => {
+    expect(kindPayload('codex')).toEqual({
+      platform: 'openai',
+      family: 'codex',
+    })
+  })
+
+  it('maps Claude slots to anthropic/claude', () => {
+    expect(kindPayload('claude')).toEqual({
+      platform: 'anthropic',
+      family: 'claude',
+    })
+  })
+
+  it('round-trips through vmKindOf', () => {
+    expect(vmKindOf({ id: 'vm-codex-01', ...kindPayload('codex') })).toBe(
+      'codex'
+    )
+    expect(vmKindOf({ id: 'vm-01', ...kindPayload('claude') })).toBe('claude')
   })
 })
 
