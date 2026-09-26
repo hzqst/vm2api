@@ -58,17 +58,9 @@ test('importing a Codex credential turns scheduling on', async () => {
         email: 'codex@example.com',
       },
     })
-    const handled = await handlePanel(
-      { method: 'POST' },
-      {},
-      new URL('http://localhost/api/panel/vms/import'),
-    )
+    const handled = await handlePanel({ method: 'POST' }, {}, new URL('http://localhost/api/panel/vms/import'))
     assert.equal(handled, true)
-    assert.equal(
-      response.status,
-      200,
-      response.body?.error?.message || JSON.stringify(response.body),
-    )
+    assert.equal(response.status, 200, response.body?.error?.message || JSON.stringify(response.body))
     const saved = JSON.parse(fs.readFileSync(vmPath, 'utf8'))
     assert.equal(saved.codex.has_access, true)
     assert.equal(saved.schedulable, true)
