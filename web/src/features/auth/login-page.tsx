@@ -80,7 +80,7 @@ export function LoginPage() {
                 <Label htmlFor='api-base'>API Base</Label>
                 <Input
                   id='api-base'
-                  placeholder='https://ccmax20.cc'
+                  placeholder='http://127.0.0.1:8787'
                   value={base}
                   onChange={(e) => setBase(e.target.value)}
                 />

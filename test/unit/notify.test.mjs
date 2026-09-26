@@ -7,6 +7,7 @@ import {
   publicRoutingNotify,
   summarizePoolAvailability,
   detectPoolNotifyEvents,
+  DEFAULT_NOTIFY,
   formatNotifyMessage,
   notifyChannelsReady,
   sendTelegramNotify,
@@ -201,7 +202,12 @@ test('format message stays Chinese and includes console url', () => {
     ],
     now,
   )
-  const msg = formatNotifyMessage({ type: 'pool_empty', title: '账号池无可用账号' }, snap)
+  const msg = formatNotifyMessage(
+    { type: 'pool_empty', title: '账号池无可用账号' },
+    snap,
+    DEFAULT_NOTIFY,
+    'http://127.0.0.1:8787',
+  )
   assert.match(msg.text, /账号池无可用账号/)
   assert.match(msg.text, /凭证 3 · 可用 0/)
   assert.match(msg.text, /不可用 3/)
@@ -213,7 +219,15 @@ test('format message stays Chinese and includes console url', () => {
   assert.match(msg.text, /vm-04 d@x 无效凭证/)
   assert.doesNotMatch(msg.text, /vm-03 c@x/)
   assert.doesNotMatch(msg.text, /^不可用$/m)
-  assert.match(msg.text, /ccmax20\.cc\/#\/cluster/)
+  assert.match(msg.text, /http:\/\/127\.0\.0\.1:8787\/#\/cluster/)
+  const custom = formatNotifyMessage(
+    { type: 'pool_empty' },
+    snap,
+    normalizeNotifyConfig({ console_url: 'https://panel.example/' }),
+    'http://127.0.0.1:8787',
+  )
+  assert.match(custom.text, /https:\/\/panel\.example\/#\/cluster/)
+  assert.doesNotMatch(formatNotifyMessage({ type: 'pool_empty' }, snap).text, /#\/cluster/)
   assert.match(msg.subject, /KIN/)
 })
 

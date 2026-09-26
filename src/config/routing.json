@@ -151,7 +151,7 @@
     "digest_sec": 21600,
     "min_available": 1,
     "run_on_start": true,
-    "console_url": "https://ccmax20.cc",
+    "console_url": "",
     "events": {
       "pool_empty": true,
       "pool_low": true,

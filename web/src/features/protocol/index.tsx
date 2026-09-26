@@ -15,9 +15,10 @@ import { RefusalGuardCard } from './refusal-guard-card'
 export function ProtocolPage() {
   const dash = useQuery(dashboardQueryOptions())
   const models = useQuery(modelsQueryOptions())
-  const base = String(
-    dash.data?.health?.base_url || location.origin || 'https://ccmax20.cc'
-  ).replace(/\/$/, '')
+  const base = String(dash.data?.health?.base_url || location.origin).replace(
+    /\/$/,
+    ''
+  )
   const items = models.data?.items || []
   const copy = (text: string) => {
     void navigator.clipboard.writeText(text)

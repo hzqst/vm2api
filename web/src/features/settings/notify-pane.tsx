@@ -49,7 +49,7 @@ function notifyConfig(value: NotifyConfig | undefined): NotifyConfig {
     digest_sec: 21600,
     min_available: 1,
     run_on_start: true,
-    console_url: 'https://ccmax20.cc',
+    console_url: '',
     ...value,
     events: { ...DEFAULT_EVENTS, ...(value?.events || {}) },
     telegram: {
@@ -230,11 +230,15 @@ export function NotifyPane({
               onChange={(min_available) => patch({ min_available })}
             />
           </SettingRow>
-          <SettingRow label='控制台地址' desc='通知消息中的回跳链接'>
+          <SettingRow
+            label='控制台地址'
+            desc='通知消息中的回跳链接，留空使用后端地址'
+          >
             <Input
               aria-label='控制台地址'
               className='w-full min-w-56 sm:w-80'
               maxLength={200}
+              placeholder={location.origin}
               value={config.console_url}
               onChange={(event) => patch({ console_url: event.target.value })}
             />

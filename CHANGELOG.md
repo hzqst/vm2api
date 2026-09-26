@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 1.3.58 — 2026-09-26
+
+- 默认地址不再指向 `ccmax20.cc`，改用本项目后端。通知里的控制台链接默认留空，留空时用后端自己的 `base_url`；手动填的地址仍然优先。
+- 控制台前端没保存 API Base 时连当前页面所在的后端。部署在 vercel、netlify、github.io、grok.me 上的前端不再自动连 `ccmax20.cc`，需要在登录页填后端地址。`ccmax20.cc` 不再算同源面板。
+- `docs/API.md` 示例改用 `http://127.0.0.1:8787`。
+
+已部署机升级：只覆盖控制面和前端并重启 Node 一次。二进制未变，不必 `wrap-cli/sync`。不要 `docker rm` 槽。线上 routing.json 里已存的 `console_url` 不会被改写，要改用后端地址就在通知设置里清空。
+
 ## 1.3.57 — 2026-09-26
 
 - cli-hop 的组织访问权限拒绝不再被改写成空响应：SSE 与非流式 provider error 均恢复为 403，保留原始错误并进入现有 permission-denied 冷却/换号策略。此修复不改变 session 识别或探测占席规则。

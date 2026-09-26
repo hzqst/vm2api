@@ -6,7 +6,7 @@ const COOKIE = 'kin_panel_token'
 export { LS_TOKEN, LS_USER, LS_BASE, COOKIE }
 
 export function sameOriginPanel(host = location.hostname): boolean {
-  return /^(ccmax20\.cc|www\.ccmax20\.cc|kin\.fkcodex\.com)$/i.test(host || '')
+  return /^kin\.fkcodex\.com$/i.test(host || '')
 }
 
 export function apiBase(): string {
@@ -14,9 +14,7 @@ export function apiBase(): string {
   if (sameOriginPanel(host)) return ''
   const saved = (localStorage.getItem(LS_BASE) || '').replace(/\/$/, '')
   if (saved) return saved
-  if (/vercel\.app$|netlify\.app$|github\.io$|grok\.me$/i.test(host)) {
-    return 'https://ccmax20.cc'
-  }
+  // No saved base: talk to the backend that served this page.
   return ''
 }
 

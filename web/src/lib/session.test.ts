@@ -25,7 +25,7 @@ afterEach(() => vi.unstubAllGlobals())
 
 describe('panel session storage', () => {
   it('stores the bearer token even on same-origin deployments', () => {
-    const values = installBrowser('ccmax20.cc')
+    const values = installBrowser('kin.fkcodex.com')
 
     setSession('secret-token', 'admin')
 
@@ -52,16 +52,16 @@ describe('panel session storage', () => {
 
   it('keeps the bearer fallback for a separate API origin', () => {
     const values = installBrowser('localhost')
-    setApiBase('https://ccmax20.cc')
+    setApiBase('http://127.0.0.1:8787')
 
     setSession('secret-token', 'admin')
 
-    expect(values.get(LS_BASE)).toBe('https://ccmax20.cc')
+    expect(values.get(LS_BASE)).toBe('http://127.0.0.1:8787')
     expect(values.get(LS_TOKEN)).toBe('secret-token')
   })
 
   it('calls the server logout endpoint without a readable bearer token', async () => {
-    installBrowser('ccmax20.cc')
+    installBrowser('kin.fkcodex.com')
     const fetchMock = vi
       .fn()
       .mockResolvedValue(new Response('{}', { status: 200 }))

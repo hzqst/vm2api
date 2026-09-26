@@ -15,7 +15,8 @@ export const DEFAULT_NOTIFY = Object.freeze({
   cooldown_sec: 300,
   min_available: 1,
   run_on_start: true,
-  console_url: 'https://ccmax20.cc',
+  // Empty means the link uses this backend's own base_url.
+  console_url: '',
   digest_sec: 21600,
   events: Object.freeze({
     pool_empty: true,
@@ -413,7 +414,7 @@ function fmtTok(n) {
   return String(Math.round(x))
 }
 
-export function formatNotifyMessage(event, snap, cfg = DEFAULT_NOTIFY) {
+export function formatNotifyMessage(event, snap, cfg = DEFAULT_NOTIFY, baseUrl = '') {
   const title = event?.title || EVENT_TITLES[event?.type] || '账号池汇报'
   const lines = [`【KIN】${title}`]
   if (snap) {
@@ -458,7 +459,7 @@ export function formatNotifyMessage(event, snap, cfg = DEFAULT_NOTIFY) {
     lines.push('')
     lines.push(shanghaiClock(snap.at))
   }
-  const url = String(cfg.console_url || DEFAULT_NOTIFY.console_url).replace(/\/$/, '')
+  const url = String(cfg.console_url || baseUrl || '').replace(/\/$/, '')
   if (url) lines.push(`${url}/#/cluster`)
   return {
     title,
@@ -723,6 +724,7 @@ export async function sendNotifyTest(cfg, channel, extra = {}) {
       accounts: extra.accounts || [],
     },
     cfg,
+    extra.baseUrl,
   )
   const want = String(channel || '').toLowerCase()
   if (want === 'email') return sendEmailNotify(cfg, message, extra)
@@ -777,7 +779,7 @@ export function createNotifyMonitor(opts = {}) {
       if (canSend) {
         for (const event of events) {
           if (!force && !digest && !allowed(event.type, started)) continue
-          const message = formatNotifyMessage(event, next, config)
+          const message = formatNotifyMessage(event, next, config, opts.baseUrl)
           const sendFn = opts.send || ((msg) => dispatchNotify(config, msg))
           try {
             const result = await sendFn(message, event)

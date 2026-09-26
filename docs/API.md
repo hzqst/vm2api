@@ -63,7 +63,7 @@ x-api-key: sk-vm-…
 ## Messages
 
 ```bash
-curl -sS https://ccmax20.cc/v1/messages \
+curl -sS http://127.0.0.1:8787/v1/messages \
   -H "Authorization: Bearer $KEY" \
   -H "content-type: application/json" \
   -H "x-session-id: conv-1" \
@@ -85,7 +85,7 @@ curl -sS https://ccmax20.cc/v1/messages \
 ## Chat Completions
 
 ```bash
-curl -sS https://ccmax20.cc/v1/chat/completions \
+curl -sS http://127.0.0.1:8787/v1/chat/completions \
   -H "Authorization: Bearer $KEY" \
   -H "content-type: application/json" \
   -d '{
@@ -142,7 +142,7 @@ curl -sS https://ccmax20.cc/v1/chat/completions \
 ## 模型目录
 
 ```bash
-curl -sS https://ccmax20.cc/v1/models -H "Authorization: Bearer $KEY"
+curl -sS http://127.0.0.1:8787/v1/models -H "Authorization: Bearer $KEY"
 ```
 
 读面板持久化的 `model_policy`，**不** hop 槽位 `/v1/models`。未入库的 id → `400`，请求被拒，不上游。别名如 `claude-haiku-4-5` 可解析到带日期的目录项。出站 `model` 去掉 `[1m]` 后缀。
@@ -155,14 +155,14 @@ curl -sS https://ccmax20.cc/v1/models -H "Authorization: Bearer $KEY"
 - 完整 OAuth：不 hop count_tokens，返回与 `GET /v1/usage` 相同的 5H/7D
 
 ```bash
-curl -sS https://ccmax20.cc/v1/messages/count_tokens \
+curl -sS http://127.0.0.1:8787/v1/messages/count_tokens \
   -H "Authorization: Bearer $KEY" \
   -H "content-type: application/json" \
   -d '{"model":"claude-sonnet-5","messages":[{"role":"user","content":"hi"}]}'
 ```
 
 ```bash
-curl -sS https://ccmax20.cc/v1/usage -H "Authorization: Bearer $KEY"
+curl -sS http://127.0.0.1:8787/v1/usage -H "Authorization: Bearer $KEY"
 ```
 
 `GET /v1/usage` 仅完整 OAuth。成功：
@@ -183,7 +183,7 @@ curl -sS https://ccmax20.cc/v1/usage -H "Authorization: Bearer $KEY"
 ## 健康
 
 ```bash
-curl -sS https://ccmax20.cc/health
+curl -sS http://127.0.0.1:8787/health
 ```
 
 无鉴权。含 `features`、`limitations`、`stats`。能力字面量：`passthrough`、`stream`、`verified-stream`、`protocol-convert`、`go-slot-worker`、`account-pool-failover`、`weighted-round-robin`、`tools`、`client-workspace`、`count_tokens`、`account_usage`。
