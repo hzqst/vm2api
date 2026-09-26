@@ -226,7 +226,7 @@ curl -sS https://ccmax20.cc/health
 {"error":{"type":"upstream_error","code":"incomplete_response","message":"Assistant hop ended without visible output or stop_reason"}}
 ```
 
-含义：请求已交给槽内 CLI，但这一轮结束时既没有可见输出（text / tool_use / refusal），也没有 `stop_reason`。只有 thinking 也算。网关在同账号重试一次，仍没有完整输出就把这个 502 交回客户端。这一次请求不停调、不换号。同一个号在另一次请求里再次空跳，才暂停该号约 60 秒。诊断钉死在某一个槽时，停在该槽并返回这个错误。
+含义：请求已交给槽内 CLI，但这一轮结束时既没有可见输出（text / tool_use / refusal），也没有 `stop_reason`。只有 thinking 也算。网关最多在同账号、且上一次执行已经结束时再试一次，然后把这个 502 交回客户端。这一次请求不停调、不换号、不写账号冷却。一开始就没有可用账号时，仍然返回池耗尽。客户端主动断开是 `client_cancelled`，不是这个错误。诊断钉死在某一个槽时，停在该槽并返回这个错误。
 
 常见原因与处理：
 

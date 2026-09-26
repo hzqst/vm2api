@@ -74,8 +74,6 @@ export const IGNORED_ERROR_CODES = new Set([
   'request_cancelled',
   'client_aborted',
   'selection_cancelled',
-  'ECONNRESET',
-  'aborted',
 ])
 
 /**
@@ -174,7 +172,7 @@ export function isIgnoredClientCancel(row = {}) {
   const code = String(row?.error_code || '').trim()
   if (status >= 400 && status !== 499) return false
   if (IGNORED_ERROR_CODES.has(code)) return true
-  return /econnreset|client.?abort|request_cancelled|context canceled/i.test(hay(row))
+  return /client_aborted|request_cancelled|selection_cancelled|context canceled/i.test(hay(row))
 }
 
 export function isErrorRow(row) {

@@ -9,6 +9,7 @@ import {
   responsesSseToAnthropicEvents,
   responsesSseToChatChunk,
 } from '../protocol/codex-convert.mjs'
+import { usageFromSseLine } from '../protocol/handle-codex.mjs'
 
 export function resolveInferenceBackend(req) {
   if (req?.apiKeyKind === 'managed') {
@@ -245,10 +246,13 @@ async function runOpenAIResponsesUpstream({
   let committed = false
   let completed = false
   let ttftMs = null
+  let streamedUsage = null
   const started = Date.now()
 
   await readLines(upstream, async (line) => {
     const raw = String(line || '')
+    const seen = usageFromSseLine(raw)
+    if (seen) streamedUsage = seen
     if (raw.startsWith('data:') && ttftMs == null) ttftMs = Date.now() - started
     if (!committed && raw.startsWith('data:')) committed = true
     if (!clientStream) {
@@ -286,7 +290,7 @@ async function runOpenAIResponsesUpstream({
       ...resultBase,
       ok: resultBase.ok && !!(assembled && (assembled.output || assembled.id || outBody)),
       body: outBody,
-      usage: assembled?.usage || outBody?.usage || null,
+      usage: assembled?.usage || streamedUsage || outBody?.usage || null,
       terminalState: resultBase.ok ? 'verified' : 'rejected',
       committed: true,
     }
@@ -295,6 +299,7 @@ async function runOpenAIResponsesUpstream({
   return {
     ...resultBase,
     ok: resultBase.ok && (deliveryMode !== 'verified' || completed || committed),
+    usage: streamedUsage,
     terminalState: completed ? 'verified' : committed ? 'incomplete' : 'rejected',
     committed,
     ttftMs,

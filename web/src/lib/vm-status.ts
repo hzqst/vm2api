@@ -589,11 +589,12 @@ export function claudeTier(vm: Vm | undefined): StatusTone {
     Boolean(fb.ok) ||
     (oiN != null && Boolean(vm.reset_7d_oi || oiN < 1))
   // Usage 里有 Fable 就是 Max。落盘 pro / hop 403 不能盖掉。
+  // 没有套餐证据时不要画成 Pro，否则 Max 探测未完成的槽会一直显示 Pro。
   if (realFable || raw === 'max')
     return { key: 'max', label: 'Max', cls: 'max', text: 'Max' }
   if (raw === 'pro' || fablePlanDenied(fb))
     return { key: 'pro', label: 'Pro', cls: 'pro', text: 'Pro' }
-  return { key: 'pro', label: 'Pro', cls: 'pro', text: 'Pro' }
+  return { key: 'none', label: '—', cls: 'none', text: '—' }
 }
 
 export function vmBuckets(vms: Vm[]) {

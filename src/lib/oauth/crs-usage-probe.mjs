@@ -13,7 +13,9 @@ import {
   usageFablePresence,
 } from './usage-interpret.mjs'
 
-export const FABLE_PROBE_MODEL = 'claude-fable-5'
+/** Current Max model first; the previous id is only a fallback when this one is missing. */
+export const FABLE_TIER_MODELS = Object.freeze(['claude-fable-5-1', 'claude-fable-5'])
+export const FABLE_PROBE_MODEL = FABLE_TIER_MODELS[0]
 export const OAUTH_USAGE_PATH = '/api/oauth/usage'
 /** sub2api Extra / Messages 响应头被动采样，不打 GET /api/oauth/usage。 */
 export const PASSIVE_HEADER_SOURCE = 'messages-headers'
@@ -233,6 +235,56 @@ export function parseUsageRetryAfterMs(headers = {}, body = {}) {
   return n > 180 ? n : n * 1000
 }
 
+/**
+ * Fable hop results, in attempt order.
+ * 200 is Max. 403 on every tried model is Pro.
+ * 429 is not Pro and not Max: a Pro hop can be rate-limited too.
+ * A transport error or a revoked grant does not classify the plan.
+ */
+export function tierFromFableAttempts(attempts = []) {
+  let denied = null
+  let limited = null
+  for (const fable of attempts) {
+    if (!fable) continue
+    if (fable.transport) return { tier: null, fable }
+    if (fable.ok) return { tier: 'max', fable }
+    if (fable.banned) return { tier: null, fable }
+    if (fable.limited) {
+      limited = fable
+      continue
+    }
+    if (fable.plan_denied) denied = fable
+  }
+  if (denied && !limited) return { tier: 'pro', fable: denied }
+  return { tier: null, fable: limited || denied || attempts.filter(Boolean).at(-1) || null }
+}
+
+/** Messages hop that Setup Token can run. Official /usage is not required. */
+export async function probeFableEntitlement({
+  exec,
+  timeoutMs = 20000,
+  identity = null,
+  models = FABLE_TIER_MODELS,
+} = {}) {
+  const attempts = []
+  for (const model of models) {
+    const fableRes = await callGoWorker({
+      exec,
+      timeoutMs,
+      identity,
+      body: {
+        model,
+        max_tokens: 1,
+        messages: [{ role: 'user', content: 'hi' }],
+      },
+    })
+    const fable = { ...parseFableProbe(fableRes), model }
+    attempts.push(fable)
+    if (fable.transport || fable.ok || fable.banned) break
+  }
+  return tierFromFableAttempts(attempts)
+}
+
 /** Official /usage 429 is quota-API throttling, not a dead grant. */
 export function isOfficialUsageRateLimited(probe = {}) {
   if (!probe || typeof probe !== 'object') return false
@@ -329,19 +381,9 @@ export async function probeVmUsage({ exec, includeFable = true, timeoutMs = 2000
 
   let fable = null
   if (includeFable) {
-    const fableRes = await callGoWorker({
-      exec,
-      timeoutMs,
-      identity,
-      body: {
-        model: FABLE_PROBE_MODEL,
-        max_tokens: 1,
-        messages: [{ role: 'user', content: 'hi' }],
-      },
-      // Do not send inbound anthropic-beta — unofficial probes must replay
-      // the slot's stored Claude Code betas, not overwrite them.
-    })
-    fable = parseFableProbe(fableRes)
+    // Do not send inbound anthropic-beta — unofficial probes must replay
+    // the slot's stored Claude Code betas, not overwrite them.
+    fable = (await probeFableEntitlement({ exec, timeoutMs, identity })).fable
     const hasFableUsage = parsed.usage_has_fable === true || !!parsed.seven_day_oi
     // Usage listing a Fable model is Max. Hop 401/403 is format noise, not Pro.
     if (usageRes.ok && fable && hasFableUsage) {

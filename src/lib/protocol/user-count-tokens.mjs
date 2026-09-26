@@ -22,6 +22,7 @@ import { apiKeyBetaHeader, setupTokenBetaHeader } from './claude-code-betas.mjs'
 import { listQuotaFromHeaders, publicUsageWindow, usageWindowsEmpty } from '../pool/quota-window.mjs'
 import { ownerScopeFromRequest } from '../admin/resource-owner.mjs'
 import { detectInboundPlatform } from './platform-detect.mjs'
+import { resolveInboundIdentity } from '../identity/identity-rewrite.mjs'
 export function countTokensUnsupportedError() {
   return makeError({
     type: ErrorType.INVALID_REQUEST,
@@ -92,10 +93,16 @@ export async function peekCurrentAccount({
   usersRepo = null,
 } = {}) {
   const detected = detectInboundPlatform(model)
+  const platform = detected.ok ? detected.platform : undefined
+  const identity = resolveInboundIdentity({ inbound, body: inbound, headers: req?.headers || {} })
   const stickyKey =
-    stickyRouter?.extractPoolKey?.(req, inbound, {
-      platform: detected.ok ? detected.platform : undefined,
-    }) || null
+    (platform === 'anthropic' && identity.sessionId && stickyRouter?.sessionPoolKeys
+      ? stickyRouter.sessionPoolKeys(req, inbound, {
+          sessionId: identity.sessionId,
+          deviceId: identity.deviceId,
+          migrate: false,
+        }).stickyKey
+      : stickyRouter?.extractPoolKey?.(req, inbound, { platform })) || null
   if (!poolScheduler?.peekAccount) {
     return { ok: false, code: 'no_eligible_accounts' }
   }

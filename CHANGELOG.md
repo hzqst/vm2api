@@ -1,5 +1,39 @@
 # Changelog
 
+## Unreleased
+
+## 1.3.57 — 2026-09-26
+
+- cli-hop 的组织访问权限拒绝不再被改写成空响应：SSE 与非流式 provider error 均恢复为 403，保留原始错误并进入现有 permission-denied 冷却/换号策略。此修复不改变 session 识别或探测占席规则。
+- Claude 选槽按入站 `metadata.user_id` 识别身份，读取发生在出站清洗之前，没有 metadata 时退到显式 `device_id`。session、family 和设备亲和的 key 都不再带 API key：同一 session 换 API key 仍命中原绑定；共用一个 API key 的不同设备互相隔离。同设备的新 session 优先放到该设备所在 VM，每个 session 各占一个槽；满了就溢出到别的 VM，已有绑定不动。短 Haiku routing probe 留在设备所在 VM，但不占 session 槽。
+- 旧的按 API key 隔离的 sticky 行不做批量删除：请求命中时复制一份到新 key，旧行原样保留。没有可信 session_id 的请求继续用旧规则。出站身份替换和协议转换没有改。
+
+已部署机升级：只覆盖控制面并重启 Node 一次。二进制未变，不必 `wrap-cli/sync`。不要 `docker rm` 槽。旧 sticky 行保留，回滚代码后仍可读。
+
+## 1.3.56 — 2026-09-26
+
+- 账号探测会用 Fable 消息确认套餐：当前模型 `claude-fable-5-1` 能通就是 Max，两个 Fable 模型都 403 才是 Pro。429 和传输失败不改等级。
+- Setup Token 没有官方 `/usage`，探测不再只读响应头然后把号留在 Pro。探测成功后控制台标成 Max。
+- 还没有套餐证据的 Claude 槽不再一律显示 Pro。
+
+已部署机升级：只覆盖控制面和前端并重启 Node 一次。二进制未变，不必 `wrap-cli/sync`。不要 `docker rm` 槽。
+
+## 1.3.55 — 2026-09-26
+
+- 取消请求按客户端生命周期结束处理：不计错误、不解绑长期 session；Node 等待读完 `kin_job_done` / trailers，避免正常 `message_stop` 被误判为客户端断开。
+- Claude family 透传 parent/root/device；主 session 与 Sonnet/Haiku 子 session 固定同一 VM，各占独立 session 槽位。family 满载不跨 VM，generation 恢复整族迁移。
+- 账号池空跳、family 调度和取消隔离补齐测试。升级会同步控制面与二进制；不要 `docker rm` 槽。
+
+发布资产包含更新后的 `kin-kernel`、`kin-codex-kernel`、`kin-cookie-auth`、`kin-egress`、`kin-worker`、`cli-node`、`cc-node` 和 crag kernel。
+
+## 1.3.54 — 2026-09-25
+
+- 流里出现 `message_stop` 就结束这一跳，即使没有可见正文。没有 `message_stop` 的空跳先在同号重试，然后暂停该号约 60 秒并换下一个号。
+- 发出去之前，只剩无签名 thinking 的空 assistant 轮会被删掉，相邻用户消息合并。
+- OpenAI Responses 的 `tool_choice.name` 放到顶层。
+
+已部署机升级：只覆盖控制面并重启 Node 一次。二进制未变，不必 `wrap-cli/sync`。不要 `docker rm` 槽。
+
 ## 1.3.53 — 2026-09-25
 
 - 没有可见输出的跳不再回收内核。以前这会被当成槽泄漏，`SIGKILL` 监督进程里的 CLI 并重启内核，同槽重试打在刚被拉起的进程上。

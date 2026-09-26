@@ -93,6 +93,27 @@ test('no header samples reports unavailable and persists the attempt without fak
   assert.equal(f.quota.repo.get('account-test').unified.last_probe, undefined)
 })
 
+test('Setup Token probe marks Max when the Fable hop succeeds and does not keep the Pro badge', async (t) => {
+  const f = fixture(t)
+  f.quota.setAccountTier('account-test', 'pro')
+  const result = (
+    await buildProbeOne({
+      ...f.args,
+      accountQuota: f.quota,
+      fableProbe: async () => ({
+        tier: 'max',
+        fable: { ok: true, status: 200, model: 'claude-fable-5-1', plan_denied: false },
+      }),
+    })
+  ).data
+  assert.equal(result.account_tier, 'max')
+  assert.equal(f.quota.repo.get('account-test').unified.account_tier, 'max')
+  assert.equal(f.quota.repo.get('account-test').unified.usage_has_fable, true)
+  assert.equal(f.quota.repo.get('account-test').unified.fable.plan_denied, false)
+  const detail = await f.detail(f.reopen())
+  assert.equal(detail.vm.account_tier, 'max')
+})
+
 test('official OAuth probe still ingests real usage and exposes its actual result to the card', async (t) => {
   const f = fixture(t, { mode: 'oauth' })
   const probe = {

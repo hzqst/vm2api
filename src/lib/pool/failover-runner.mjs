@@ -6,6 +6,8 @@ import {
 } from './upstream-error-policy.mjs'
 import { listQuotaFromHeaders } from './quota-window.mjs'
 import {
+  clientCancelledResult,
+  isClientCancelledResult,
   isCompleteAssistantMessage,
   isIncompleteAssistantMessage,
   incompleteAssistantClientError,
@@ -196,6 +198,9 @@ function isUnfinishedLastResult(result, policy) {
 }
 
 function preferLastResult(lastResult, lastPolicy, fallback, extras = {}) {
+  if (isClientCancelledResult(lastResult)) {
+    return { ...clientCancelledResult(lastResult), via: lastResult.via || 'pool-failover', ...extras }
+  }
   if (!lastResult) return fallback
   if (isUnfinishedLastResult(lastResult, lastPolicy)) {
     return {
@@ -240,19 +245,22 @@ function unfinishedExhausted(result, policy, fallback, extras = {}) {
   return { ...fallback, ...extras }
 }
 
-function dropIncompleteSession(scheduler, selected, bindKeys, result, policy) {
-  if (
-    policy?.reason !== 'incomplete_assistant' &&
-    result?.terminalState !== 'incomplete' &&
-    !isIncompleteAssistantMessage(result)
-  ) {
-    return
-  }
-  const sessions = scheduler?.accountQuota?.sessions
-  for (const key of bindKeys) {
-    try {
-      sessions?.drop?.(selected?.accountId, key)
-    } catch {}
+function emptyHopReleased(result) {
+  if (!result || result.committed) return false
+  if (result.transportError === true) return false
+  if (result.jobHeld === true || result.executionReleased === false) return false
+  return true
+}
+
+function incompleteHopResult(result, selected, policy, attemptNo) {
+  return {
+    ...incompleteAssistantClientError(result),
+    via: result?.via || 'pool-failover',
+    accountId: selected?.accountId,
+    vmId: selected?.vmId,
+    attemptCount: attemptNo,
+    finalState: 'incomplete',
+    policy,
   }
 }
 
@@ -347,11 +355,15 @@ export class FailoverRunner {
     }
   }
 
-  forgetCredential(selected, policy) {
-    this.stickyRouter?.unbindByAccount?.({
-      accountId: selected?.accountId,
-      vmId: selected?.vmId,
-    })
+  forgetCredential(selected, policy, { familyKey = null, sessionKeys = [] } = {}) {
+    if (familyKey) {
+      for (const key of sessionKeys) this.stickyRouter?.unbind?.(key)
+    } else {
+      this.stickyRouter?.unbindByAccount?.({
+        accountId: selected?.accountId,
+        vmId: selected?.vmId,
+      })
+    }
     if (typeof this.onCredentialFailure === 'function') {
       try {
         this.onCredentialFailure({ selected, policy })
@@ -373,7 +385,7 @@ export class FailoverRunner {
       await waitForSessionTurn(previous, args.signal)
       return await this.runOnce(args)
     } catch (error) {
-      if (error?.code === 'request_cancelled') return poolError('request_cancelled', 'Request was cancelled')
+      if (error?.code === 'request_cancelled') return clientCancelledResult()
       throw error
     } finally {
       releaseTurn()
@@ -395,6 +407,10 @@ export class FailoverRunner {
     callAttempt,
     onAttempt = null,
     pinVmId = null,
+    familyKey = null,
+    familyVmId = null,
+    deviceKey = null,
+    skipSessionSeat = false,
     ownerScope = null,
     countUsage = true,
   } = {}) {
@@ -414,21 +430,35 @@ export class FailoverRunner {
     const bindKeys = uniqueStickyKeys(stickyKey, stickyKeys)
     let outboundSessionId = ''
     let outboundSessionAccountId = ''
+    let currentDeviceVmId = null
     const bindAll = (account, opts) => {
-      if (!this.stickyRouter?.bind || !account) return
+      if (!this.stickyRouter || !account) return
       const sessionId = account.sessionId || (account.accountId === outboundSessionAccountId ? outboundSessionId : '')
       const payload = { accountId: account.accountId, vmId: account.vmId }
       const slotIndex = account.slotIndex != null ? account.slotIndex : pinnedSlot
       if (slotIndex != null) payload.slotIndex = slotIndex
       if (sessionId) payload.sessionId = sessionId
       if (stickyDeviceId) payload.deviceId = stickyDeviceId
-      for (const key of bindKeys) {
-        const prev = this.stickyRouter.resolve?.(key)
-        // A live pin on another account means this request only spilled for
-        // capacity. Rewriting it would move the whole session off its slot.
-        if (prev?.accountId && prev.accountId !== account.accountId) continue
-        const guard = prev ? { ...opts, ifGeneration: prev.generation || 0 } : opts
-        this.stickyRouter.bind(key, payload, guard)
+      if (this.stickyRouter.bind) {
+        for (const key of bindKeys) {
+          const prev = this.stickyRouter.resolve?.(key)
+          // A live pin on another account means this request only spilled for
+          // capacity. Rewriting it would move the whole session off its slot.
+          if (prev?.accountId && prev.accountId !== account.accountId) continue
+          const guard = prev ? { ...opts, ifGeneration: prev.generation || 0 } : opts
+          this.stickyRouter.bind(key, payload, guard)
+        }
+      }
+      if (familyKey && account.vmId) {
+        this.stickyRouter.bind?.(familyKey, { accountId: account.accountId, vmId: account.vmId }, { countHit: false })
+      }
+      if (deviceKey && account.vmId && (!currentDeviceVmId || currentDeviceVmId === account.vmId)) {
+        const devicePayload = { accountId: account.accountId, vmId: account.vmId }
+        if (this.stickyRouter.bindDeviceAffinity) {
+          this.stickyRouter.bindDeviceAffinity(deviceKey, devicePayload, { countHit: false })
+        } else {
+          this.stickyRouter.bind?.(deviceKey, devicePayload, { countHit: false })
+        }
       }
     }
     let lastResult = null
@@ -438,8 +468,8 @@ export class FailoverRunner {
     let requestBody = clone(canonicalBody)
 
     for (let attemptNo = 1; attemptNo <= this.config.max_total_attempts; attemptNo++) {
-      if (signal?.aborted) {
-        return poolError('request_cancelled', 'Request was cancelled', { attempt_count: attemptNo - 1 })
+      if (signal?.aborted || isClientCancelledResult(lastResult)) {
+        return { ...clientCancelledResult(lastResult || {}), via: 'pool-failover', attemptCount: attemptNo - 1 }
       }
       if (Date.now() >= deadline) {
         return preferLastResult(
@@ -454,6 +484,7 @@ export class FailoverRunner {
       }
       let selected
       try {
+        currentDeviceVmId = deviceKey ? this.stickyRouter?.resolve?.(deviceKey)?.vmId || null : null
         selected = await this.scheduler.selectAndReserve({
           model,
           stickyKey,
@@ -464,11 +495,14 @@ export class FailoverRunner {
           deadline,
           allowWait: true,
           pinVmId,
+          familyVmId,
+          deviceVmId: currentDeviceVmId,
+          skipSessionSlot: skipSessionSeat,
           ownerScope,
         })
       } catch (error) {
         if (error?.code === 'selection_cancelled') {
-          return poolError('request_cancelled', 'Request was cancelled', { attempt_count: attemptNo - 1 })
+          return { ...clientCancelledResult(), via: 'pool-failover', attemptCount: attemptNo - 1 }
         }
         if (error?.code === 'pool_wait_queue_full') {
           return poolError('pool_wait_queue_full', 'Account pool wait queue is full', {
@@ -501,10 +535,6 @@ export class FailoverRunner {
           last_reason: lastPolicy?.reason || null,
           last_status: lastResult?.status ?? null,
         })
-        // A stream-scope incomplete hop already parked its own account; it is not
-        // why the pool is empty. Masking here hides account_pool_exhausted behind
-        // a fabricated 502 (sub2api returns ErrNoAvailableAccounts here).
-        if (isUnfinishedLastResult(lastResult, lastPolicy)) return exhausted
         return preferLastResult(lastResult, lastPolicy, exhausted, { attemptCount: attemptNo - 1 })
       }
       pinnedSlot = selected.slotIndex ?? null
@@ -516,6 +546,13 @@ export class FailoverRunner {
         },
         { countHit: false },
       )
+      if (familyKey) {
+        const locked = this.stickyRouter.resolve?.(familyKey)
+        if (locked?.vmId && locked.vmId !== selected.vmId) {
+          familyVmId = locked.vmId
+          continue
+        }
+      }
       const attemptStarted = Date.now()
       this.attemptsRepo?.begin?.({
         requestId,
@@ -562,6 +599,15 @@ export class FailoverRunner {
           },
         })
         if (result) result.committed = result.committed || committed
+        if (signal?.aborted || isClientCancelledResult(result)) {
+          return {
+            ...clientCancelledResult(result),
+            via: result?.via || 'pool-failover',
+            accountId: selected.accountId,
+            vmId: selected.vmId,
+            attemptCount: attemptNo,
+          }
+        }
         policy = classifyAttempt(
           result,
           selected,
@@ -573,8 +619,6 @@ export class FailoverRunner {
           },
           this.scheduler?.accountQuota,
         )
-        dropIncompleteSession(this.scheduler, selected, bindKeys, result, policy)
-
         // One writer for rate_limit_reset_at / overload_until (sub2api HandleUpstreamError).
         const hardBlock =
           !result?.committed && !pinVmId
@@ -654,7 +698,17 @@ export class FailoverRunner {
         }
         applyCooldown(this.scheduler, selected, policy, model, this.stickyRouter, { diagnosticPin: !!pinVmId })
         if (!pinVmId && isCredentialDeath(policy)) {
-          this.forgetCredential(selected, policy)
+          this.forgetCredential(selected, policy, { familyKey, sessionKeys: bindKeys })
+          if (familyKey) {
+            return {
+              ...result,
+              accountId: selected.accountId,
+              vmId: selected.vmId,
+              attemptCount: attemptNo,
+              finalState: result?.terminalState || 'rejected',
+              policy,
+            }
+          }
         }
         if (!shouldContinue(policy)) {
           return {
@@ -668,37 +722,39 @@ export class FailoverRunner {
         }
         policy = await this.recoverCredential(selected, policy)
         const hopMs = Date.now() - attemptStarted
+        if (isRetryableEmptyHop(policy)) {
+          const canRetry =
+            emptyHopReleased(result) &&
+            budget.allowSameUnit(selected.accountId, policy, hopMs, this.config.same_account_retry_max_hop_ms)
+          if (!canRetry) return incompleteHopResult(result, selected, policy, attemptNo)
+          budget.noteSameUnit(selected.accountId)
+          try {
+            await sleepWithSignal(this.config.same_account_retry_delay_ms, signal)
+          } catch {
+            return {
+              ...clientCancelledResult(result),
+              via: 'pool-failover',
+              accountId: selected.accountId,
+              vmId: selected.vmId,
+              attemptCount: attemptNo,
+            }
+          }
+          continue
+        }
         if (budget.allowSameUnit(selected.accountId, policy, hopMs, this.config.same_account_retry_max_hop_ms)) {
           budget.noteSameUnit(selected.accountId)
           try {
             await sleepWithSignal(this.config.same_account_retry_delay_ms, signal)
           } catch {
-            return poolError('request_cancelled', 'Request was cancelled', { attempt_count: attemptNo })
+            return {
+              ...clientCancelledResult(result),
+              via: 'pool-failover',
+              accountId: selected.accountId,
+              vmId: selected.vmId,
+              attemptCount: attemptNo,
+            }
           }
           continue
-        }
-        // Same-account budget spent on an empty / thinking-only hop: return 502.
-        // One request must not park or rotate the pool. A later request that
-        // empty-hops the same account is what noteDistinctEmptyHop may park.
-        if (isRetryableEmptyHop(policy)) {
-          if (!pinVmId) {
-            try {
-              this.rateLimitService?.noteDistinctEmptyHop?.({
-                accountId: selected.accountId,
-                vmId: selected.vmId,
-                requestId,
-              })
-            } catch {}
-          }
-          return {
-            ...incompleteAssistantClientError(result),
-            via: result?.via || 'pool-failover',
-            accountId: selected.accountId,
-            vmId: selected.vmId,
-            attemptCount: attemptNo,
-            finalState: 'incomplete',
-            policy,
-          }
         }
 
         const switchesExhausted = budget.noteSwitch(selected.accountId, selected.vmId, {
@@ -722,6 +778,15 @@ export class FailoverRunner {
           })
         }
       } catch (error) {
+        if (signal?.aborted || error?.code === 'selection_cancelled' || error?.code === 'request_cancelled') {
+          return {
+            ...clientCancelledResult({ committed }),
+            via: 'pool-failover',
+            accountId: selected.accountId,
+            vmId: selected.vmId,
+            attemptCount: attemptNo,
+          }
+        }
         result = {
           ok: false,
           status: 0,
@@ -748,7 +813,6 @@ export class FailoverRunner {
           },
           this.scheduler?.accountQuota,
         )
-        dropIncompleteSession(this.scheduler, selected, bindKeys, result, policy)
         lastResult = result
         lastPolicy = policy
         this.noteUnitHealth(selected, policy, result)
@@ -774,7 +838,17 @@ export class FailoverRunner {
         }
         applyCooldown(this.scheduler, selected, policy, model, this.stickyRouter, { diagnosticPin: !!pinVmId })
         if (!pinVmId && isCredentialDeath(policy)) {
-          this.forgetCredential(selected, policy)
+          this.forgetCredential(selected, policy, { familyKey, sessionKeys: bindKeys })
+          if (familyKey) {
+            return {
+              ...result,
+              accountId: selected.accountId,
+              vmId: selected.vmId,
+              attemptCount: attemptNo,
+              finalState: result.terminalState,
+              policy,
+            }
+          }
         }
         policy = await this.recoverCredential(selected, policy)
         const hopMs = Date.now() - attemptStarted
@@ -783,7 +857,13 @@ export class FailoverRunner {
           try {
             await sleepWithSignal(this.config.same_account_retry_delay_ms, signal)
           } catch {
-            return poolError('request_cancelled', 'Request was cancelled', { attempt_count: attemptNo })
+            return {
+              ...clientCancelledResult({ committed }),
+              via: 'pool-failover',
+              accountId: selected.accountId,
+              vmId: selected.vmId,
+              attemptCount: attemptNo,
+            }
           }
           continue
         }

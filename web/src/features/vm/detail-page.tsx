@@ -369,6 +369,7 @@ export function VmDetailPage() {
             conc={conc}
             rpm={rpm}
             costByModel={data.billing?.by_model}
+            billing={data.billing}
           />
           <VmAccountTab
             id={id}

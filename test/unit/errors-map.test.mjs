@@ -107,6 +107,16 @@ test('thinking-only assistant is an envelope but not a complete message', () => 
   assert.equal(finalized.terminalState, 'incomplete')
 })
 
+test('message_stop completes a hop that has no visible text', () => {
+  const stopped = {
+    ok: false,
+    sawMessageStop: true,
+    body: { type: 'message', role: 'assistant', content: [], stop_reason: null },
+  }
+  assert.equal(isCompleteAssistantMessage(stopped), true)
+  assert.equal(finalizeAssembledAssistantHop(stopped).ok, true)
+})
+
 test('server_tool_use plus stop_reason is a complete assistant hop', () => {
   const complete = {
     ok: false,
@@ -147,6 +157,35 @@ test('ok text without stop_reason is finalized as incomplete', () => {
   })
   assert.equal(finalized.ok, false)
   assert.equal(finalized.terminalState, 'incomplete')
+})
+
+test('finalize does not clear a committed partial hop', () => {
+  const finalized = finalizeAssembledAssistantHop({
+    ok: true,
+    committed: true,
+    terminalState: 'verified',
+    body: {
+      type: 'message',
+      role: 'assistant',
+      content: [{ type: 'text', text: 'partial' }],
+    },
+  })
+  assert.equal(finalized.ok, false)
+  assert.equal(finalized.committed, true)
+  assert.equal(finalized.terminalState, 'incomplete')
+})
+
+test('client cancel is not rewritten when message_stop is missing', () => {
+  const finalized = finalizeAssembledAssistantHop({
+    ok: false,
+    clientCancelled: true,
+    terminalState: 'cancelled',
+    committed: true,
+    body: { type: 'message', role: 'assistant', content: [{ type: 'text', text: 'partial' }] },
+  })
+  assert.equal(finalized.clientCancelled, true)
+  assert.equal(finalized.terminalState, 'cancelled')
+  assert.equal(finalized.committed, true)
 })
 
 test('ok non-assistant envelope is finalized as incomplete', () => {

@@ -28,7 +28,7 @@ import {
 } from '../vm/slot-engine.mjs'
 import { probeAccount } from '../oauth/usage-probe.mjs'
 import { queryOpenaiQuota, resetOpenaiQuota } from '../oauth/openai-quota.mjs'
-import { canOfficialUsage, credentialModeOfVm } from '../oauth/credential-mode.mjs'
+import { canOfficialUsage, credentialModeOfVm, isSetupTokenMode } from '../oauth/credential-mode.mjs'
 import { getUsageCache } from '../oauth/usage-cache.mjs'
 import { makeError, ErrorType, ErrorCode } from '../core/errors.mjs'
 import { filterVmsForPanel } from './resource-owner.mjs'
@@ -50,6 +50,7 @@ import { isLeftoverGrantRevokeRuntime, viewRuntimeWithoutLeftoverRevoke } from '
 import {
   isOfficialUsageRateLimited,
   PASSIVE_HEADER_SOURCE,
+  probeFableEntitlement,
   probeFromPassiveHeaders,
   shouldHopOfficialUsage,
   shouldProbeFable,
@@ -722,7 +723,47 @@ export async function buildOpenaiQuotaReset({ cfg, id, rotate = true } = {}) {
   })
 }
 
-export async function buildProbeOne({ cfg, accountQuota, id, force = false, usageCache = null, hop = true } = {}) {
+function applyFableEntitlement(accountQuota, projectRoot, vmId, accountId, found) {
+  if (found?.tier !== 'pro' && found?.tier !== 'max') return null
+  const current = accountQuota.repo.get(accountId)
+  const locked =
+    current?.unified?.account_tier_source === 'profile' &&
+    current.unified.account_tier &&
+    current.unified.account_tier !== found.tier
+  if (locked) return current.unified.account_tier
+  accountQuota.setAccountTier(accountId, found.tier, { source: 'fable' })
+  persistAccountTier(projectRoot, vmId, found.tier, { source: 'fable' })
+  const saved = accountQuota.repo.get(accountId)
+  if (!saved || !found.fable) return found.tier
+  const prev = saved.unified?.fable || {}
+  saved.unified = saved.unified || {}
+  saved.unified.fable = {
+    ...prev,
+    ok: found.tier === 'max',
+    plan_denied: found.tier === 'pro',
+    limited: !!found.fable.limited && found.tier !== 'max',
+    banned: false,
+    status: found.fable.status || 0,
+    model: found.fable.model || prev.model || null,
+    error: found.tier === 'max' ? null : found.fable.error || null,
+    utilization: found.fable.utilization ?? prev.utilization ?? null,
+    reset: found.fable.reset_at || prev.reset || null,
+    probed_at: new Date().toISOString(),
+  }
+  if (found.tier === 'max') saved.unified.usage_has_fable = true
+  accountQuota.repo.save(saved)
+  return found.tier
+}
+
+export async function buildProbeOne({
+  cfg,
+  accountQuota,
+  id,
+  force = false,
+  usageCache = null,
+  hop = true,
+  fableProbe = probeFableEntitlement,
+} = {}) {
   const vm = getVm(cfg.paths.project, id)
   if (!vm) {
     return fail(
@@ -809,6 +850,17 @@ export async function buildProbeOne({ cfg, accountQuota, id, force = false, usag
       }
     : await cache.load(accountId, () => probeAccount({ exec, vm, includeFable }), { force: !!force })
   if (!skipHop) accountQuota.ingestOAuthUsage(accountId, result)
+  if (isSetupTokenMode(credentialModeOfVm(vm)) && (force || includeFable)) {
+    try {
+      await applyFableEntitlement(
+        accountQuota,
+        cfg.paths.project,
+        id,
+        accountId,
+        await fableProbe({ exec, timeoutMs: 20000 }),
+      )
+    } catch {}
+  }
   const after = accountQuota.repo.get(accountId)
   const qAfter = quotaFromAccount(after)
   const rateLimited = isOfficialUsageRateLimited(result)

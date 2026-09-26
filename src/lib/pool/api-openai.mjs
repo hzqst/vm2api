@@ -1,3 +1,5 @@
+import { responsesToolChoice } from '../protocol/codex-convert.mjs'
+
 function flattenSystem(system) {
   if (!system) return ''
   if (typeof system === 'string') return system
@@ -70,6 +72,8 @@ export function claudeToOpenAIResponsesRequest(claude = {}) {
       return tool
     })
   }
+  const choice = responsesToolChoice(claude.tool_choice)
+  if (choice) out.tool_choice = choice
   if (chat.max_tokens) out.max_output_tokens = chat.max_tokens
   if (chat.temperature != null) out.temperature = chat.temperature
   if (chat.top_p != null) out.top_p = chat.top_p

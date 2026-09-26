@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   chatToCodexResponses,
+  responsesToolChoice,
   createChatSseState,
   normalizeCodexResponsesInput,
   responsesSseToChatChunk,
@@ -68,6 +69,25 @@ test('chat tool turns become function_call items', () => {
     messages: [{ role: 'user', content: 'hi' }],
   })
   assert.equal(washed.body.reasoning.effort, 'high')
+})
+
+test('chat tool_choice hoists function.name onto Responses tool_choice.name', () => {
+  const body = chatToCodexResponses({
+    model: 'gpt-5.4',
+    messages: [{ role: 'user', content: 'hi' }],
+    tools: [{ type: 'function', function: { name: 'get_weather', parameters: { type: 'object' } } }],
+    tool_choice: { type: 'function', function: { name: 'get_weather' } },
+  })
+  assert.deepEqual(body.tool_choice, { type: 'function', name: 'get_weather' })
+  const native = toCodexResponses('openai.responses', {
+    model: 'gpt-5.4',
+    input: 'hi',
+    tool_choice: { type: 'function', function: { name: 'lookup' } },
+  })
+  assert.deepEqual(native.body.tool_choice, { type: 'function', name: 'lookup' })
+  assert.equal(responsesToolChoice({ type: 'tool', name: 'get_weather' }).name, 'get_weather')
+  assert.equal(responsesToolChoice({ type: 'any' }), 'required')
+  assert.equal(responsesToolChoice('auto'), 'auto')
 })
 
 test('chat converts to responses input', () => {

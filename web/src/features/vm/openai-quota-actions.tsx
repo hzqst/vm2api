@@ -124,7 +124,7 @@ export function OpenaiQuotaActions({
           ? '查询中'
           : compact
             ? `查询${credits ? ` ${available}` : ''}`
-            : `查询重置券${credits ? ` ${available}` : ''}`}
+            : `查询${credits ? ` ${available}` : ''}`}
       </Button>
       <Button
         size='sm'
@@ -145,7 +145,7 @@ export function OpenaiQuotaActions({
         <RotateCcw
           className={cn('size-3', resetQuota.isPending && 'animate-spin')}
         />
-        {resetQuota.isPending ? '使用中' : compact ? '用券' : '使用重置券'}
+        {resetQuota.isPending ? '使用中' : compact ? '重置券' : '使用重置券'}
       </Button>
       <ConfirmDialog
         open={confirm}

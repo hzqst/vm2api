@@ -57,6 +57,17 @@ test('empty assistant hop does not SIGKILL the supervisor', () => {
   assert.equal(
     isDeadWrapHop({
       ok: false,
+      status: 499,
+      clientCancelled: true,
+      terminalState: 'cancelled',
+      transportError: false,
+      body: { error: { code: 'client_cancelled', message: 'Client closed the connection' } },
+    }),
+    false,
+  )
+  assert.equal(
+    isDeadWrapHop({
+      ok: false,
       status: 0,
       terminalState: 'transport_error',
       transportError: true,

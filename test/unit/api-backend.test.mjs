@@ -5,8 +5,13 @@ import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
 import { createHandleProtocol } from '../../src/lib/protocol/handle-protocol.mjs'
+import { StickyRouter } from '../../src/lib/pool/sticky-router.mjs'
 import { CRS_OFFICIAL_AGENT_PROMPT } from '../../src/lib/identity/crs-persona.mjs'
 import { resolveInferenceBackend, messagesUrl } from '../../src/lib/pool/api-protocol.mjs'
+
+function fakeResponse() {
+  return { headersSent: false, on() {}, once() {}, off() {}, write() {}, end() {} }
+}
 
 function messageStart() {
   return `data: ${JSON.stringify({
@@ -54,7 +59,7 @@ test('API backend applies the global official_full persona setting', async () =>
     kernel.once('error', reject)
     kernel.listen(socketPath, resolve)
   })
-  const response = { headersSent: false, on() {}, write() {}, end() {} }
+  const response = fakeResponse()
   const stats = { errors: 0, requests: 0, by_route: {}, passthrough: 0, rewrite: 0, convert: 0 }
   const handler = createHandleProtocol({
     json: (_res, status, body) => {
@@ -140,7 +145,7 @@ test('OAuth cli-hop applies the resolved Protocol custom persona template', asyn
     },
   }
   let prepared = null
-  const response = { headersSent: false, on() {}, write() {}, end() {} }
+  const response = fakeResponse()
   const stats = { errors: 0, requests: 0, by_route: {}, passthrough: 0, rewrite: 0, convert: 0 }
   const handler = createHandleProtocol({
     json: (_res, status, body) => {
@@ -206,7 +211,7 @@ test('OpenAI chat carrying claude-opus-4-8 uses the Claude pool', async () => {
   fs.writeFileSync(routingFile, JSON.stringify({ compatibility: { persona_preset: 'zero' } }))
   let poolCalls = 0
   let requestedModel = null
-  const response = { headersSent: false, on() {}, write() {}, end() {} }
+  const response = fakeResponse()
   const handler = createHandleProtocol({
     json: (_res, status, body) => {
       response.status = status
@@ -268,5 +273,351 @@ test('OpenAI chat carrying claude-opus-4-8 uses the Claude pool', async () => {
     assert.equal(response.body.error.message, 'Claude pool selected')
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+function companionHaikuBody(sessionId, deviceId = 'device-probe') {
+  return {
+    model: 'claude-haiku-4-5',
+    stream: false,
+    max_tokens: 64,
+    tools: [],
+    system: [
+      { type: 'text', text: 'x-anthropic-billing-header: cc_version=2.1.280.e2f; cch=test' },
+      { type: 'text', text: "You are Claude Code, Anthropic's official CLI for Claude." },
+    ],
+    messages: [
+      {
+        role: 'user',
+        content: [{ type: 'text', text: 'Compress into one routing hint of at most 12 words: WHEN to use; WHEN NOT' }],
+      },
+    ],
+    metadata: { user_id: JSON.stringify({ device_id: deviceId, session_id: sessionId }) },
+  }
+}
+
+function protocolHarness({ body, stickyRouter, failoverRunner, apiKeyRecord = null }) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-protocol-seat-'))
+  const routingFile = path.join(root, 'routing.json')
+  fs.writeFileSync(routingFile, JSON.stringify({ compatibility: { persona_preset: 'zero' } }))
+  const response = fakeResponse()
+  const stats = { errors: 0, requests: 0, by_route: {}, passthrough: 0, rewrite: 0, convert: 0 }
+  const apiKeyCalls = { acquire: 0, release: 0 }
+  const authCalls = { count: 0 }
+  const handler = createHandleProtocol({
+    json: (_res, status, payload) => {
+      response.status = status
+      response.body = payload
+      return payload
+    },
+    writeSSEHeaders() {},
+    readBody: async () => body,
+    requireAuth: () => {
+      authCalls.count += 1
+      return true
+    },
+    cfg: {
+      rewrite: { enabled: false },
+      intercept: { rules: [] },
+      distill: { enabled: false },
+      limits: { max_body_bytes: 1024 * 1024, upstream_timeout_ms: 2000, stream_idle_timeout_ms: 2000 },
+      paths: { data: root, project: root },
+    },
+    requestLog: { start: () => ({ request_id: 'seat-probe-test' }), finish() {} },
+    stickyRouter,
+    accountQuota: {},
+    apiKeyStore: {
+      acquire: () => {
+        apiKeyCalls.acquire += 1
+        return { ok: true }
+      },
+      release: () => {
+        apiKeyCalls.release += 1
+      },
+    },
+    apiScheduler: {},
+    apiEndpointStore: {},
+    stats,
+    routingConfigPath: routingFile,
+    routingConfig: { compatibility: { persona_preset: 'zero' }, failover: {} },
+    failoverRunner,
+    groupsRepo: { rateMultiplier: () => 1 },
+  })
+  const req = {
+    method: 'POST',
+    url: '/v1/messages',
+    headers: { authorization: 'Bearer test', 'user-agent': 'Go-http-client/2.0' },
+    apiKeyKind: apiKeyRecord ? 'managed' : 'master',
+    apiKeyRecord,
+    once() {},
+    off() {},
+  }
+  return { root, handler, req, response, stats, apiKeyCalls, authCalls }
+}
+
+test('companion Haiku probe clears session sticky and skips session seat', async () => {
+  let runOpts = null
+  const stickyCalls = { extract: 0, collect: 0, device: 0 }
+  const stickyRouter = {
+    extractPoolKey: () => {
+      stickyCalls.extract += 1
+      return 'session-key'
+    },
+    collectPoolKeys: () => {
+      stickyCalls.collect += 1
+      return ['session-key']
+    },
+    canonicalDeviceKey: (deviceId) => {
+      stickyCalls.device += 1
+      return `dev2:${deviceId}`
+    },
+  }
+  const harness = protocolHarness({
+    body: companionHaikuBody('probe-session', 'probe-device'),
+    stickyRouter,
+    apiKeyRecord: { id: 'managed-key-1', group_id: 1 },
+    failoverRunner: {
+      async run(opts) {
+        runOpts = opts
+        return {
+          ok: false,
+          status: 503,
+          body: { error: { type: 'server_error', code: 'probe_stop', message: 'stop' } },
+          headers: {},
+        }
+      },
+    },
+  })
+  try {
+    await harness.handler.handleProtocol(harness.req, harness.response, 'anthropic.messages', '/v1/messages')
+    assert.equal(harness.authCalls.count, 1)
+    assert.equal(harness.apiKeyCalls.acquire, 1)
+    assert.equal(harness.apiKeyCalls.release, 1)
+    assert.equal(stickyCalls.extract, 1)
+    assert.equal(stickyCalls.collect, 1)
+    assert.equal(stickyCalls.device, 1)
+    assert.equal(runOpts.stickyKey, null)
+    assert.deepEqual(runOpts.stickyKeys, [])
+    assert.equal(runOpts.skipSessionSeat, true)
+    assert.equal(runOpts.stickyDeviceId, 'probe-device')
+    assert.equal(runOpts.deviceKey, 'dev2:probe-device')
+    assert.equal(harness.response.status, 503)
+  } finally {
+    fs.rmSync(harness.root, { recursive: true, force: true })
+  }
+})
+
+test('ordinary Haiku with tools keeps session sticky and session seat', async () => {
+  let runOpts = null
+  const body = {
+    ...companionHaikuBody('normal-session', 'normal-device'),
+    tools: [{ name: 'Read', input_schema: { type: 'object', properties: {} } }],
+  }
+  const harness = protocolHarness({
+    body,
+    stickyRouter: {
+      extractPoolKey: () => 'normal-sticky',
+      collectPoolKeys: () => ['normal-sticky'],
+      canonicalDeviceKey: (deviceId) => `dev2:${deviceId}`,
+    },
+    failoverRunner: {
+      async run(opts) {
+        runOpts = opts
+        return {
+          ok: false,
+          status: 503,
+          body: { error: { type: 'server_error', code: 'normal_stop', message: 'stop' } },
+          headers: {},
+        }
+      },
+    },
+  })
+  try {
+    await harness.handler.handleProtocol(harness.req, harness.response, 'anthropic.messages', '/v1/messages')
+    assert.equal(runOpts.stickyKey, 'normal-sticky')
+    assert.deepEqual(runOpts.stickyKeys, ['normal-sticky'])
+    assert.equal(runOpts.skipSessionSeat, false)
+    assert.equal(runOpts.deviceKey, 'dev2:normal-device')
+  } finally {
+    fs.rmSync(harness.root, { recursive: true, force: true })
+  }
+})
+
+async function captureRunOpts({ body, stickyRouter, apiKeyRecord }) {
+  let runOpts = null
+  const harness = protocolHarness({
+    body,
+    stickyRouter,
+    apiKeyRecord,
+    failoverRunner: {
+      async run(opts) {
+        runOpts = opts
+        return {
+          ok: false,
+          status: 503,
+          body: { error: { type: 'server_error', code: 'identity_stop', message: 'stop' } },
+          headers: {},
+        }
+      },
+    },
+  })
+  try {
+    await harness.handler.handleProtocol(harness.req, harness.response, 'anthropic.messages', '/v1/messages')
+  } finally {
+    fs.rmSync(harness.root, { recursive: true, force: true })
+  }
+  return runOpts
+}
+
+function sessionBody(userId, extra = {}) {
+  return {
+    model: 'claude-sonnet-4-5',
+    stream: false,
+    max_tokens: 64,
+    messages: [{ role: 'user', content: 'hello' }],
+    metadata: { user_id: typeof userId === 'string' ? userId : JSON.stringify(userId) },
+    ...extra,
+  }
+}
+
+function realStickyRouter() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-identity-sticky-'))
+  return { dir, router: new StickyRouter({ dataDir: dir, config: { sticky: { enabled: true, ttl_seconds: 600 } } }) }
+}
+
+test('inbound session and device keys match across API keys at the protocol entry', async () => {
+  const { dir, router } = realStickyRouter()
+  try {
+    const body = sessionBody({ device_id: 'dev-cross', account_uuid: 'acct-a', session_id: 'sess-cross' })
+    const a = await captureRunOpts({ body, stickyRouter: router, apiKeyRecord: { id: 'key-a', group_id: 1 } })
+    const b = await captureRunOpts({
+      body: sessionBody({ device_id: 'dev-cross', account_uuid: 'acct-b', session_id: 'sess-cross' }),
+      stickyRouter: router,
+      apiKeyRecord: { id: 'key-b', group_id: 1 },
+    })
+    assert.equal(a.stickyKey, 'sess:sess-cross')
+    assert.equal(b.stickyKey, a.stickyKey)
+    assert.deepEqual(b.stickyKeys, [a.stickyKey])
+    assert.equal(a.deviceKey, 'dev2:dev-cross')
+    assert.equal(b.deviceKey, a.deviceKey)
+    for (const opts of [a, b]) {
+      for (const key of [opts.stickyKey, ...opts.stickyKeys, opts.deviceKey, opts.familyKey]) {
+        assert.doesNotMatch(String(key), /key-a|key-b|^k|:k/)
+      }
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('shared API key keeps different devices apart at the protocol entry', async () => {
+  const { dir, router } = realStickyRouter()
+  try {
+    const apiKeyRecord = { id: 'shared-key', group_id: 1 }
+    const a = await captureRunOpts({
+      body: sessionBody({ device_id: 'dev-one', session_id: 'sess-one' }),
+      stickyRouter: router,
+      apiKeyRecord,
+    })
+    const b = await captureRunOpts({
+      body: sessionBody({ device_id: 'dev-two', session_id: 'sess-two' }),
+      stickyRouter: router,
+      apiKeyRecord,
+    })
+    assert.notEqual(a.stickyKey, b.stickyKey)
+    assert.notEqual(a.deviceKey, b.deviceKey)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('explicit body device_id is the fallback when metadata has no device', async () => {
+  const { dir, router } = realStickyRouter()
+  try {
+    const opts = await captureRunOpts({
+      body: sessionBody({ session_id: 'sess-fallback' }, { device_id: 'dev-explicit' }),
+      stickyRouter: router,
+      apiKeyRecord: { id: 'key-fallback', group_id: 1 },
+    })
+    assert.equal(opts.stickyKey, 'sess:sess-fallback')
+    assert.equal(opts.stickyDeviceId, 'dev-explicit')
+    assert.equal(opts.deviceKey, 'dev2:dev-explicit')
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('legacy API-key-scoped session row migrates lazily at the protocol entry', async () => {
+  const { dir, router } = realStickyRouter()
+  try {
+    const apiKeyRecord = { id: 'key-old', group_id: 1 }
+    const legacyKey = 'p:anthropic:kkey-old:sess-legacy'
+    router.bind(legacyKey, { accountId: 'acc-legacy', vmId: 'vm-legacy', sessionId: 'out-legacy', slotIndex: 1 })
+    router.bind('p:anthropic:kkey-old:unrelated', { accountId: 'acc-x', vmId: 'vm-x' })
+    const opts = await captureRunOpts({
+      body: sessionBody({ device_id: 'dev-legacy', session_id: 'sess-legacy' }),
+      stickyRouter: router,
+      apiKeyRecord,
+    })
+    assert.equal(opts.stickyKey, 'sess:sess-legacy')
+    assert.deepEqual(opts.stickyKeys, ['sess:sess-legacy', legacyKey])
+    const hit = router.resolve('sess:sess-legacy')
+    assert.equal(hit.vmId, 'vm-legacy')
+    assert.equal(hit.accountId, 'acc-legacy')
+    assert.equal(router.resolve('dev2:dev-legacy').vmId, 'vm-legacy')
+    assert.equal(router.resolve(legacyKey).vmId, 'vm-legacy')
+    assert.equal(router.resolve('p:anthropic:kkey-old:unrelated').vmId, 'vm-x')
+
+    // A different API key now reaches the same session binding.
+    const other = await captureRunOpts({
+      body: sessionBody({ device_id: 'dev-legacy', session_id: 'sess-legacy' }),
+      stickyRouter: router,
+      apiKeyRecord: { id: 'key-new', group_id: 1 },
+    })
+    assert.equal(other.stickyKey, 'sess:sess-legacy')
+    assert.deepEqual(other.stickyKeys, ['sess:sess-legacy'])
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('parent and child family key is shared across API keys and inherits a live legacy family', async () => {
+  const { dir, router } = realStickyRouter()
+  try {
+    router.bind('p:anthropic:kkey-p:family:parent-sess', { accountId: 'acc-fam', vmId: 'vm-fam' })
+    const parent = await captureRunOpts({
+      body: sessionBody({ device_id: 'dev-fam', session_id: 'parent-sess' }),
+      stickyRouter: router,
+      apiKeyRecord: { id: 'key-p', group_id: 1 },
+    })
+    const child = await captureRunOpts({
+      body: sessionBody({ device_id: 'dev-fam', session_id: 'child-sess', parent_session_id: 'parent-sess' }),
+      stickyRouter: router,
+      apiKeyRecord: { id: 'key-c', group_id: 1 },
+    })
+    assert.equal(parent.familyKey, 'family2:parent-sess')
+    assert.equal(child.familyKey, parent.familyKey)
+    assert.equal(parent.familyVmId, 'vm-fam')
+    assert.equal(child.familyVmId, 'vm-fam')
+    assert.notEqual(child.stickyKey, parent.stickyKey)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('request without trusted session id keeps the legacy scoped sticky key', async () => {
+  const { dir, router } = realStickyRouter()
+  try {
+    const body = {
+      model: 'claude-sonnet-4-5',
+      stream: false,
+      max_tokens: 64,
+      messages: [{ role: 'user', content: 'no identity here' }],
+    }
+    const opts = await captureRunOpts({ body, stickyRouter: router, apiKeyRecord: { id: 'key-anon', group_id: 1 } })
+    assert.match(String(opts.stickyKey), /^p:anthropic:kkey-anon:ch:/)
+    assert.equal(opts.deviceKey, null)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
   }
 })

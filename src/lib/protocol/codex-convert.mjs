@@ -119,6 +119,56 @@ function chatMessageToItems(message) {
   return [{ type: 'message', role, content: parts }]
 }
 
+const RESPONSES_CHOICE_MODES = new Set(['none', 'auto', 'required'])
+
+/** Responses requires tool_choice.name at the top level. Chat nests it under function.name. */
+export function responsesToolChoice(choice) {
+  if (choice == null || choice === false || choice === '') return undefined
+  if (typeof choice === 'string') {
+    const mode = choice.trim().toLowerCase()
+    if (mode === 'any') return 'required'
+    if (RESPONSES_CHOICE_MODES.has(mode)) return mode
+    return undefined
+  }
+  if (typeof choice !== 'object' || Array.isArray(choice)) return undefined
+
+  const type = String(choice.type || '').toLowerCase()
+  const name = String(choice.name || choice.function?.name || '').trim()
+
+  if (type === 'none' || type === 'auto' || type === 'required') return type
+  if (type === 'any') return 'required'
+
+  if (type === 'allowed_tools') {
+    const tools = (Array.isArray(choice.tools) ? choice.tools : [])
+      .map((tool) => {
+        if (!tool || typeof tool !== 'object') return null
+        const toolName = String(tool.name || tool.function?.name || '').trim()
+        if (tool.type === 'function' || tool.function) {
+          return toolName ? { type: 'function', name: toolName } : null
+        }
+        return tool
+      })
+      .filter(Boolean)
+    const mode = String(choice.mode || 'auto').toLowerCase() === 'required' ? 'required' : 'auto'
+    return tools.length ? { type: 'allowed_tools', mode, tools } : mode
+  }
+
+  if (type === 'function' || type === 'tool' || type === 'custom') {
+    if (!name) return type === 'custom' ? undefined : 'required'
+    return { type: type === 'tool' ? 'function' : type, name }
+  }
+
+  if (type === 'mcp') {
+    if (!choice.server_label) return name ? { type: 'function', name } : undefined
+    const out = { type: 'mcp', server_label: choice.server_label }
+    if (name) out.name = name
+    return out
+  }
+
+  if (name && !choice.name) return { type: type || 'function', name }
+  return choice
+}
+
 function toolsToCodex(tools) {
   if (!Array.isArray(tools) || !tools.length) return undefined
   return tools.map((tool) => {
@@ -153,7 +203,8 @@ export function chatToCodexResponses(body = {}) {
   }
   const tools = toolsToCodex(body.tools)
   if (tools) out.tools = tools
-  if (body.tool_choice) out.tool_choice = body.tool_choice
+  const choice = responsesToolChoice(body.tool_choice)
+  if (choice) out.tool_choice = choice
   if (body.reasoning) out.reasoning = body.reasoning
   if (body.reasoning_effort) out.reasoning_effort = body.reasoning_effort
   if (body.max_tokens || body.max_completion_tokens) {
@@ -214,6 +265,11 @@ function stripUnsupportedCodexFields(body = {}) {
   } else {
     delete next.reasoning
   }
+  if (next.tool_choice != null) {
+    const choice = responsesToolChoice(next.tool_choice)
+    if (choice) next.tool_choice = choice
+    else delete next.tool_choice
+  }
   if (Array.isArray(next.input)) {
     next.input = next.input.map((item) => {
       if (item && typeof item === 'object' && item.type === 'message' && item.role === 'system') {
@@ -241,6 +297,7 @@ export function anthropicToCodexResponses(body = {}) {
     model: body.model,
     messages: [...system, ...messages],
     tools: body.tools,
+    tool_choice: body.tool_choice,
     stream: body.stream,
     max_tokens: body.max_tokens,
   })

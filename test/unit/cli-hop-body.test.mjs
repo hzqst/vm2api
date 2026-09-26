@@ -104,6 +104,31 @@ test('prepareCliHopBody strips unsigned empty dummy and short thinking history',
   ])
 })
 
+test('prepareCliHopBody drops an assistant turn that is only unsigned thinking', () => {
+  const body = prepareCliHopBody({
+    model: 'claude-opus-5.5',
+    max_tokens: 64000,
+    thinking: { type: 'adaptive' },
+    messages: [
+      { role: 'user', content: 'first' },
+      {
+        role: 'assistant',
+        content: [{ type: 'thinking', thinking: 'draft only', signature: 'abc' }],
+      },
+      { role: 'user', content: 'continue' },
+    ],
+  })
+  assert.equal(body.model, 'claude-opus-5-5')
+  assert.deepEqual(
+    body.messages.map((message) => message.role),
+    ['user'],
+  )
+  assert.deepEqual(body.messages[0].content, [
+    { type: 'text', text: 'first' },
+    { type: 'text', text: 'continue' },
+  ])
+})
+
 test('prepareCliHopBody repaired does not refill thinking after signature downgrade', () => {
   const body = prepareCliHopBody(
     {

@@ -11,8 +11,24 @@ import {
   workerHealth,
   usageFromSseEvent,
   isDownstreamCommitEvent,
+  restoreUncommittedHop,
 } from '../../src/lib/transport/go-worker-client.mjs'
 import { extractOpenaiUsage } from '../../src/lib/protocol/openai-usage.mjs'
+
+test('restoreUncommittedHop keeps a structured upstream code', () => {
+  const restored = restoreUncommittedHop({
+    ok: false,
+    status: 200,
+    committed: false,
+    terminalState: 'incomplete',
+    body: {
+      type: 'error',
+      error: { type: 'api_error', code: 'upstream_stream_incomplete', message: 'job idle timeout' },
+    },
+  })
+  assert.equal(restored.body.error.code, 'upstream_stream_incomplete')
+  assert.notEqual(restored.body.error.code, 'empty_response')
+})
 
 test('setup-token worker envelope is inference-only', () => {
   const out = finalizeWorkerPayload({
@@ -150,14 +166,14 @@ unixTest('callGoWorker marks null TTL as client-owned cache breakpoints', async 
   }
 })
 
-unixTest('streamGoWorker rejects terminal-only SSE even when worker reports verified', async () => {
+unixTest('streamGoWorker accepts message_stop before delayed EOF', async () => {
   const fx = await fixture((req, res) => {
     res.setHeader('content-type', 'text/event-stream')
     res.setHeader('trailer', 'x-kin-terminal-state')
     res.write('event: message_start\ndata: {"type":"message_start","message":{}}\n\n')
     res.write('event: message_stop\ndata: {"type":"message_stop"}\n\n')
     res.addTrailers({ 'x-kin-terminal-state': 'verified' })
-    res.end()
+    setTimeout(() => res.end(), 50)
   })
   try {
     const lines = []
@@ -166,16 +182,16 @@ unixTest('streamGoWorker rejects terminal-only SSE even when worker reports veri
       body: { model: 'claude-test', stream: true, messages: [{ role: 'user', content: 'hi' }] },
       onEvent: (line) => lines.push(line),
     })
-    assert.equal(result.ok, false)
-    assert.equal(result.terminalState, 'incomplete')
-    assert.equal(result.committed, false)
-    assert.equal(lines.length, 0)
+    assert.equal(result.ok, true)
+    assert.equal(result.terminalState, 'verified')
+    assert.equal(result.committed, true)
+    assert.ok(lines.some((line) => line.includes('message_stop')))
   } finally {
     await fx.close()
   }
 })
 
-unixTest('streamGoWorker requires visible output in addition to stop_reason trailers', async () => {
+unixTest('streamGoWorker accepts message_stop with usage trailers', async () => {
   const fx = await fixture((req, res) => {
     assert.equal(req.headers.te, 'trailers')
     res.setHeader('content-type', 'text/event-stream')
@@ -196,8 +212,8 @@ unixTest('streamGoWorker requires visible output in addition to stop_reason trai
       body: { model: 'claude-haiku-4-5-20251001', stream: true, messages: [{ role: 'user', content: 'hi' }] },
       onEvent: () => {},
     })
-    assert.equal(result.ok, false)
-    assert.equal(result.terminalState, 'incomplete')
+    assert.equal(result.ok, true)
+    assert.equal(result.terminalState, 'verified')
     assert.equal(result.usage.input_tokens, 12)
     assert.equal(result.model, 'claude-haiku-4-5-20251001')
     assert.equal(result.stopReason, 'end_turn')
@@ -207,7 +223,7 @@ unixTest('streamGoWorker requires visible output in addition to stop_reason trai
   }
 })
 
-unixTest('streamGoWorker keeps rate-limit trailers on an incomplete response', async () => {
+unixTest('streamGoWorker keeps rate-limit trailers after message_stop', async () => {
   const fx = await fixture((req, res) => {
     res.setHeader('content-type', 'text/event-stream')
     res.setHeader('trailer', 'x-kin-terminal-state, x-kin-rate-limit-headers')
@@ -228,8 +244,8 @@ unixTest('streamGoWorker keeps rate-limit trailers on an incomplete response', a
       body: { model: 'claude-sonnet-5', stream: true, messages: [{ role: 'user', content: 'hi' }] },
       onEvent: () => {},
     })
-    assert.equal(result.ok, false)
-    assert.equal(result.terminalState, 'incomplete')
+    assert.equal(result.ok, true)
+    assert.equal(result.terminalState, 'verified')
     assert.equal(result.headers['anthropic-ratelimit-unified-5h-utilization'], '0.81')
     assert.equal(result.headers['set-cookie'], undefined)
   } finally {
@@ -286,7 +302,7 @@ unixTest('streamGoWorker restores a streamed overloaded_error to 529', async () 
   }
 })
 
-unixTest('streamGoWorker marks a hop with no content as empty_response', async () => {
+unixTest('streamGoWorker accepts an empty message_stop terminal', async () => {
   const fx = await fixture((req, res) => {
     res.setHeader('content-type', 'text/event-stream')
     res.write('data: {"type":"message_start","message":{"content":[]}}\n\n')
@@ -299,9 +315,9 @@ unixTest('streamGoWorker marks a hop with no content as empty_response', async (
       body: { model: 'claude-haiku-4-5', stream: true, messages: [{ role: 'user', content: 'hi' }] },
       onEvent: () => {},
     })
-    assert.equal(result.status, 200)
-    assert.equal(result.body.error.code, 'empty_response')
-    assert.equal(result.terminalState, 'incomplete')
+    assert.equal(result.ok, true)
+    assert.equal(result.terminalState, 'verified')
+    assert.equal(result.sawMessageStop, true)
   } finally {
     await fx.close()
   }
@@ -322,6 +338,53 @@ unixTest('streamGoWorker does not turn a generic stream error into HTTP 502', as
     assert.equal(result.status, 200)
     assert.equal(result.body.error.code, 'empty_response')
     assert.equal(result.terminalState, 'incomplete')
+  } finally {
+    await fx.close()
+  }
+})
+
+unixTest('streamGoWorker preserves organization permission denial before downstream commit', async () => {
+  const message =
+    'provider error: provider error: Your organization does not have access to Claude. Please login again or contact your administrator.'
+  const fx = await fixture((req, res) => {
+    res.setHeader('content-type', 'text/event-stream')
+    res.setHeader('trailer', 'x-kin-terminal-state')
+    res.write(`event: error\ndata: ${JSON.stringify({ type: 'error', error: { type: 'api_error', message } })}\n\n`)
+    res.addTrailers({ 'x-kin-terminal-state': 'incomplete' })
+    res.end()
+  })
+  try {
+    const result = await streamGoWorker({
+      exec: fx.exec,
+      body: { model: 'claude-haiku-4-5', stream: true, messages: [{ role: 'user', content: 'hi' }] },
+      onCommit: () => assert.fail('permission denial must not commit the downstream'),
+      onEvent: () => {},
+    })
+    assert.equal(result.status, 403)
+    assert.equal(result.body.error.message, message)
+    assert.equal(result.terminalState, 'rejected')
+    assert.equal(result.committed, false)
+  } finally {
+    await fx.close()
+  }
+})
+
+unixTest('callGoWorker restores organization permission denial from a kernel provider error', async () => {
+  const message =
+    'provider error: Your organization does not have access to Claude. Please login again or contact your administrator.'
+  const fx = await fixture((req, res) => {
+    res.statusCode = 502
+    res.setHeader('content-type', 'application/json')
+    res.end(JSON.stringify({ type: 'error', error: { type: 'worker_error', code: 'provider_error', message } }))
+  })
+  try {
+    const result = await callGoWorker({
+      exec: fx.exec,
+      body: { model: 'claude-haiku-4-5', messages: [{ role: 'user', content: 'hi' }] },
+    })
+    assert.equal(result.status, 403)
+    assert.equal(result.body.error.message, message)
+    assert.equal(result.terminalState, 'rejected')
   } finally {
     await fx.close()
   }

@@ -280,6 +280,27 @@ test('billingStats aggregates official cost per account and today', () => {
   assert.equal(models[0].input_tokens, 1_000_000)
 })
 
+test('finish writes OpenAI Responses cache read and cache write', () => {
+  const store = tmpStore('normal')
+  const ctx = store.start(
+    { method: 'POST', headers: {}, socket: {} },
+    { protocol: 'openai.responses', pathName: '/v1/responses' },
+  )
+  const sum = store.finish(ctx, {
+    status: 200,
+    protocol: 'openai.responses',
+    model: 'gpt-5.6-sol',
+    upstream_model: 'gpt-5.6-sol',
+    usage: {
+      input_tokens: 100,
+      output_tokens: 4,
+      input_tokens_details: { cached_tokens: 80, cache_write_tokens: 10 },
+    },
+  })
+  assert.equal(sum.cache_read_tokens, 80)
+  assert.equal(sum.cache_creation_tokens, 10)
+})
+
 test('finish prices OpenAI usage with top-level cached_tokens', () => {
   const store = tmpStore('normal')
   const ctx = store.start(

@@ -67,8 +67,9 @@ test('classifyRequestError maps known codes and statuses', () => {
     }).error_class,
     'overloaded',
   )
-  assert.equal(classifyRequestError({ status: 200, error_code: 'ECONNRESET' }), null)
   assert.equal(classifyRequestError({ status: 200, error_code: 'client_cancelled' }), null)
+  assert.equal(classifyRequestError({ status: 499, error_code: 'client_cancelled' }), null)
+  assert.equal(classifyRequestError({ status: 502, error_code: 'ECONNRESET' }).error_class, 'timeout')
   assert.equal(classifyRequestError({ status: 200, error_code: 'stream_incomplete' }), null)
   assert.equal(classifyRequestError({ status: 200, error_message: 'stream first-byte timeout' }), null)
 })

@@ -6,6 +6,7 @@ import {
   extractCallerSession,
   normalizeSessionUserAgent,
   resolveOutboundSessionId,
+  resolveInboundIdentity,
   sessionContextDiscriminator,
   STABLE_SESSION_SEED,
   uuidFromSeed,
@@ -77,9 +78,21 @@ test('identity replace is stable for the same inbound session', () => {
 
 test('parseUserId accepts JSON, object, and legacy underscore formats', () => {
   const json = parseUserId(JSON.stringify({ device_id: 'd', account_uuid: 'a', session_id: 's' }))
-  assert.deepEqual(json, { device_id: 'd', account_uuid: 'a', session_id: 's' })
+  assert.deepEqual(json, {
+    device_id: 'd',
+    account_uuid: 'a',
+    session_id: 's',
+    parent_session_id: '',
+    root_session_id: '',
+  })
   const obj = parseUserId({ deviceId: 'd2', accountUuid: 'a2', sessionId: 's2' })
-  assert.deepEqual(obj, { device_id: 'd2', account_uuid: 'a2', session_id: 's2' })
+  assert.deepEqual(obj, {
+    device_id: 'd2',
+    account_uuid: 'a2',
+    session_id: 's2',
+    parent_session_id: '',
+    root_session_id: '',
+  })
   const legacy = parseUserId('user_dev1_account_acc1_session_sess1')
   assert.deepEqual(legacy, { device_id: 'dev1', account_uuid: 'acc1', session_id: 'sess1' })
   assert.equal(parseUserId(''), null)
@@ -107,6 +120,70 @@ test('extractCallerSession prefers metadata, then sticky headers, then body keys
     }),
     'from-body',
   )
+})
+
+test('resolveInboundIdentity accepts JSON string metadata.user_id', () => {
+  const identity = resolveInboundIdentity({
+    inbound: {
+      metadata: {
+        user_id: JSON.stringify({ device_id: 'device-json', account_uuid: 'account-json', session_id: 'session-json' }),
+      },
+    },
+    body: { device_id: 'device-body' },
+    headers: { 'x-kin-device-id': 'device-header' },
+  })
+  assert.deepEqual(identity, { sessionId: 'session-json', deviceId: 'device-json', source: 'metadata' })
+})
+
+test('resolveInboundIdentity accepts object metadata.user_id', () => {
+  const identity = resolveInboundIdentity({
+    body: {
+      metadata: { user_id: { deviceId: 'device-object', accountUuid: 'account-object', sessionId: 'session-object' } },
+    },
+  })
+  assert.deepEqual(identity, { sessionId: 'session-object', deviceId: 'device-object', source: 'metadata' })
+})
+
+test('resolveInboundIdentity accepts legacy metadata.user_id', () => {
+  const identity = resolveInboundIdentity({
+    inbound: { metadata: { user_id: 'user_device-legacy_account_account-legacy_session_session-legacy' } },
+  })
+  assert.deepEqual(identity, { sessionId: 'session-legacy', deviceId: 'device-legacy', source: 'metadata' })
+})
+
+test('resolveInboundIdentity uses explicit device_id body field when metadata lacks device', () => {
+  const identity = resolveInboundIdentity({
+    inbound: { metadata: { user_id: { session_id: 'session-meta', account_uuid: 'account-meta' } } },
+    body: { device_id: 'device-explicit' },
+    headers: { 'x-kin-device-id': 'device-header' },
+  })
+  assert.deepEqual(identity, { sessionId: 'session-meta', deviceId: 'device-explicit', source: 'explicit-device' })
+})
+
+test('resolveInboundIdentity uses x-kin-device-id header when no metadata device or body device exists', () => {
+  const identity = resolveInboundIdentity({
+    body: { metadata: { user_id: { session_id: 'session-meta' } } },
+    headers: { 'X-Kin-Device-Id': 'device-header' },
+  })
+  assert.deepEqual(identity, { sessionId: 'session-meta', deviceId: 'device-header', source: 'explicit-device' })
+})
+
+test('resolveInboundIdentity does not guess identity from auth, ip, user agent, or message text', () => {
+  const identity = resolveInboundIdentity({
+    inbound: {
+      messages: [{ role: 'user', content: 'stable first message' }],
+    },
+    body: {
+      messages: [{ role: 'user', content: 'another stable first message' }],
+    },
+    headers: {
+      authorization: 'Bearer secret-api-key',
+      'x-api-key': 'another-secret-api-key',
+      'x-forwarded-for': '203.0.113.9',
+      'user-agent': 'claude-cli/2.1.241',
+    },
+  })
+  assert.deepEqual(identity, { sessionId: '', deviceId: '', source: 'none' })
 })
 
 test('uuidFromSeed is a deterministic v4-shaped uuid', () => {
@@ -177,4 +254,19 @@ test('billing prompt id follows the stable outbound session', () => {
   const out = stampBillingPromptId(body, stable, 'first question')
   assert.match(out.system[0].text, new RegExp(`cc_prompt_id=${stable}`))
   assert.equal(body.system[0].text.includes('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'), true)
+})
+
+test('resolveInboundIdentity keeps a metadata session_id when no device exists', () => {
+  const identity = resolveInboundIdentity({
+    inbound: { metadata: { user_id: JSON.stringify({ session_id: 'session-only' }) } },
+  })
+  assert.deepEqual(identity, { sessionId: 'session-only', deviceId: '', source: 'metadata' })
+})
+
+test('resolveInboundIdentity reads explicit device_id from the raw inbound body', () => {
+  const identity = resolveInboundIdentity({
+    inbound: { device_id: 'device-raw', metadata: { user_id: { session_id: 'session-raw' } } },
+    body: {},
+  })
+  assert.deepEqual(identity, { sessionId: 'session-raw', deviceId: 'device-raw', source: 'explicit-device' })
 })

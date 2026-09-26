@@ -266,6 +266,32 @@ test('empty_response retries the same account', () => {
   assert.equal(shouldContinue(policy), true)
 })
 
+test('client cancel stops and an upstream reset is not a cancel', () => {
+  const cancelled = classifyUpstreamResult(
+    {
+      ok: false,
+      status: 499,
+      clientCancelled: true,
+      terminalState: 'cancelled',
+      body: { type: 'error', error: { code: 'client_cancelled', message: 'Client closed the connection' } },
+    },
+    { now: 1000 },
+  )
+  assert.equal(cancelled.reason, 'client_cancelled')
+  assert.equal(cancelled.action, 'stop')
+  assert.equal(cancelled.retrySameAccount, false)
+  const reset = classifyUpstreamResult(
+    {
+      ok: false,
+      status: 0,
+      transportError: true,
+      body: { type: 'error', error: { code: 'ECONNRESET', message: 'socket hang up' } },
+    },
+    { now: 1000 },
+  )
+  assert.notEqual(reset.reason, 'client_cancelled')
+})
+
 test('transport timeout is not treated as a dead proxy', () => {
   const policy = classifyUpstreamResult(
     {

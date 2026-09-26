@@ -33,6 +33,7 @@ import { PlatformChip, SlotIdentity } from '@/components/platform-chip'
 import { StatusMark } from '@/components/status-mark'
 import { ProxyChip } from '@/features/proxies/proxy-chip'
 import { OpenaiPlanBadge } from '@/features/vm/openai-plan-badge'
+import { OpenaiQuotaActions } from '@/features/vm/openai-quota-actions'
 import {
   SchedulableSwitch,
   vmSchedulableProps,
@@ -315,6 +316,12 @@ function TodayCell({ vm, accounts }: { vm: Vm; accounts?: UsageAccountRow[] }) {
         <span>{fmtNum(s.req)} req</span>
         <span>{fmtNum(s.tok)} tok</span>
       </div>
+      {s.inn || s.out || s.read || s.write ? (
+        <div className='text-muted-foreground'>
+          入 {fmtNum(s.inn)} · 出 {fmtNum(s.out)} · 缓存 {fmtNum(s.read)}/
+          {fmtNum(s.write)}
+        </div>
+      ) : null}
       <div className='text-sm font-medium text-[color:var(--status-ok)]'>
         {fmtUsd(s.today, 2)}
       </div>
@@ -364,6 +371,12 @@ function UsageCell({
   const reset7 = hasToken ? fmtResetClock(vm.reset_7d) : null
   const resetFable = hasToken ? fmtResetClock(vm.reset_7d_oi) : null
   const costs = vmWindowCosts(vm, accounts)
+  const fiveReq = Number(vm.window_5h_requests) || 0
+  const fiveTok = Number(vm.window_5h_tokens) || 0
+  const fiveDetail =
+    fiveReq > 0 || fiveTok > 0
+      ? `${fmtNum(fiveReq)} req / ${fmtNum(fiveTok)} tok`
+      : null
   const weekDetail =
     week.req > 0 || week.tok > 0
       ? `${fmtNum(week.req)} req / ${fmtNum(week.tok)} tok`
@@ -371,7 +384,13 @@ function UsageCell({
   return (
     <div className='space-y-1.5'>
       <div className='grid grid-cols-2 gap-2'>
-        <UsageTrack label='5h' value={u5} resetAt={reset5} cost={costs.h5} />
+        <UsageTrack
+          label='5h'
+          value={u5}
+          resetAt={reset5}
+          detail={fiveDetail}
+          cost={costs.h5}
+        />
         {fable?.kind === 'bar' ? (
           <UsageTrack label='Fable' value={fable.pct} resetAt={resetFable} />
         ) : fable?.kind === 'note' ? (
@@ -522,50 +541,55 @@ export function VmTable({
                 <CostCell vm={vm} week={week} />
               </div>
               <div className={LIST_COL.actions}>
-                <div className='flex items-center justify-end gap-0.5 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100'>
-                  {onClearCooldown && clearableTitle(vm) ? (
-                    <Button
-                      size='sm'
-                      variant='ghost'
-                      title={clearableTitle(vm) || undefined}
-                      className='h-8 px-2 text-sm text-muted-foreground'
-                      data-row-actions
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        onClearCooldown(vm)
-                      }}
-                    >
-                      清冷却
-                    </Button>
+                <div className='flex items-center justify-end gap-0.5'>
+                  {isCodexVm(vm) ? (
+                    <OpenaiQuotaActions vm={vm} compact />
                   ) : null}
-                  {onReset ? (
-                    <Button
-                      size='sm'
-                      variant='ghost'
-                      className='h-8 px-2 text-sm text-muted-foreground'
-                      data-row-actions
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        onReset(vm)
-                      }}
-                    >
-                      重置
-                    </Button>
-                  ) : null}
-                  {onDelete ? (
-                    <Button
-                      size='sm'
-                      variant='ghost'
-                      className='h-8 px-2 text-sm text-destructive'
-                      data-row-actions
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        onDelete(vm)
-                      }}
-                    >
-                      删除
-                    </Button>
-                  ) : null}
+                  <div className='flex items-center gap-0.5 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100'>
+                    {onClearCooldown && clearableTitle(vm) ? (
+                      <Button
+                        size='sm'
+                        variant='ghost'
+                        title={clearableTitle(vm) || undefined}
+                        className='h-8 px-2 text-sm text-muted-foreground'
+                        data-row-actions
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          onClearCooldown(vm)
+                        }}
+                      >
+                        清冷却
+                      </Button>
+                    ) : null}
+                    {onReset ? (
+                      <Button
+                        size='sm'
+                        variant='ghost'
+                        className='h-8 px-2 text-sm text-muted-foreground'
+                        data-row-actions
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          onReset(vm)
+                        }}
+                      >
+                        重置
+                      </Button>
+                    ) : null}
+                    {onDelete ? (
+                      <Button
+                        size='sm'
+                        variant='ghost'
+                        className='h-8 px-2 text-sm text-destructive'
+                        data-row-actions
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          onDelete(vm)
+                        }}
+                      >
+                        删除
+                      </Button>
+                    ) : null}
+                  </div>
                 </div>
               </div>
             </div>

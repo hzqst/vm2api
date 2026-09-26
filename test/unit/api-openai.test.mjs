@@ -22,6 +22,17 @@ test('claude request becomes openai responses for official hop', () => {
   assert.equal(out.messages, undefined)
 })
 
+test('claude forced tool becomes responses tool_choice.name', () => {
+  const out = claudeToOpenAIResponsesRequest({
+    model: 'gpt-5.4',
+    messages: [{ role: 'user', content: 'hi' }],
+    tools: [{ name: 'get_weather', input_schema: { type: 'object', properties: {} } }],
+    tool_choice: { type: 'tool', name: 'get_weather' },
+  })
+  assert.equal(out.tools[0].name, 'get_weather')
+  assert.deepEqual(out.tool_choice, { type: 'function', name: 'get_weather' })
+})
+
 test('claude request becomes openai chat', () => {
   const out = claudeToOpenAIChatRequest({
     model: 'gpt-4o',

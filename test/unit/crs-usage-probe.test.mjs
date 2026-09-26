@@ -10,6 +10,7 @@ import {
   shouldProbeFable,
   normUtilization,
   FABLE_PROBE_MODEL,
+  tierFromFableAttempts,
   PASSIVE_HEADER_SOURCE,
   probeFromPassiveHeaders,
   probeVmUsage,
@@ -94,6 +95,26 @@ test('fable 429 is isolated weekly limit, not account ban', () => {
   assert.equal(r.plan_denied, false)
   assert.equal(r.ok, false)
   assert.equal(r.utilization, null)
+})
+
+test('fable attempts: 200 is Max, 403-only is Pro, 429 does not classify', () => {
+  assert.equal(
+    tierFromFableAttempts([
+      { ok: false, plan_denied: true, status: 403, model: 'claude-fable-5-1' },
+      { ok: true, status: 200, model: 'claude-fable-5' },
+    ]).tier,
+    'max',
+  )
+  assert.equal(
+    tierFromFableAttempts([
+      { ok: false, plan_denied: true, status: 403, model: 'claude-fable-5-1' },
+      { ok: false, plan_denied: true, status: 403, model: 'claude-fable-5' },
+    ]).tier,
+    'pro',
+  )
+  assert.equal(tierFromFableAttempts([{ ok: false, limited: true, status: 429, model: FABLE_PROBE_MODEL }]).tier, null)
+  assert.equal(tierFromFableAttempts([{ transport: true, status: 0 }]).tier, null)
+  assert.equal(FABLE_PROBE_MODEL, 'claude-fable-5-1')
 })
 
 test('fable 403 permission is plan denied, not account ban', () => {

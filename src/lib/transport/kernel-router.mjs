@@ -3,6 +3,7 @@
  * 公开仓只走 rust cli-hop（kernel → Claude Code）。Go HTTP 转发不再启用。
  * Credential import/ensure 仍可走 Go 客户端，但不参与推理 hop。
  */
+import { clientCancelledResult, isClientCancelledResult } from '../core/errors.mjs'
 import { ensureWorkerCredential } from './go-worker-client.mjs'
 import { ensureOfficialCredentialLink, slotUidGidFromHomeDir } from '../oauth/oauth-credentials.mjs'
 import {
@@ -130,6 +131,7 @@ export function resolveHopEngine(_vm, _routing = {}, { rustReady = null, binPath
  */
 export function isDeadWrapHop(result) {
   if (!result) return false
+  if (isClientCancelledResult(result)) return false
   if (result.transportError) return true
   const msg = String(result?.body?.error?.message || '')
   if (/connection error/i.test(msg)) return true
@@ -297,12 +299,14 @@ async function runHop({ mode, opts }) {
   try {
     result = await send(opts)
     noteWrapHop(opts.exec)
-    if (result.transportError === true && result.committed !== true) {
+    if (opts.signal?.aborted || isClientCancelledResult(result)) {
+      result = clientCancelledResult(result)
+    } else if (result.transportError === true && result.committed !== true) {
       result = await send(opts)
       result = { ...result, rust_transport_retried: true }
       noteWrapHop(opts.exec)
     }
-    if (isNeedsRefreshResult(result)) {
+    if (!isClientCancelledResult(result) && isNeedsRefreshResult(result)) {
       const ensure = opts.ensureCredential || ensureWorkerCredential
       const ensured = await ensure(opts.exec, { force: true })
       if (ensured?.ok !== true) result = credentialEnsureFailure(result, ensured)
@@ -323,7 +327,9 @@ async function runHop({ mode, opts }) {
     }
   } finally {
     endWrapHop(opts.exec)
-    if (isDeadWrapHop(result)) recycleLeakedWrap(opts.exec, opts.recycleWrap)
+    if (!opts.signal?.aborted && !isClientCancelledResult(result) && isDeadWrapHop(result)) {
+      recycleLeakedWrap(opts.exec, opts.recycleWrap)
+    }
   }
 }
 

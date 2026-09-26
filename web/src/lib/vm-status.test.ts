@@ -258,6 +258,12 @@ describe('claudeTier follows usage Fable presence', () => {
     ).toBe('pro')
   })
 
+  it('does not paint an unclassified account as Pro', () => {
+    expect(claudeTier(liveVm({ account_tier: 'unknown' })).key).toBe('none')
+    expect(claudeTier(liveVm({})).key).toBe('none')
+    expect(claudeTier(liveVm({ account_tier: 'max' })).key).toBe('max')
+  })
+
   it('does not paint quota restriction as 调度关', () => {
     const vm = liveVm({
       schedulable: true,

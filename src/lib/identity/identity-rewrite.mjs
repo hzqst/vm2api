@@ -124,6 +124,8 @@ export function parseUserId(raw) {
       device_id: raw.device_id || raw.deviceId || '',
       account_uuid: raw.account_uuid || raw.accountUuid || '',
       session_id: raw.session_id || raw.sessionId || '',
+      parent_session_id: raw.parent_session_id || raw.parentSessionId || '',
+      root_session_id: raw.root_session_id || raw.rootSessionId || '',
     }
   }
   const s = String(raw)
@@ -134,6 +136,8 @@ export function parseUserId(raw) {
         device_id: p.device_id || p.deviceId || '',
         account_uuid: p.account_uuid || p.accountUuid || '',
         session_id: p.session_id || p.sessionId || '',
+        parent_session_id: p.parent_session_id || p.parentSessionId || '',
+        root_session_id: p.root_session_id || p.rootSessionId || '',
       }
     }
   } catch {}
@@ -151,6 +155,38 @@ function headerValue(headers, key) {
     return String(Array.isArray(v) ? v[0] : v)
   }
   return ''
+}
+
+function cleanIdentityValue(value) {
+  return String(value || '').trim()
+}
+
+/**
+ * Trusted inbound identity for pool routing. Priority:
+ * metadata.user_id.session_id/device_id > explicit inbound device_id field/header.
+ * Never falls back to API key, IP, UA, or content fingerprint.
+ * @returns {{ sessionId: string, deviceId: string, source: 'metadata'|'explicit-device'|'none' }}
+ */
+export function resolveInboundIdentity({ inbound = {}, body = {}, headers = {} } = {}) {
+  let sessionId = ''
+  let deviceId = ''
+  for (const raw of [inbound?.metadata?.user_id, body?.metadata?.user_id]) {
+    const parsed = parseUserId(raw)
+    if (!parsed) continue
+    if (!sessionId) sessionId = cleanIdentityValue(parsed.session_id)
+    if (!deviceId) deviceId = cleanIdentityValue(parsed.device_id)
+    if (sessionId && deviceId) break
+  }
+  if (deviceId) return { sessionId, deviceId, source: 'metadata' }
+
+  const explicitDevice =
+    cleanIdentityValue(inbound?.device_id) ||
+    cleanIdentityValue(body?.device_id) ||
+    headerValue(headers, 'x-kin-device-id').trim()
+  if (explicitDevice) return { sessionId, deviceId: explicitDevice, source: 'explicit-device' }
+  // A metadata session_id without any device still pins its own session.
+  if (sessionId) return { sessionId, deviceId: '', source: 'metadata' }
+  return { sessionId: '', deviceId: '', source: 'none' }
 }
 
 /**

@@ -4,6 +4,7 @@ import {
   assistantStopReason,
   assistantVisibleOutput,
   isCompleteAssistantMessage,
+  isClientCancelledResult,
   isIncompleteAssistantMessage,
   isWrapConnectionError,
 } from '../core/errors.mjs'
@@ -285,6 +286,15 @@ function classifyUpstreamResultRaw(
     usage = null,
   } = {},
 ) {
+  if (isClientCancelledResult(result)) {
+    return {
+      scope: 'client_lifecycle',
+      action: 'stop',
+      reason: 'client_cancelled',
+      cooldownUntil: null,
+      retrySameAccount: false,
+    }
+  }
   if (isContentFilterRefusal(result) && !result.committed) {
     return { scope: 'request', action: 'stop', reason: 'content_filter_refusal', cooldownUntil: null }
   }
@@ -310,9 +320,6 @@ function classifyUpstreamResultRaw(
   const workerCode = resultErrorCode(result)
   const reset = resetFromHeaders(result.headers, now)
 
-  if (workerCode === 'selection_cancelled' || /aborted|cancelled|canceled/i.test(workerCode)) {
-    return { scope: 'client_lifecycle', action: 'stop', reason: 'client_cancelled', cooldownUntil: null }
-  }
   const hay = `${code} ${message} ${workerCode}`
   if (/token has been revoked|oauth_revoked|invalid_grant|authentication_error/i.test(hay) || status === 401) {
     if (isUnconfirmedAuthFailure(result)) {
