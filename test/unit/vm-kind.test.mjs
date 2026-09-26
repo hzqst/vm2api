@@ -5,6 +5,13 @@ import { isCodexVm, normalizeVmKind, stampVmKind } from '../../src/lib/vm/vm-kin
 import { summarizeVm } from '../../src/lib/vm/vm-registry.mjs'
 import { buildRecreatedVmRecord } from '../../src/lib/vm/vm-recreate.mjs'
 
+test('null or non-object VM is Claude, not a TypeError', () => {
+  assert.equal(normalizeVmKind(null).kind, 'claude')
+  assert.equal(normalizeVmKind(undefined).kind, 'claude')
+  assert.equal(isCodexVm(null), false)
+  assert.equal(isCodexVm(undefined), false)
+})
+
 test('unmarked VM is Claude', () => {
   const kind = normalizeVmKind({ id: 'vm-01', inference_engine: 'rust' })
   assert.equal(kind.kind, 'claude')

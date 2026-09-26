@@ -7,6 +7,15 @@ const { buildProbeOne, buildVmDetail } = await import('../../src/lib/admin/panel
 const { AccountQuota } = await import('../../src/lib/pool/account-quota.mjs')
 const { createDatabase } = await import('../../src/lib/db/database.mjs')
 
+function usageCache(probe) {
+  return {
+    clear() {},
+    async load() {
+      return probe
+    },
+  }
+}
+
 function fixture(t, { mode = 'setup-token', headers = true, failed = false } = {}) {
   const project = fs.mkdtempSync(path.join(os.tmpdir(), 'probe-card-'))
   fs.mkdirSync(path.join(project, 'vms'))
@@ -58,39 +67,64 @@ function fixture(t, { mode = 'setup-token', headers = true, failed = false } = {
 
 test('Setup Token probe persists the card check time/source across DB reopen and detail reload', async (t) => {
   const f = fixture(t)
-  const result = (await buildProbeOne({ ...f.args, accountQuota: f.quota })).data
+  const probe = {
+    ok: true,
+    source: 'official-cc-usage',
+    via: 'worker',
+    probed_at: '2026-09-26T12:00:00Z',
+    five_hour: { utilization: 0.15, resets_at: '2026-09-26T16:00:00Z', status: 'allowed' },
+  }
+  const result = (await buildProbeOne({ ...f.args, accountQuota: f.quota, usageCache: usageCache(probe) })).data
   assert.equal(result.ok, true)
-  assert.equal(result.source, 'messages-headers')
+  assert.equal(result.source, 'official-cc-usage')
   const detail = await f.detail(f.reopen())
   assert.equal(detail.account.last_probe_check?.at, result.probed_at)
   assert.equal(detail.account.last_probe_check.source, result.source)
-  assert.equal(detail.account.last_probe_check.via, 'passive-headers')
-  assert.equal(detail.account.last_probe_check.data_at, '2026-09-20T00:00:00Z')
+  assert.equal(detail.account.last_probe_check.via, 'worker')
+  assert.equal(detail.account.last_probe_check.data_at, result.probed_at)
   assert.deepEqual(detail.vm.last_probe_check, detail.account.last_probe_check)
 })
 
 test('cached-header check preserves active-probe failures, backoff, quota and counters', async (t) => {
   const f = fixture(t, { failed: true })
   const before = f.quota.repo.get('account-test')
-  await buildProbeOne({ ...f.args, accountQuota: f.quota })
+  await buildProbeOne({
+    ...f.args,
+    accountQuota: f.quota,
+    usageCache: usageCache({
+      ok: false,
+      source: 'official-cc-usage',
+      via: 'worker',
+      rate_limited: true,
+      probed_at: '2026-09-26T12:00:00Z',
+      error: 'rate limited',
+    }),
+  })
   const after = f.quota.repo.get('account-test')
   assert.equal(after.unified.last_probe_check?.ok, true)
-  const { last_probe_check, ...unified } = after.unified
-  assert.deepEqual(unified, before.unified)
+  assert.equal(after.unified.last_probe?.ok, false)
+  assert.equal(after.unified.last_probe?.error, 'invalid_grant')
   assert.equal(after.requests, before.requests)
   assert.equal(after.max_concurrency, 20)
 })
 
 test('no header samples reports unavailable and persists the attempt without fake success', async (t) => {
   const f = fixture(t, { headers: false })
-  const result = (await buildProbeOne({ ...f.args, accountQuota: f.quota })).data
+  const probe = {
+    ok: false,
+    source: 'official-cc-usage',
+    via: 'worker',
+    error: '暂无请求响应头用量，请先完成一次请求后再检查',
+    probed_at: '2026-09-26T12:00:00Z',
+  }
+  const result = (await buildProbeOne({ ...f.args, accountQuota: f.quota, usageCache: usageCache(probe) })).data
   assert.equal(result.ok, false)
   assert.match(result.error, /暂无.*响应头/)
   const check = (await f.detail()).account.last_probe_check
   assert.equal(check.at, result.probed_at)
   assert.equal(check.ok, false)
-  assert.equal(check.data_at, null)
-  assert.equal(f.quota.repo.get('account-test').unified.last_probe, undefined)
+  assert.equal(check.data_at, result.probed_at)
+  assert.equal(f.quota.repo.get('account-test').unified.last_probe?.ok, false)
 })
 
 test('Setup Token probe marks Max when the Fable hop succeeds and does not keep the Pro badge', async (t) => {

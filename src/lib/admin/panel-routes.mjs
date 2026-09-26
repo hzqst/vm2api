@@ -21,6 +21,7 @@ import { SettingsRepo } from '../db/repos/settings-repo.mjs'
 import { parseCodexImportPayload, upsertCodexAccount, readCodexAccounts } from '../vm/codex-slot.mjs'
 import { generateAuthUrl, exchangeAuthCode, normalizeOauthFlavor } from '../oauth/oauth-auth-url.mjs'
 import { sessionKeyToOAuth, panelImportErrorPayload } from '../oauth/cookie-auth.mjs'
+import { enrichOauthIdentity } from '../oauth/oauth-identity.mjs'
 import { generateCodexAuthUrl, exchangeCodexAuthCode } from '../oauth/codex-oauth.mjs'
 import {
   completeClaudeSetupToken,
@@ -390,7 +391,7 @@ export function createPanelHandler(ctx) {
     const vm = exec?.vm || getVm(cfg.paths.project, id)
     if (!exec || !vm) {
       const missing = { reachable: false, status: null, error_code: 'vm_not_found' }
-      return isCodexVm(vm) ? { codex: missing } : { go: missing, rust: missing }
+      return { go: missing, rust: missing }
     }
     if (isCodexVm(vm)) {
       const health = await codexKernelHealth(exec, { timeoutMs: 600 })
@@ -2688,6 +2689,9 @@ export function createPanelHandler(ctx) {
             return json(res, 400, { ok: false, error: { message: 'sessionKey or access_token required' } })
           }
           if (body.auth_scheme || body.authScheme) oauth.auth_scheme = body.auth_scheme || body.authScheme
+          if (oauth.access_token && !wantsApiKey) {
+            oauth = await enrichOauthIdentity(oauth, { proxyUrl })
+          }
           const committed = await commitImportedOauth({
             vmId,
             vmPath,
@@ -2859,6 +2863,9 @@ export function createPanelHandler(ctx) {
             oauth.mode = 'setup-token'
           }
           if (body.auth_scheme || body.authScheme) oauth.auth_scheme = body.auth_scheme || body.authScheme
+          if (oauth.access_token) {
+            oauth = await enrichOauthIdentity(oauth, { proxyUrl: slotProxy.proxyUrl })
+          }
           const committed = await commitImportedOauth({
             vmId: id,
             vmPath,

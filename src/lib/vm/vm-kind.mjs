@@ -25,20 +25,21 @@ function isClaudeLabel(value) {
  * Unmarked VMs fall back to legacy Codex flags, otherwise Claude.
  */
 export function normalizeVmKind(vm = {}) {
-  const platform = labelOf(vm, 'platform')
-  const family = labelOf(vm, 'family')
-  const kind = labelOf(vm, 'kind') || labelOf(vm, 'credential_kind')
+  const src = vm && typeof vm === 'object' ? vm : {}
+  const platform = labelOf(src, 'platform')
+  const family = labelOf(src, 'family')
+  const kind = labelOf(src, 'kind') || labelOf(src, 'credential_kind')
   if (isCodexLabel(platform) || isCodexLabel(family) || isCodexLabel(kind)) {
     return { platform: 'openai', family: 'codex', kind: VM_KIND_CODEX }
   }
   if (isClaudeLabel(platform) || isClaudeLabel(family) || isClaudeLabel(kind)) {
     return { platform: 'anthropic', family: 'claude', kind: VM_KIND_CLAUDE }
   }
-  if (vm.codex_kernel === true) return { platform: 'openai', family: 'codex', kind: VM_KIND_CODEX }
-  if (labelOf(vm, 'inference_engine') === 'codex') {
+  if (src.codex_kernel === true) return { platform: 'openai', family: 'codex', kind: VM_KIND_CODEX }
+  if (labelOf(src, 'inference_engine') === 'codex') {
     return { platform: 'openai', family: 'codex', kind: VM_KIND_CODEX }
   }
-  if (String(vm.runtime?.codex_kernel || '').trim() === '1') {
+  if (String(src.runtime?.codex_kernel || '').trim() === '1') {
     return { platform: 'openai', family: 'codex', kind: VM_KIND_CODEX }
   }
   return { platform: 'anthropic', family: 'claude', kind: VM_KIND_CLAUDE }
