@@ -71,6 +71,23 @@ export function writeCodexKernelConfig(projectRoot, vm, { token, proxyUrl, proxy
   return { runDir, socketPath, configPath, credentialPath, tokenPath }
 }
 
+const KERNEL_LOG_MAX_BYTES = 8 * 1024 * 1024
+
+/** Kernel stdout/stderr land in run/codex-kernel.log — a panic or upstream abort
+ *  is invisible otherwise; one rollover keeps it bounded on this small disk. */
+function openKernelLog(runDir) {
+  if (!runDir) return null
+  const logPath = path.join(runDir, 'codex-kernel.log')
+  try {
+    if (fs.statSync(logPath).size > KERNEL_LOG_MAX_BYTES) fs.renameSync(logPath, `${logPath}.1`)
+  } catch {}
+  try {
+    return fs.openSync(logPath, 'a', 0o600)
+  } catch {
+    return null
+  }
+}
+
 export async function ensureCodexKernel(exec, { timeoutMs = 8000 } = {}) {
   const bin = codexKernelBinPath()
   if (!bin) return { ok: false, reason: 'bin_missing' }
@@ -83,10 +100,19 @@ export async function ensureCodexKernel(exec, { timeoutMs = 8000 } = {}) {
   try {
     if (paths.socketPath) fs.unlinkSync(paths.socketPath)
   } catch {}
+  const logFd = openKernelLog(paths.runDir)
   const child = spawn(bin, [paths.configPath], {
-    stdio: 'ignore',
+    stdio: logFd == null ? 'ignore' : ['ignore', logFd, logFd],
     detached: true,
   })
+  if (logFd != null) {
+    try {
+      fs.writeSync(logFd, `\n=== spawn pid=${child.pid ?? '?'} at ${new Date().toISOString()} ===\n`)
+    } catch {}
+    try {
+      fs.closeSync(logFd)
+    } catch {}
+  }
   child.unref()
   starts.set(exec.vmId, child)
   return waitForHealth(exec, timeoutMs)
