@@ -31,6 +31,7 @@ function makeImportHandler(project, body) {
   const response = {}
   const handlePanel = createPanelHandler({
     cfg: { paths: { project } },
+    routingConfig: {},
     requireAuth(req) {
       req.apiKeyKind = 'master'
       req.panelRole = 'admin'
