@@ -397,7 +397,7 @@ test('handleProtocol intercepts distill before credential hop, refusal guard aft
   const src = fs.readFileSync(path.join(root, 'src/lib/protocol/handle-protocol.mjs'), 'utf8')
   const earlyDistill = src.indexOf('if (applyDistillGuard(')
   const earlyRefusal = src.indexOf('if (applyRefusalGuard(')
-  const codex = src.indexOf('return handleCodexProtocol(')
+  const codex = src.indexOf('handleCodexProtocol({')
   assert.ok(earlyDistill > 0 && earlyDistill < codex)
   assert.ok(earlyRefusal > earlyDistill && earlyRefusal < codex)
   const before = src.indexOf("applyIntercept(cfg.intercept.rules, 'before_upstream'")

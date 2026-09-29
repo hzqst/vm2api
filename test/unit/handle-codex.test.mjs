@@ -10,6 +10,8 @@ import {
 } from '../../src/lib/protocol/handle-codex.mjs'
 import { persistCodexUsage, getVm } from '../../src/lib/vm/vm-registry.mjs'
 import { StickyRouter } from '../../src/lib/pool/sticky-router.mjs'
+import { clientCancelledResult } from '../../src/lib/core/errors.mjs'
+import { openAIRuntimeSignals, resetOpenAIAccountRuntime } from '../../src/lib/pool/openai-account-runtime.mjs'
 
 test('502 upstream_transport is retryable before commit', () => {
   assert.equal(
@@ -850,4 +852,124 @@ test('codex passthrough keeps the inbound session and cache key', async () => {
   assert.equal(envelopes[0].body.conversation_id, inbound)
   sticky.db?.close?.()
   fs.rmSync(root, { recursive: true, force: true })
+})
+
+test('codex hop forwards signal, timeoutMs and idleTimeoutMs to the transport', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-codex-timeout-'))
+  writeGptVm(root, 'vm-gpt-a')
+  const seen = {}
+  const res = {
+    headersSent: false,
+    statusCode: 0,
+    body: null,
+    ended: false,
+    write() {},
+    end() {
+      this.ended = true
+    },
+  }
+  const controller = new AbortController()
+  await handleCodexProtocol({
+    req: { headers: {}, apiKeyKind: 'user' },
+    res,
+    protocol: 'openai.responses',
+    ctx: { body: { model: 'gpt-5.4', input: 'hi', stream: false } },
+    inbound: { stream: false },
+    logBag: {},
+    stats: { errors: 0, requests: 0, by_route: {} },
+    json: (_res, status, body) => {
+      res.statusCode = status
+      res.body = body
+      return body
+    },
+    writeSSEHeaders() {
+      res.headersSent = true
+    },
+    routing: {},
+    projectRoot: root,
+    signal: controller.signal,
+    timeoutMs: 600000,
+    idleTimeoutMs: 180000,
+    ops: {
+      writeCodexKernelConfig() {},
+      ensureCodexKernel: async () => ({ ok: true }),
+      streamCodexKernel: async (args) => {
+        seen.signal = args.signal
+        seen.timeoutMs = args.timeoutMs
+        seen.idleTimeoutMs = args.idleTimeoutMs
+        return { ok: true, status: 200, terminalState: 'verified', body: { id: 'resp_ok' } }
+      },
+    },
+  })
+  assert.equal(seen.signal, controller.signal)
+  assert.equal(seen.timeoutMs, 600000)
+  assert.equal(seen.idleTimeoutMs, 180000)
+  fs.rmSync(root, { recursive: true, force: true })
+})
+
+test('client cancel finishes the codex hop as cancelled and releases the slot', async () => {
+  resetOpenAIAccountRuntime()
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-codex-cancel-'))
+  writeGptVm(root, 'vm-gpt-a')
+  const res = {
+    headersSent: false,
+    statusCode: 0,
+    body: null,
+    ended: false,
+    write() {},
+    end() {
+      this.ended = true
+    },
+  }
+  const logBag = {}
+  const controller = new AbortController()
+  controller.abort()
+  await handleCodexProtocol({
+    req: { headers: { 'content-type': 'application/json' }, apiKeyKind: 'user' },
+    res,
+    protocol: 'openai.responses',
+    ctx: { body: { model: 'gpt-5.4', input: 'hi', stream: true } },
+    inbound: { stream: true },
+    logBag,
+    stats: { errors: 0, requests: 0, by_route: {} },
+    json: (_res, status, body) => {
+      res.statusCode = status
+      res.body = body
+      return body
+    },
+    writeSSEHeaders() {
+      res.headersSent = true
+    },
+    routing: {},
+    projectRoot: root,
+    signal: controller.signal,
+    timeoutMs: 600000,
+    idleTimeoutMs: 180000,
+    ops: {
+      writeCodexKernelConfig() {},
+      ensureCodexKernel: async () => ({ ok: true }),
+      streamCodexKernel: async () => clientCancelledResult({ via: 'codex-kernel', committed: false }),
+    },
+  })
+  assert.equal(logBag.final_state, 'cancelled')
+  assert.equal(logBag.error_code, null)
+  assert.equal(openAIRuntimeSignals('vm-gpt-a').inFlight, 0, 'slot must be released after cancel')
+  resetOpenAIAccountRuntime()
+  fs.rmSync(root, { recursive: true, force: true })
+})
+
+test('an aborted signal skips the codex transport retry', async () => {
+  let n = 0
+  const controller = new AbortController()
+  controller.abort()
+  const result = await runCodexKernelHop({
+    hop: async () => {
+      n += 1
+      return { ok: false, status: 502, body: { error: { code: 'upstream_transport' } } }
+    },
+    args: { signal: controller.signal },
+  })
+  assert.equal(n, 1)
+  assert.equal(result.ok, false)
+  assert.equal(result.transport_retried, undefined)
 })

@@ -543,9 +543,45 @@ export function createHandleProtocol(deps) {
         sessions: accountQuota?.sessions || null,
         body: ctx.body,
       }
-      if (protocol === 'anthropic.messages') {
-        const codex = normalizeCodexRouting(routing.codex)
-        return handleCodexProtocol({
+      // A Codex hop has no total request timeout and the kernel never sends an
+      // idle timeout, so a stalled or abandoned hop would hold its pool slot
+      // forever. Bind the client lifecycle and pass both watchdogs down.
+      const clientAbort = bindClientAbort(req, res)
+      const codexLimits = {
+        signal: clientAbort.signal,
+        timeoutMs: cfg.limits.upstream_timeout_ms,
+        idleTimeoutMs: cfg.limits.stream_idle_timeout_ms,
+      }
+      try {
+        if (protocol === 'anthropic.messages') {
+          const codex = normalizeCodexRouting(routing.codex)
+          return await handleCodexProtocol({
+            req,
+            res,
+            protocol,
+            ctx,
+            inbound,
+            logBag,
+            stats,
+            json,
+            writeSSEHeaders,
+            routing: {
+              ...routing,
+              codex: {
+                ...codex,
+                protocols: {
+                  ...codex.protocols,
+                  'anthropic.messages': { mode: 'convert', enabled: true },
+                },
+                convert: { ...codex.convert, anthropic_to_codex: true },
+              },
+            },
+            projectRoot: cfg.paths.project,
+            ...codexSticky,
+            ...codexLimits,
+          })
+        }
+        return await handleCodexProtocol({
           req,
           res,
           protocol,
@@ -555,35 +591,14 @@ export function createHandleProtocol(deps) {
           stats,
           json,
           writeSSEHeaders,
-          routing: {
-            ...routing,
-            codex: {
-              ...codex,
-              protocols: {
-                ...codex.protocols,
-                'anthropic.messages': { mode: 'convert', enabled: true },
-              },
-              convert: { ...codex.convert, anthropic_to_codex: true },
-            },
-          },
+          routing,
           projectRoot: cfg.paths.project,
           ...codexSticky,
+          ...codexLimits,
         })
+      } finally {
+        clientAbort.settle()
       }
-      return handleCodexProtocol({
-        req,
-        res,
-        protocol,
-        ctx,
-        inbound,
-        logBag,
-        stats,
-        json,
-        writeSSEHeaders,
-        routing,
-        projectRoot: cfg.paths.project,
-        ...codexSticky,
-      })
     }
     if (protocol === 'openai.responses') {
       stats.errors++

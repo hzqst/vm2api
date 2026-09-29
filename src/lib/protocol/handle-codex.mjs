@@ -26,7 +26,7 @@ import {
   waitForOpenAICapacity,
   wakeOpenAIWaiter,
 } from '../pool/openai-account-runtime.mjs'
-import { CLIENT_POOL_BUSY_MESSAGE } from '../core/errors.mjs'
+import { CLIENT_POOL_BUSY_MESSAGE, isClientCancelledResult } from '../core/errors.mjs'
 import { applyOpenaiWashLog } from './openai-wash.mjs'
 import { extractCallerSession, outboundSessionMode, resolveOutboundSessionId } from '../identity/identity-rewrite.mjs'
 import { extractFirstUserText } from '../identity/crs-persona.mjs'
@@ -270,7 +270,7 @@ export async function runCodexKernelHop({ hop, args = {}, onEvent } = {}) {
     if (onEvent) await onEvent(line)
   }
   let result = await hop({ ...args, onEvent: wrapped })
-  if (!result?.ok && !emitted && isRetryableCodexTransport(result)) {
+  if (!result?.ok && !emitted && !args?.signal?.aborted && isRetryableCodexTransport(result)) {
     result = { ...(await hop({ ...args, onEvent: wrapped })), transport_retried: true }
   }
   return result
@@ -292,6 +292,9 @@ export async function handleCodexProtocol({
   stickyRouter = null,
   sessions = null,
   body = null,
+  signal = null,
+  timeoutMs = null,
+  idleTimeoutMs = null,
 }) {
   const codex = normalizeCodexRouting(routing.codex)
   const allowed = isCodexProtocolAllowed(protocol, { codex })
@@ -474,6 +477,9 @@ export async function handleCodexProtocol({
             exec: execFor(projectRoot, vm),
             body: outboundBody,
             reqHeaders: req.headers,
+            signal,
+            timeoutMs,
+            idleTimeoutMs,
             envelope: {
               body: outboundBody,
               stream: true,
@@ -541,6 +547,16 @@ export async function handleCodexProtocol({
           }
           if (!res.headersSent) writeSSEHeaders(res)
           return res.end()
+        }
+        if (isClientCancelledResult(result)) {
+          // Client lifecycle terminal: the caller went away. Not an error, not a
+          // success. Same contract as finishClientCancel on the Claude hop.
+          reportOpenAIAttempt(vm.id, attemptKind, result?.ttftMs ?? null)
+          logBag.error_code = null
+          logBag.error_message = null
+          logBag.final_state = 'cancelled'
+          if (res.headersSent) res.end()
+          return
         }
         reportOpenAIAttempt(vm.id, attemptKind, result?.ttftMs ?? null)
         if (res.headersSent) {
