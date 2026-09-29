@@ -42,6 +42,9 @@ const OPUS_55_ID = 'claude-opus-5-5'
 const OPUS_55_LEGACY_ID = 'claude-opus-5.5'
 const SONNET_55_ID = 'claude-sonnet-5-5'
 const OPUS_55_COMPUTER_FROM = 'computer_20251124'
+// Upstream shipped the use site without this definition; the wire target comes
+// from its own assertion in test/unit/cli-hop-body.test.mjs.
+const OPUS_55_COMPUTER_TO = 'computer_toolset_20260801'
 
 const CAP_HAIKU = {
   context_window: 200000,
