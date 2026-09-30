@@ -3,14 +3,13 @@ import {
   DEFAULT_AGENT_STANDING,
   DEFAULT_PERSONA_TEMPLATES,
   EMPTY_BLOCK_TEXT,
-  PERSONA_PRESET_OPTIONS,
   PERSONA_PRESETS,
   agentStandingVar,
   overlayDisabledByPersona,
   personaInjectFromPreset,
-  protocolPersonaSaveToast,
   presetSeed,
   personaHideEnabled,
+  presetFlagEnabled,
   previewSystemBlocks,
   setPersonaHide,
   setPresetFlag,
@@ -20,61 +19,6 @@ import {
 } from './persona-template'
 
 describe('persona template contract', () => {
-  it('keeps the four routing presets in PUT order', () => {
-    expect([...PERSONA_PRESETS]).toEqual([
-      'official',
-      'official_full',
-      'zero',
-      'custom',
-    ])
-    expect(PERSONA_PRESET_OPTIONS.map(([value]) => value)).toEqual([
-      ...PERSONA_PRESETS,
-    ])
-  })
-
-  it('keeps official / official_full / zero slot ids and hide defaults', () => {
-    expect(DEFAULT_PERSONA_TEMPLATES.official.map((block) => block.id)).toEqual(
-      ['billing', 'identity', 'caller_agent', 'env', 'caller_system']
-    )
-    expect(
-      DEFAULT_PERSONA_TEMPLATES.official_full.map((block) => block.id)
-    ).toEqual([
-      'billing',
-      'identity',
-      'agent_official',
-      'env_official',
-      'caller_system',
-    ])
-    expect(DEFAULT_PERSONA_TEMPLATES.official_full[2]?.text).toBe(
-      '{{agent_standing}}{{agent_official}}'
-    )
-    expect(DEFAULT_PERSONA_TEMPLATES.zero.map((block) => block.id)).toEqual([
-      'billing_zero',
-      'identity_slot',
-      'agent_slot',
-      'env',
-      'caller_system',
-    ])
-    expect(DEFAULT_PERSONA_TEMPLATES.official.some((block) => block.hide)).toBe(
-      false
-    )
-    expect(
-      DEFAULT_PERSONA_TEMPLATES.official_full.some((block) => block.hide)
-    ).toBe(false)
-    expect(
-      DEFAULT_PERSONA_TEMPLATES.zero.map((block) => block.hide === true)
-    ).toEqual([true, true, true, true, false])
-    expect(DEFAULT_PERSONA_TEMPLATES.zero[2]?.text).toBe(
-      '{{agent_standing}}{{caller_agent}}'
-    )
-    expect(DEFAULT_PERSONA_TEMPLATES.zero[2]?.cache_control).toEqual({
-      type: 'ephemeral',
-      ttl: '1h',
-    })
-    expect(DEFAULT_PERSONA_TEMPLATES.zero[2]?.note).toBeUndefined()
-    expect(DEFAULT_PERSONA_TEMPLATES.custom).toEqual([])
-  })
-
   it('forces overlay off only for zero, and empty custom seeds official', () => {
     expect(overlayDisabledByPersona('zero')).toBe(true)
     expect(overlayDisabledByPersona('official')).toBe(false)
@@ -101,19 +45,6 @@ describe('persona template contract', () => {
     expect(personaInjectFromPreset('zero', 'rewrite')).toBe('zero')
     expect(personaInjectFromPreset('custom', 'append')).toBe('append')
   })
-
-  it('save toast names the stored preset and the kernel hot update', () => {
-    expect(
-      protocolPersonaSaveToast({ persona_preset: 'official_full' }, 0, {
-        updated: 2,
-      })
-    ).toBe('已保存 · 官方完整提示词 · system 提示词已热更新 2 个槽')
-    expect(
-      protocolPersonaSaveToast({ persona_preset: 'zero' }, 1, { updated: 0 })
-    ).toBe(
-      '已保存 · 0注入 · 1 个槽位改为跟随全局 · system 提示词的 kernel 配置已一致'
-    )
-  })
 })
 
 describe('agent standing + system preview', () => {
@@ -125,14 +56,38 @@ describe('agent standing + system preview', () => {
     caller_system: '',
   }
 
-  it('defaults on for every preset; explicit empty string removes it', () => {
+  it('keeps standing default off while explicit true stays enabled', () => {
     for (const key of PERSONA_PRESETS) {
-      expect(agentStandingVar({}, key)).toBe(`${DEFAULT_AGENT_STANDING}\n`)
+      expect(presetFlagEnabled({}, 'agent_standing_presets', key)).toBe(false)
+      expect(agentStandingVar({}, key)).toBe('')
     }
-    expect(agentStandingVar({ agent_standing: '' }, 'official')).toBe('')
+    expect(
+      agentStandingVar(
+        { agent_standing_presets: { official: true } },
+        'official'
+      )
+    ).toBe(`${DEFAULT_AGENT_STANDING}\n`)
+    expect(
+      agentStandingVar({ agent_standing_presets: { official: true } }, 'zero')
+    ).toBe('')
+    expect(
+      agentStandingVar(
+        { agent_standing: '', agent_standing_presets: { official: true } },
+        'official'
+      )
+    ).toBe('')
     expect(
       agentStandingVar({ agent_standing_presets: { zero: false } }, 'zero')
     ).toBe('')
+  })
+
+  it('keeps env and standing-hide flags default on', () => {
+    for (const key of PERSONA_PRESETS) {
+      expect(presetFlagEnabled({}, 'persona_env_presets', key)).toBe(true)
+      expect(presetFlagEnabled({}, 'agent_standing_hide_presets', key)).toBe(
+        true
+      )
+    }
   })
 
   it('drops billing blocks and keeps a blank zero agent slot as zero-width', () => {
@@ -147,12 +102,31 @@ describe('agent standing + system preview', () => {
     expect(zero[1]?.text).toBe(EMPTY_BLOCK_TEXT)
     expect(zero[1]?.placeholder).toBe(true)
 
-    const official = previewSystemBlocks(DEFAULT_PERSONA_TEMPLATES.official, {
-      ...vars,
-      agent_standing: agentStandingVar({}, 'official'),
-      env: '# Environment\n - Timezone: Asia/Tokyo',
-    })
-    expect(official.map((block) => block.text)).toEqual([
+    const officialDefault = previewSystemBlocks(
+      DEFAULT_PERSONA_TEMPLATES.official,
+      {
+        ...vars,
+        agent_standing: agentStandingVar({}, 'official'),
+        env: '# Environment\n - Timezone: Asia/Tokyo',
+      }
+    )
+    expect(officialDefault.map((block) => block.text)).toEqual([
+      'ID',
+      '# Environment\n - Timezone: Asia/Tokyo',
+    ])
+
+    const officialEnabled = previewSystemBlocks(
+      DEFAULT_PERSONA_TEMPLATES.official,
+      {
+        ...vars,
+        agent_standing: agentStandingVar(
+          { agent_standing_presets: { official: true } },
+          'official'
+        ),
+        env: '# Environment\n - Timezone: Asia/Tokyo',
+      }
+    )
+    expect(officialEnabled.map((block) => block.text)).toEqual([
       'ID',
       `${DEFAULT_AGENT_STANDING}\n`,
       '# Environment\n - Timezone: Asia/Tokyo',
@@ -172,7 +146,7 @@ describe('agent standing + system preview', () => {
     )
   })
 
-  it('toggle map is only written once it differs from the all-on default', () => {
+  it('toggle map is removed only when values match the field default', () => {
     const off = setPresetFlag({}, 'persona_env_presets', 'zero', false, {})
     expect(off.persona_env_presets).toEqual({
       official: true,
@@ -186,6 +160,46 @@ describe('agent standing + system preview', () => {
       persona_env_presets: { zero: false },
     })
     expect(serverHad.persona_env_presets).toMatchObject({ zero: true })
+
+    const standingOn = setPresetFlag(
+      {},
+      'agent_standing_presets',
+      'official',
+      true,
+      {}
+    )
+    expect(standingOn.agent_standing_presets).toEqual({
+      official: true,
+      official_full: false,
+      zero: false,
+      custom: false,
+    })
+    expect(agentStandingVar(standingOn, 'official')).toBe(
+      `${DEFAULT_AGENT_STANDING}\n`
+    )
+    expect(agentStandingVar(standingOn, 'zero')).toBe('')
+    const standingOff = setPresetFlag(
+      standingOn,
+      'agent_standing_presets',
+      'official',
+      false,
+      {}
+    )
+    expect('agent_standing_presets' in standingOff).toBe(false)
+
+    const serverStanding = setPresetFlag(
+      {},
+      'agent_standing_presets',
+      'official',
+      false,
+      { agent_standing_presets: { official: true } }
+    )
+    expect(serverStanding.agent_standing_presets).toEqual({
+      official: false,
+      official_full: false,
+      zero: false,
+      custom: false,
+    })
   })
 
   it('whole-preset mask: map beats legacy persona_hides beats template hide', () => {

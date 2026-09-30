@@ -2,7 +2,7 @@ import crypto from 'node:crypto'
 import { liftMidConversationSystemMessages, stripIllegalContentFields } from './sanitize.mjs'
 import { isAnthropicServerTool } from './web-search.mjs'
 import { normalizeThinkingForModel, ensureUnofficialAdaptiveThinking, ensureUnofficialEffortHigh } from './thinking.mjs'
-import { applyMaxTokensCap, applyOpus55RequestRules, getCapabilities } from './model-policy.mjs'
+import { applyMaxTokensCap, applyModelRequestRules, getCapabilities } from './model-policy.mjs'
 import { ensureOutputConfigSchema, rectifyUnofficialRequest } from './request-rectifier.mjs'
 import { DEFAULT_CACHE_TTL, applyCacheBreakpoints, stripCacheScopeFields } from './cache-ttl.mjs'
 import { normalizeImageContentBlocks } from './images.mjs'
@@ -333,7 +333,7 @@ export function prepareAnthropicRequest(
   let out = clone(body)
   // Model-aware thinking normalize (adaptive ↔ enabled) before other policy
   normalizeThinkingForModel(out)
-  out = applyOpus55RequestRules(out)
+  out = applyModelRequestRules(out)
   applyMaxTokensCap(out)
   if (unofficial) {
     out = ensureUnofficialAdaptiveThinking(out)

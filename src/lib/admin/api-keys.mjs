@@ -410,7 +410,8 @@ export class ApiKeyStore {
         detail: { inflight, max: rec.max_concurrency },
       }
     }
-    // sub2api user-level cap: sum of inflight across all of the owner's keys
+    // sub2api user-level cap: sum of inflight across all of the owner's keys.
+    // The operator (admin) is never capped: its traffic is the platform's own.
     if (rec.user_id) {
       const owner = (() => {
         try {
@@ -419,7 +420,7 @@ export class ApiKeyStore {
           return null
         }
       })()
-      const cap = Number(owner?.concurrency) || 0
+      const cap = owner?.role === 'admin' ? 0 : Number(owner?.concurrency) || 0
       if (cap > 0) {
         let total = 0
         for (const k of this.repo.list()) {

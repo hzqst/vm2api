@@ -40,7 +40,7 @@ type VmOverviewTabProps = {
   billing?: Record<string, unknown> | null
 }
 
-function periodOf(
+export function periodOf(
   billing: Record<string, unknown> | null | undefined,
   key: string
 ) {

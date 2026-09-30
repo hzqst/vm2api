@@ -166,7 +166,7 @@ export function stripIllegalCacheControlFields(body) {
   }
   return out
 }
-/** Native Claude Code owns final cache markers; Node must not leak stale anchors. */
+/** Drop caller cache_control so Node can restamp last + penultimate user. */
 export function removeCacheControlFields(body) {
   if (!body || typeof body !== 'object') return body
   const out = { ...body }
@@ -319,8 +319,9 @@ export const DEFAULT_CACHE_BREAKPOINTS = Object.freeze({
   preserve_client: true,
   system_tail: true,
   tools_tail: true,
-  // rewrite removes caller-owned markers before rebuilding proxy-owned anchors.
-  // cli-hop overrides this with the current Claude Code single-tail policy.
+  // rewrite removes caller-owned markers before rebuilding last + penultimate-user anchors.
+  // HTTP hop uses this default; cli-hop calls applyMessageBreakpoints(..., 'rewrite') after stripping.
+
   messages: 'rewrite',
 })
 
@@ -613,6 +614,47 @@ export function applyMessageBreakpoints(body, ttl = DEFAULT_CACHE_TTL, mode = DE
     if (prevUser >= 0) messages = stampMessageTail(messages, prevUser, target)
   }
   return messages === body.messages ? body : { ...body, messages }
+}
+
+/** Bounded marker inventory for diagnostics. No prompt or image bytes. */
+export function listCacheMarkers(body) {
+  const hits = []
+  const ttlOf = (control) => {
+    if (!control || typeof control !== 'object') return null
+    return control.ttl ? normalizeCacheTtl(control.ttl) : null
+  }
+  if (body?.cache_control) hits.push({ section: 'body', index: 0, ttl: ttlOf(body.cache_control), type: 'body' })
+  if (Array.isArray(body?.system)) {
+    for (const [index, block] of body.system.entries()) {
+      if (block?.cache_control) {
+        hits.push({ section: 'system', index, ttl: ttlOf(block.cache_control), type: block.type || 'text' })
+      }
+    }
+  }
+  if (Array.isArray(body?.tools)) {
+    for (const [index, tool] of body.tools.entries()) {
+      if (tool?.cache_control) {
+        hits.push({ section: 'tools', index, ttl: ttlOf(tool.cache_control), type: tool.type || 'function' })
+      }
+    }
+  }
+  if (Array.isArray(body?.messages)) {
+    for (const [index, message] of body.messages.entries()) {
+      if (!Array.isArray(message?.content)) continue
+      for (const [blockIndex, block] of message.content.entries()) {
+        if (!block?.cache_control) continue
+        hits.push({
+          section: 'messages',
+          index,
+          blockIndex,
+          role: message.role || null,
+          ttl: ttlOf(block.cache_control),
+          type: block.type || 'text',
+        })
+      }
+    }
+  }
+  return hits
 }
 
 /**

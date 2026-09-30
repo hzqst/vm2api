@@ -238,6 +238,8 @@ export function toAnthropicCustomTool(tool) {
   const out = { name, input_schema }
   if (description) out.description = description
   if (tool.cache_control) out.cache_control = tool.cache_control
+  const strict = fn?.strict ?? tool.strict
+  if (typeof strict === 'boolean') out.strict = strict
   // Claude Code defers most tools and loads them through ToolSearch.
   if (tool.defer_loading === true) out.defer_loading = true
   return out

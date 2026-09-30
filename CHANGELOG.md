@@ -1,5 +1,61 @@
 # Changelog
 
+## 1.3.86 — 2026-09-30
+
+- 控制台侧栏左上角品牌区重做：vm2api 标识 + 放大的版本徽标（链到对应 GitHub Release）+ GitHub 仓库链接；移除 `Anthropic` / `GPT` 平台标签。侧栏折叠为图标时只留标识。
+- 登录后每天首次打开控制台，右下角弹出一次 GitHub Star 提示，10 秒后自动隐藏（悬停/聚焦时暂停，可手动关闭）。按本地日期记在 `localStorage` 的 `vm2api_star_hint_day`，当天不再出现。
+- `web/dist` 随本版重编。
+- 管理员（`role=admin`）不再受用户级并发上限（`users.concurrency`）约束；普通用户上限不变。
+- GPT-6.1 Sol 按官方价计费。标准档每百万 token：输入 $2、缓存读 $0.10、缓存写 $2.50、输出 $10。输入超过 272K 时整单按 2 倍输入和缓存、1.5 倍输出；Flex 为该档一半，Fast 为两倍。
+- Codex 额度查询的 `chatgpt-account-id` 优先用 access token 里的账号 ID。导入记录没有账号 ID 时也会带上。
+
+已部署机升级：更新 Node 控制面（`src/`）和 `web/dist`，重启一次 Node。不改 kernel / cli-node，不必 `wrap-cli/sync`。不要 `docker rm` 槽。不要覆盖 live `routing.json`。
+
+## 1.3.85 — 2026-09-30
+
+- Claude Code 子 agent 不再排在主会话后面：带 `x-claude-code-agent-id` 的请求（Claude Code 2.1.139+，主线程不带）按子会话调度。会话 ID 由主会话 `session_id` + agent ID 派生（稳定 UUID），各 agent 各自一个 CLI 会话、各自串行，可用主会话所在 VM 的任意空闲执行位；会话窗口计在主会话头上，不新占 `max_sessions`。嵌套 agent（带 `x-claude-code-parent-agent-id`）同样挂在主会话下。主会话自己的多轮仍按 v1.3.7 规则串行。
+
+已部署机升级：只更新 Node 控制面（`src/`）并重启一次 Node。不改 kernel / cli-node，不必 `wrap-cli/sync`。不要 `docker rm` 槽。不要覆盖 live `routing.json`。
+
+## 1.3.84 — 2026-09-29
+
+- 控制台创建槽位恢复「平台」选项：Claude（anthropic，默认）/ GPT（openai）。虚拟机页和导入向导共用同一弹窗，两处都能直接建 GPT 空槽，账号稍后用 OAuth 或 auth.json 导入。此前 `2288ab3` 把创建请求写死为 `platform: 'anthropic'`，控制台无法新建 GPT 槽。后端 `/api/panel/vms/create` 本就按请求体 `platform` / `family` 盖章，未改。
+- `web/dist` 随本版重编。
+
+已部署机升级：只需更新 `web/dist` 静态文件，不必重启 Node。不改 kernel / cli-node，不必 `wrap-cli/sync`。不要 `docker rm` 槽。不要覆盖 live `routing.json`。
+
+## 1.3.83 — 2026-09-29
+
+- cli-hop 缓存：Node 清洗后写最后消息及 `messages.length>=4` 时倒数第二 user 断点，TTL 用入站会话已 pin 值。kernel 不再重打 last。native CLI 保留消息标记，自产 system/tools 沿用同一请求 TTL，总数 <= 4，thinking 不打点。独立 CLI 非 native 行为未扩大。
+- 调试日志增加有界 `cache_continuity`：入站/出站历史首差类型（图片/文本/结构）、断点与 TTL，层级标为 Node 对象，不把 Node 出站当成最终 wire，不保存完整提示词和图片。
+- C1 客户端图片预算：运行中的 OMP 是 18.4.2 二进制（`/home/mci777/.bun/bin/omp`），可读源码只有 `/mnt/x/oh-my-pi` v16.4.3 与全局 `@oh-my-pi/pi-coding-agent@17.4.0`。18.4.2 二进制仍按 provider 名查表（unknown 地板 5），没有 `compat.imageBudget` 入口。未改旧 node_modules、未重命名 provider、未把未知代理默认成 Anthropic。精确阻塞见 issues CSV。
+- 原事故 SQLite replay 因 200k/24 条截断跳过，不用客户端重建冒充。线上 usage 与 f123 差异闭环前不宣称缓存已治愈。
+- 发布基于 main v1.3.82，合入缓存连续性 PR #176；该 PR 原预留 1.3.81，因 1.3.82 已先发布顺延为 1.3.83。本版不改 kernel / cli-node 字节。
+
+本机改动未部署。覆盖控制面并重编 kernel / cli-node 才生效；不要 `wrap-cli/sync` 除非二进制字节变化。不要 `docker rm` 槽。不要覆盖 live `routing.json`。
+
+## 1.3.82 — 2026-09-29
+
+- cli-hop 恢复调用方 system：kin 分支只保留 billing、可选身份句、Timezone 和 Node/caller 原文，不再追加槽内 cwd、Platform、Notes 或默认 agent。真实 Claude Code 子代理的 agent prompt / Notes 不再误删，首尾空白保留。
+- 常驻约束默认不启用：`agent_standing_presets` 缺 map/key 为关闭，显式 true 仍开启；三种预设和约束文本不改。控制台预览与开关保存使用相同默认值，usage 不再扣除未注入的约束。
+- cli-node 按 Linux x64 baseline 重编并 UPX 压缩。补齐 native 快捷入口配置初始化与版本常量导入；否则重新编译的 native job 会在启动或首次查询时失败。
+- 发布基于 main v1.3.80；不合入独立的缓存连续性 PR #176（该 PR 预留 1.3.81）。
+
+部署需替换槽内 cli-node 并重启对应 kernel/CLI，配置热读不能加载新 ELF。保留旧文件回滚，不删除槽容器，不覆盖 live routing.json。system 文本变化后首次前缀冷写；不保证 cache_read 数值必然上升，0注入、约束关闭、无 agent 的真实模型输出单独验证。
+
+## 1.3.80 — 2026-09-29
+
+- 虚拟机页：每行和每张卡片右侧加「⋯」扩展菜单——测试链接、查看统计、重新授权、刷新令牌、恢复状态，重置槽位和删除排在分隔线后。点击一台 VM 不再跳到 `/vm/:id`，改为弹出详情卡；卡内保留「完整页面」入口，详情页不变。
+- 虚拟机列表更紧凑：类型列显示调用形式 `Console` / `OAuth` / `API`（Claude 槽刷新走 OAuth 接口、推理走 `Authorization: Bearer` 调 Console，所以完整 OAuth 与 Setup Token 都归 Console；只有 `x-api-key` 是 API；GPT 槽是 OAuth），Console 用 Anthropic 陶土橙、OAuth 蓝、API 白。`pro` / `max` 挪到账号列，优先级写成「优先级-N」，今日与 7D 请求合成一列。列头可拖动排序，顺序存浏览器，Alt+←/→ 可用键盘移动，右上角一键恢复默认。
+- 用量窗口在列表、网格卡片、详情卡、统计弹窗共用一套：5h / 7d / Fable 三行，条、百分比、窗口费用、重置倒计时对齐。GPT 槽的「查询额度 / 重置券」放在窗口下方。
+- 成本列的累计改取 `/usage` 账号行。`/api/panel/vms` 本来就不带费用字段，此前读 `vm.total_cost` 恒为 0。
+- 统计弹窗改成可视化：指标卡、今日 / 最高日信息卡、费用与请求双轴趋势、模型分布环形图、入站端点分布。后端 `GET /api/panel/vms/:id` 的 `billing.usage_stats` 带出近 30 个上海自然日的按日用量、模型排名和入站路径排名，日界与 `billing.today` 一致；老前端忽略这个字段。
+- 详情卡和四个弹窗改用原生滚动：Radix `ScrollArea` 在弹窗里不出滚动条，长内容下半部分看不到。
+- Sonnet 5.5 在 Node 出站清洗中沿用 Opus 5.5 的兼容策略：强制 `tool_choice` 转为 `auto`，指定客户端工具加 `strict: true`。不注入提示词，不保证一定调用该工具；Sonnet 5 保持原强制调用语义。
+- Messages / Chat / Responses 保留 strict 工具标记与结构化输出；`output_config.effort` 不再挡住 `response_format` / `text.format` 的 schema 转换，cli-hop 补齐嵌套对象的 `additionalProperties`。Responses 补传工具选择。
+
+已部署机升级：只覆盖控制面并重启 Node 一次；`web/dist` 是静态文件，单独更新不必重启，但 `billing.usage_stats` 需要新的 Node 才有。不改 kernel / cli-node，不必 `wrap-cli/sync`。不要 `docker rm` 槽。不要覆盖 live `routing.json`。
+
 ## 1.3.79 — 2026-09-29
 
 - 槽位 `settings.env` 不再把 `CLAUDE_CODE_USE_BEDROCK` 和 `CLAUDE_CODE_USE_VERTEX` 写成 `1`。官方 CLI 会把 `1` 当成启用 Amazon Bedrock / Vertex，推理去连 `169.254.169.254` 拿 AWS 凭证，不再请求 Anthropic。这两个变量现在固定为 `0`，调用方传入的 `1` 不会生效。

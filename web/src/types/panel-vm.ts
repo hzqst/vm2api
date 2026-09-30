@@ -300,13 +300,47 @@ export type VmBillingModelRow = {
   total_cost: number
 }
 
+/** `billing.usage_stats`：近 N 个上海自然日的槽位用量（统计弹窗）。`endpoints` 是入站路径。 */
+export type VmUsageStatsDay = {
+  /** 上海时区 `YYYY-MM-DD`，与 `billing.today` 同一天界。 */
+  day: string
+  requests: number
+  errors: number
+  input_tokens: number
+  output_tokens: number
+  cache_read_tokens: number
+  cache_creation_tokens: number
+  total_cost: number
+  duration_ms_sum: number
+  duration_n: number
+}
+
+export type VmUsageStatsRank = {
+  name: string
+  requests: number
+  tokens: number
+  total_cost: number
+}
+
+export type VmUsageStats = {
+  days: number
+  since: string | null
+  history: VmUsageStatsDay[]
+  models: VmUsageStatsRank[]
+  endpoints: VmUsageStatsRank[]
+}
+
 export type VmDetailPayload = {
   vm?: Vm
   kernel?: VmKernelSnapshot | null
   proxy?: VmProxySnap | null
   account?: Record<string, unknown> | null
   billing?:
-    (Record<string, unknown> & { by_model?: VmBillingModelRow[] }) | null
+    | (Record<string, unknown> & {
+        by_model?: VmBillingModelRow[]
+        usage_stats?: VmUsageStats | null
+      })
+    | null
   [key: string]: unknown
 }
 

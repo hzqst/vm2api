@@ -109,6 +109,14 @@
   --tier-codex-muted: oklch(0.5 0.045 155);
   --tier-codex-solid: oklch(0.62 0.16 155);
   --tier-codex-solid-fg: oklch(0.16 0.03 155);
+  /* 调用形式标签（类型列）。Console 用 Anthropic 品牌的陶土橙实心块——它是
+     线上绝大多数槽的形式，也是要被一眼认出来的那一类；深色字压在橙底上 6:1。
+     OAuth 复用 tier-pro 蓝；API 是白：浅色主题下白底需要描边才成立。 */
+  --lane-console-bg: oklch(0.68 0.13 41);
+  --lane-console-fg: oklch(0.2 0.03 41);
+  --lane-api-bg: oklch(1 0 0);
+  --lane-api-border: oklch(0.78 0.006 258);
+  --lane-api-fg: oklch(0.2 0.01 258);
   /* 无凭证槽位的卡边框。全局 --border 是为表格与输入框调的，套在卡片上
      只有 1.26 对比度，卡几乎从页面上消失；等级卡有 1.8+ 的彩色边框撑着，
      中性卡需要单独提一档才和它们并排成立。 */
@@ -237,6 +245,11 @@
   --tier-codex-muted: oklch(0.745 0.035 155);
   --tier-codex-solid: oklch(0.72 0.16 155);
   --tier-codex-solid-fg: oklch(0.14 0.03 155);
+  --lane-console-bg: oklch(0.68 0.13 41);
+  --lane-console-fg: oklch(0.16 0.03 41);
+  --lane-api-bg: oklch(1 0 0 / 12%);
+  --lane-api-border: oklch(1 0 0 / 65%);
+  --lane-api-fg: oklch(0.98 0 0);
   --tier-none-border: oklch(1 0 0 / 15%);
 
   --text-tertiary: oklch(0.655 0.011 258);

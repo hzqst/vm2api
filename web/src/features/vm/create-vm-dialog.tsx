@@ -4,7 +4,6 @@ import { toast } from 'sonner'
 import { api } from '@/lib/api'
 import { importErrorMessage } from '@/lib/import-errors'
 import { validTimezone } from '@/lib/timezone'
-import { kindPayload, type VmKind } from '@/lib/vm-kind'
 import { nextVmSeq, vmIdOf, vmNameOf } from '@/lib/vm-name'
 import { Button } from '@/components/ui/button'
 import {
@@ -27,13 +26,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { PlatformChip } from '@/components/platform-chip'
 import { dashboardQueryOptions } from '@/features/overview/queries'
 import {
   KERNELS,
-  kernelProfile,
   VM_CONCURRENCY_OPTIONS,
   VM_CREATE_AFTER,
-  VM_CREATE_TYPES,
   VM_LOCALES,
   VM_REGION_AUTO,
   VM_REGIONS,
@@ -98,7 +96,6 @@ export function CreateVmFields({
   const listed = useQuery(vmsListQueryOptions())
   const vms = dash.data?.vms ?? listed.data?.items ?? []
 
-  const [kind, setKind] = useState<VmKind>('claude')
   const [template, setTemplate] = useState<string>(DEFAULT_TEMPLATE.id)
   const [name, setName] = useState('')
   const [kernel, setKernel] = useState<string>(DEFAULT_TEMPLATE.kernel)
@@ -112,6 +109,7 @@ export function CreateVmFields({
   const [locale, setLocale] = useState<string>(DEFAULT_TEMPLATE.locale)
   const [conc, setConc] = useState<number>(DEFAULT_TEMPLATE.conc)
   const [weight, setWeight] = useState<number>(DEFAULT_TEMPLATE.weight)
+  const [platform, setPlatform] = useState<'anthropic' | 'openai'>('anthropic')
   const [advOpen, setAdvOpen] = useState(false)
 
   // 名称留空时按已占用序号推下一个可用值，仅作为 placeholder 提示与提交兜底。
@@ -150,12 +148,8 @@ export function CreateVmFields({
           max_concurrency: conc,
           weight,
           ...deriveAfter(after),
-          ...kindPayload(kind),
-          // Claude 槽的默认文案是「内核 · Go slot worker」，对 GPT 槽不成立。
-          note:
-            kind === 'codex'
-              ? `${kernelProfile(kernel)?.name || kernel} · Codex 槽`
-              : undefined,
+          platform,
+          family: platform === 'openai' ? 'codex' : 'claude',
         }),
       })
       return {
@@ -187,22 +181,6 @@ export function CreateVmFields({
   return (
     <div className='space-y-3'>
       <div className='space-y-1'>
-        <Label>类型</Label>
-        <Select value={kind} onValueChange={(v) => setKind(v as VmKind)}>
-          <SelectTrigger>
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {VM_CREATE_TYPES.map(([v, l]) => (
-              <SelectItem key={v} value={v}>
-                {l}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
-
-      <div className='space-y-1'>
         <Label>模板</Label>
         <Select value={template} onValueChange={applyTemplate}>
           <SelectTrigger>
@@ -216,6 +194,36 @@ export function CreateVmFields({
             ))}
           </SelectContent>
         </Select>
+      </div>
+
+      <div className='space-y-1'>
+        <Label>平台</Label>
+        <Select
+          value={platform}
+          onValueChange={(next) => {
+            if (next === 'anthropic' || next === 'openai') setPlatform(next)
+          }}
+        >
+          <SelectTrigger aria-label='槽位平台'>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value='anthropic'>
+              <span className='inline-flex items-center gap-1.5'>
+                <PlatformChip kind='claude' />
+                默认
+              </span>
+            </SelectItem>
+            <SelectItem value='openai'>
+              <PlatformChip kind='codex' />
+            </SelectItem>
+          </SelectContent>
+        </Select>
+        {platform === 'openai' ? (
+          <p className='text-xs text-muted-foreground'>
+            可先创建空槽，账号用 OAuth 或 auth.json 稍后导入。
+          </p>
+        ) : null}
       </div>
 
       <div className='space-y-1'>

@@ -1,6 +1,11 @@
 import type { Vm } from '@/types/panel-vm'
 import { api } from '@/lib/api'
-import { vmCircuit } from '@/lib/vm-status'
+import {
+  vmCircuit,
+  vmCircuitTitle,
+  vmCooldown,
+  vmCooldownTitle,
+} from '@/lib/vm-status'
 
 /**
  * 「清冷却」一个按钮收口：清运行时冷却；熔断未关闭时一并重置熔断。
@@ -18,4 +23,11 @@ export async function clearVmRestriction(vm: Vm): Promise<void> {
       body: JSON.stringify({}),
     })
   }
+}
+
+/** 冷却或熔断未关闭时返回原因文案；无可恢复的限制返回 null。 */
+export function restrictionTitle(vm: Vm): string | null {
+  if (vmCircuit(vm)) return vmCircuitTitle(vm)
+  if (vmCooldown(vm)) return vmCooldownTitle(vm)
+  return null
 }

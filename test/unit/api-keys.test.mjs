@@ -129,6 +129,26 @@ test('rpm window blocks then recovers', () => {
   assert.equal(gate.code, 'api_key_rate_limit')
 })
 
+test('user concurrency caps regular users but never the admin operator', () => {
+  const store = tmpStore()
+  const now = new Date().toISOString()
+  for (const [id, role] of [
+    ['u-admin', 'admin'],
+    ['u-user', 'user'],
+  ]) {
+    store.users.insert({ id, username: id, password_hash: 'x', role, concurrency: 1, created_at: now, updated_at: now })
+  }
+  const admin = store.create({ name: 'admin-key', max_concurrency: 0, user_id: 'u-admin' })
+  const user = store.create({ name: 'user-key', max_concurrency: 0, user_id: 'u-user' })
+
+  for (let i = 0; i < 3; i++) assert.equal(store.acquire(admin).ok, true)
+
+  assert.equal(store.acquire(user).ok, true)
+  const blocked = store.canAccept(user)
+  assert.equal(blocked.code, 'user_concurrency_limit')
+  assert.deepEqual(blocked.detail, { inflight: 1, max: 1 })
+})
+
 test('update reset_quota and remove', () => {
   const store = tmpStore()
   const rec = store.create({ name: 'x', quota_requests: 5 })

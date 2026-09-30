@@ -355,20 +355,27 @@ export function agentStandingText(
   return String(raw).trim().slice(0, AGENT_STANDING_MAX)
 }
 
-/** 按档开关字段。缺省或缺 key 视为开。 */
+/** 按档开关字段。standing 注入按预设显式开启；其他字段缺省开启。 */
 export type PresetFlagField =
   | 'agent_standing_presets'
   | 'agent_standing_hide_presets'
   | 'persona_env_presets'
+
+function presetFlagDefault(field: PresetFlagField): boolean {
+  return field === 'agent_standing_presets' ? false : true
+}
 
 export function presetFlagEnabled(
   compat: Record<string, unknown> | undefined,
   field: PresetFlagField,
   preset: PersonaPreset
 ): boolean {
+  const defaultValue = presetFlagDefault(field)
   const map = compat?.[field]
-  if (!map || typeof map !== 'object' || Array.isArray(map)) return true
-  return (map as Record<string, unknown>)[preset] !== false
+  if (!map || typeof map !== 'object' || Array.isArray(map)) return defaultValue
+  const value = (map as Record<string, unknown>)[preset]
+  if (field === 'agent_standing_presets') return value === true
+  return value !== false
 }
 
 /** `{{agent_standing}}` 的值：非空时以换行结尾，紧跟下一段不粘连。 */
@@ -800,7 +807,7 @@ export function resetAgentStanding(
   return next
 }
 
-/** 按档开关。全开且服务端本来没有这个键时去掉，避免无意义的 dirty。 */
+/** 按档开关。全等于字段默认值且服务端本来没有这个键时去掉，避免无意义的 dirty。 */
 export function setPresetFlag(
   compat: Record<string, unknown>,
   field: PresetFlagField,
@@ -815,7 +822,9 @@ export function setPresetFlag(
   const next = { ...compat }
   const serverHas =
     !!server && Object.prototype.hasOwnProperty.call(server, field)
-  if (!serverHas && Object.values(map).every(Boolean)) delete next[field]
+  const defaultValue = presetFlagDefault(field)
+  if (!serverHas && Object.values(map).every((value) => value === defaultValue))
+    delete next[field]
   else next[field] = map
   return next
 }

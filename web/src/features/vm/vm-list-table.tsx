@@ -1,9 +1,10 @@
-import { useNavigate } from '@tanstack/react-router'
+import { useState, type KeyboardEvent, type ReactNode } from 'react'
 import type { UsageAccountRow } from '@/types/panel-usage'
 import type { Vm } from '@/types/panel-vm'
 import type { StatusTone } from '@/types/status'
+import { GripVertical, RotateCcw } from 'lucide-react'
 import { expiresAtToMs, fmtResetClock } from '@/lib/fable-status'
-import { fmtNum, fmtUsd, usedPctOf } from '@/lib/format'
+import { fmtNum, fmtUsd } from '@/lib/format'
 import { tierVisual } from '@/lib/tier-visual'
 import { cn } from '@/lib/utils'
 import { isCodexVm, slotNameLabel } from '@/lib/vm-kind'
@@ -11,15 +12,14 @@ import {
   credentialStatus,
   fleetGroup,
   poolStatus,
-  vmCircuit,
   vmCircuitTitle,
   vmCooldown,
   vmCooldownTitle,
 } from '@/lib/vm-status'
 import {
   vmTodayStats,
+  vmTotalCost,
   vmWeekOutcome,
-  vmWindowCosts,
   type VmWeekOutcome,
 } from '@/lib/vm-usage'
 import { useNow } from '@/hooks/use-now'
@@ -29,11 +29,10 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
-import { PlatformChip, SlotIdentity } from '@/components/platform-chip'
+import { CredLaneChip, SlotIdentity } from '@/components/platform-chip'
 import { StatusMark } from '@/components/status-mark'
 import { ProxyChip } from '@/features/proxies/proxy-chip'
 import { OpenaiPlanBadge } from '@/features/vm/openai-plan-badge'
-import { OpenaiQuotaActions } from '@/features/vm/openai-quota-actions'
 import {
   SchedulableSwitch,
   vmSchedulableProps,
@@ -43,21 +42,25 @@ import {
   useStatusBarShow,
   type StatusBarShow,
 } from '@/features/vm/status-bar-options'
-import { fableRow, riskFg, UsageMeter } from '@/features/vm/usage-meter'
+import { VmUsageWindows } from '@/features/vm/usage-windows'
+import {
+  useVmColumnOrder,
+  type VmColumnKey,
+} from '@/features/vm/use-vm-column-order'
+import { VmActionMenu } from '@/features/vm/vm-action-menu'
+import { useVmActions } from '@/features/vm/vm-actions-context'
 
-const LIST_COL = {
-  vm: 'min-w-[220px] flex-[1.25] pl-3',
-  sched: 'min-w-[52px] flex-[0.35] px-1.5',
-  group: 'min-w-[104px] flex-[0.7] px-1.5',
-  pri: 'min-w-[92px] flex-[0.55] px-1.5',
-  plan: 'min-w-[100px] flex-[0.6] px-1.5',
-  status: 'min-w-[240px] flex-[1.9] px-1.5',
-  today: 'min-w-[168px] flex-[1.15] px-1.5',
-  week: 'min-w-[128px] flex-[0.85] px-1.5',
-  usage: 'min-w-[280px] flex-[1.7] px-1.5',
-  cost: 'min-w-[144px] flex-[1] px-1.5',
-  actions: 'min-w-[96px] flex-[0.65] pr-2',
-} as const
+/** 列的宽度与弹性；顺序由 `useVmColumnOrder` 决定，不写死在这里。 */
+const COL_CLS: Record<VmColumnKey | 'actions', string> = {
+  vm: 'min-w-[170px] flex-[1.15]',
+  sched: 'min-w-[62px] flex-[0.3]',
+  type: 'min-w-[120px] flex-[0.75]',
+  status: 'min-w-[140px] flex-[1.1]',
+  req: 'min-w-[200px] flex-[1.2]',
+  usage: 'min-w-[262px] flex-[1.7]',
+  cost: 'min-w-[84px] flex-[0.55]',
+  actions: 'w-[44px] shrink-0 pr-2',
+}
 
 type DotTone = 'ok' | 'caution' | 'warn' | 'bad' | 'none'
 
@@ -97,7 +100,7 @@ function healthModel(vm: Vm): { dots: DotTone[]; text: string; tone: DotTone } {
 }
 
 function StatusReason({ vm, tone }: { vm: Vm; tone: StatusTone }) {
-  const mark = <StatusMark tone={tone} variant='pill' className='text-sm' />
+  const mark = <StatusMark tone={tone} variant='pill' className='text-xs' />
   const title =
     tone.key === 'circuit'
       ? vmCircuitTitle(vm)
@@ -115,63 +118,10 @@ function StatusReason({ vm, tone }: { vm: Vm; tone: StatusTone }) {
   )
 }
 
-/** 冷却或熔断未关闭时显示「清冷却」；提示按实际原因给。 */
-function clearableTitle(vm: Vm): string | null {
-  if (vmCircuit(vm)) return vmCircuitTitle(vm)
-  if (vmCooldown(vm)) return vmCooldownTitle(vm)
-  return null
-}
-
-function UsageTrack({
-  label,
-  value,
-  resetAt,
-  detail,
-  cost,
-}: {
-  label: string
-  value: number
-  resetAt?: string | null
-  detail?: string | null
-  cost?: number | null
-}) {
-  return (
-    <div className='min-w-0 space-y-1'>
-      <div className='flex items-baseline justify-between gap-1 text-base text-muted-foreground'>
-        <span className='flex min-w-0 items-baseline gap-1.5'>
-          <span className='truncate'>{label}</span>
-          {cost != null ? (
-            <span
-              className='shrink-0 font-mono text-sm text-foreground/80 tabular-nums'
-              title={`${label} 调用费用合计`}
-            >
-              {fmtUsd(cost, 2)}
-            </span>
-          ) : null}
-        </span>
-        <span className={cn('font-medium tabular-nums', riskFg(value))}>
-          {value.toFixed(1)}%
-        </span>
-      </div>
-      <UsageMeter value={value} size='sm' ticks />
-      {resetAt ? (
-        <div className='font-mono text-sm text-muted-foreground tabular-nums'>
-          {resetAt}
-        </div>
-      ) : null}
-      {detail ? (
-        <div className='text-sm text-muted-foreground tabular-nums'>
-          {detail}
-        </div>
-      ) : null}
-    </div>
-  )
-}
-
 function PriorityChip({ vm }: { vm: Vm }) {
   const level = Number(vm.schedule_level)
   const valid = Number.isInteger(level) && level >= 0
-  const text = !valid ? 'P —' : level === 0 ? 'P 0' : `P +${level}`
+  const text = valid ? `优先级-${level}` : '优先级-—'
   const mode = vm.schedule_level_mode === 'manual' ? '手动' : '自动'
   const weight = Number(vm.weight)
   const title = Number.isFinite(weight)
@@ -179,7 +129,7 @@ function PriorityChip({ vm }: { vm: Vm }) {
     : `${mode}调度等级`
   return (
     <span
-      className='inline-flex rounded-md border border-border/70 px-2 py-1 font-mono text-sm font-semibold text-muted-foreground tabular-nums'
+      className='inline-flex rounded border border-border/70 px-1.5 py-0.5 font-mono text-[11px] leading-none font-semibold text-muted-foreground tabular-nums'
       title={title}
     >
       {text}
@@ -187,55 +137,36 @@ function PriorityChip({ vm }: { vm: Vm }) {
   )
 }
 
-function PlanCell({ vm, now }: { vm: Vm; now: number }) {
-  const skin = tierVisual(vm)
+/**
+ * 类型列：调用形式（console / oauth / api）+ 调度优先级，下一行是周窗口重置时刻。
+ * 平台（Claude / GPT）与 pro / max 等级都在「账号」列，不在这里重复。
+ */
+function TypeCell({ vm, now }: { vm: Vm; now: number }) {
   const hasToken = Boolean(vm.has_token)
   const resetAt = vm.reset_7d || vm.reset_7d_oi
   const clock = hasToken ? fmtResetClock(resetAt) : null
   const resetMs = clock ? expiresAtToMs(resetAt) : 0
-  const due = clock
-    ? {
-        text: clock,
-        cls:
-          resetMs > 0 && resetMs <= now
-            ? 'text-[color:var(--status-bad)]'
-            : 'text-muted-foreground',
-      }
-    : null
-  if (isCodexVm(vm)) {
-    return (
-      <div className='flex flex-col items-start gap-1'>
-        <OpenaiPlanBadge vm={vm} />
-        {due ? (
-          <span className={cn('font-mono text-sm tabular-nums', due.cls)}>
-            {due.text}
-          </span>
-        ) : null}
-      </div>
-    )
-  }
-  const label =
-    skin.key === 'pro' || skin.key === 'max' || skin.key === 'unknown'
-      ? skin.label
-      : null
+  const dueCls =
+    resetMs > 0 && resetMs <= now
+      ? 'text-[color:var(--status-bad)]'
+      : 'text-muted-foreground'
   return (
-    <div className='flex flex-col items-start gap-1'>
-      {label ? (
-        <span
-          className={cn(
-            'rounded-md px-2 py-1 text-sm leading-none font-bold tracking-[0.03em] uppercase',
-            skin.badge
-          )}
+    <div className='min-w-0 space-y-1'>
+      <div className='flex flex-wrap items-center gap-x-1.5 gap-y-1'>
+        {hasToken ? (
+          <CredLaneChip vm={vm} />
+        ) : (
+          <span className='text-xs text-muted-foreground'>无凭证</span>
+        )}
+        <PriorityChip vm={vm} />
+      </div>
+      {clock ? (
+        <div
+          className={cn('font-mono text-[11px] tabular-nums', dueCls)}
+          title='周窗口重置时刻'
         >
-          {label}
-        </span>
-      ) : (
-        <span className='text-muted-foreground'>{skin.label}</span>
-      )}
-      {due ? (
-        <span className={cn('font-mono text-sm tabular-nums', due.cls)}>
-          {due.text}
-        </span>
+          重置 {clock.slice(0, 11)}
+        </div>
       ) : null}
     </div>
   )
@@ -245,7 +176,7 @@ function CountPill({ tone, n }: { tone: 'ok' | 'bad'; n: number }) {
   return (
     <span
       className={cn(
-        'inline-flex min-w-9 items-center justify-center rounded-full px-2 py-1 text-sm font-semibold tabular-nums',
+        'inline-flex min-w-7 items-center justify-center rounded-full px-1.5 py-0.5 text-xs font-semibold tabular-nums',
         tone === 'ok'
           ? 'bg-[color:var(--status-ok-bg)] text-[color:var(--status-ok)]'
           : 'bg-[color:var(--status-bad-bg)] text-[color:var(--status-bad)]'
@@ -272,7 +203,7 @@ function StatusCell({ vm, show }: { vm: Vm; show: StatusBarShow }) {
           <StatusReason vm={vm} tone={tone} />
           {showInflight ? (
             <span
-              className='inline-flex size-7 items-center justify-center rounded-full bg-[color:var(--tier-pro-solid)] text-sm font-semibold text-[color:var(--tier-pro-solid-fg)] tabular-nums'
+              className='inline-flex size-5 items-center justify-center rounded-full bg-[color:var(--tier-pro-solid)] text-[11px] font-semibold text-[color:var(--tier-pro-solid-fg)] tabular-nums'
               title={`在飞 ${inflight}`}
             >
               {inflight}
@@ -281,9 +212,9 @@ function StatusCell({ vm, show }: { vm: Vm; show: StatusBarShow }) {
         </div>
       ) : null}
       {show.bar ? (
-        <div className='flex items-center gap-2' title={health.text}>
+        <div className='flex items-center gap-1.5' title={health.text}>
           <div
-            className='flex h-2.5 min-w-0 flex-1 gap-px overflow-hidden rounded-full track-recessed'
+            className='flex h-1.5 min-w-0 flex-1 gap-px overflow-hidden rounded-full track-recessed'
             aria-hidden
           >
             {health.dots.map((dot, i) => (
@@ -296,7 +227,7 @@ function StatusCell({ vm, show }: { vm: Vm; show: StatusBarShow }) {
           </div>
           <span
             className={cn(
-              'max-w-[7.5rem] shrink-0 truncate text-sm font-medium',
+              'max-w-[6rem] shrink-0 truncate text-xs font-medium',
               DOT_FG[health.tone]
             )}
           >
@@ -308,140 +239,116 @@ function StatusCell({ vm, show }: { vm: Vm; show: StatusBarShow }) {
     </div>
   )
 }
-function TodayCell({ vm, accounts }: { vm: Vm; accounts?: UsageAccountRow[] }) {
+
+/** 今日与 7D 合并：上行今日花费与量，下行 7D 成功 / 失败。 */
+function RequestCell({
+  vm,
+  accounts,
+  week,
+}: {
+  vm: Vm
+  accounts?: UsageAccountRow[]
+  week: VmWeekOutcome
+}) {
   const s = vmTodayStats(vm, accounts)
-  if (s.req <= 0 && s.tok <= 0 && s.today <= 0) {
-    return <span className='text-xs text-muted-foreground'>—</span>
-  }
+  const idle = s.req <= 0 && s.tok <= 0 && s.today <= 0
   return (
-    <div className='space-y-0.5 font-mono text-xs tabular-nums'>
-      <div className='flex flex-wrap gap-x-2 text-muted-foreground'>
-        <span>{fmtNum(s.req)} req</span>
-        <span>{fmtNum(s.tok)} tok</span>
+    <div className='min-w-0 space-y-1'>
+      <div
+        className='flex flex-wrap items-baseline gap-x-1.5 font-mono text-xs tabular-nums'
+        title={
+          idle
+            ? undefined
+            : `入 ${fmtNum(s.inn)} · 出 ${fmtNum(s.out)} · 缓存 ${fmtNum(s.read)}/${fmtNum(s.write)}`
+        }
+      >
+        <span className='w-6 shrink-0 font-sans text-[11px] text-muted-foreground'>
+          今日
+        </span>
+        {idle ? (
+          <span className='text-muted-foreground'>—</span>
+        ) : (
+          <>
+            <span className='font-medium text-[color:var(--status-ok)]'>
+              {fmtUsd(s.today, 2)}
+            </span>
+            <span className='text-muted-foreground'>
+              {fmtNum(s.req)} req · {fmtNum(s.tok)} tok
+            </span>
+          </>
+        )}
       </div>
-      {s.inn || s.out || s.read || s.write ? (
-        <div className='text-muted-foreground'>
-          入 {fmtNum(s.inn)} · 出 {fmtNum(s.out)} · 缓存 {fmtNum(s.read)}/
-          {fmtNum(s.write)}
-        </div>
-      ) : null}
-      <div className='text-sm font-medium text-[color:var(--status-ok)]'>
-        {fmtUsd(s.today, 2)}
+      <div className='flex items-center gap-1.5'>
+        <span className='w-6 shrink-0 text-[11px] text-muted-foreground'>
+          7D
+        </span>
+        <WeekPills week={week} />
       </div>
     </div>
   )
 }
 
-function WeekReqCell({ week }: { week: VmWeekOutcome }) {
+function WeekPills({ week }: { week: VmWeekOutcome }) {
   if (!week.known) {
-    if (week.req <= 0) {
-      return (
-        <div className='flex items-center gap-1'>
-          <CountPill tone='ok' n={0} />
-          <CountPill tone='bad' n={0} />
-        </div>
-      )
-    }
-    return (
-      <div className='space-y-0.5'>
+    return week.req <= 0 ? (
+      <>
+        <CountPill tone='ok' n={0} />
+        <CountPill tone='bad' n={0} />
+      </>
+    ) : (
+      <>
         <CountPill tone='ok' n={week.req} />
-        <div className='text-sm text-muted-foreground'>失败 —</div>
-      </div>
+        <span className='text-xs text-muted-foreground'>失败 —</span>
+      </>
     )
   }
   return (
-    <div className='flex items-center gap-1'>
+    <>
       <CountPill tone='ok' n={week.success} />
       <CountPill tone='bad' n={week.fail} />
-    </div>
+    </>
   )
 }
 
-function UsageCell({
+/** 成本列：7d 花费 + 账号累计。累计取 `/usage` 账号行，`/vms` 本身不带费用。 */
+function CostCell({
   vm,
-  week,
   accounts,
+  week,
 }: {
   vm: Vm
-  week: VmWeekOutcome
   accounts?: UsageAccountRow[]
+  week: VmWeekOutcome
 }) {
-  const hasToken = Boolean(vm.has_token)
-  const u5 = usedPctOf(vm, '5h')
-  const u7 = usedPctOf(vm, '7d')
-  const fable = isCodexVm(vm) ? null : fableRow(vm)
-  const reset5 = hasToken ? fmtResetClock(vm.reset_5h) : null
-  const reset7 = hasToken ? fmtResetClock(vm.reset_7d) : null
-  const resetFable = hasToken ? fmtResetClock(vm.reset_7d_oi) : null
-  const costs = vmWindowCosts(vm, accounts)
-  const fiveReq = Number(vm.window_5h_requests) || 0
-  const fiveTok = Number(vm.window_5h_tokens) || 0
-  const fiveDetail =
-    fiveReq > 0 || fiveTok > 0
-      ? `${fmtNum(fiveReq)} req / ${fmtNum(fiveTok)} tok`
-      : null
-  const weekDetail =
-    week.req > 0 || week.tok > 0
-      ? `${fmtNum(week.req)} req / ${fmtNum(week.tok)} tok`
-      : null
   return (
-    <div className='space-y-1.5'>
-      <div className='grid grid-cols-2 gap-2'>
-        <UsageTrack
-          label='5h'
-          value={u5}
-          resetAt={reset5}
-          detail={fiveDetail}
-          cost={costs.h5}
-        />
-        {fable?.kind === 'bar' ? (
-          <UsageTrack label='Fable' value={fable.pct} resetAt={resetFable} />
-        ) : fable?.kind === 'note' ? (
-          <div className='min-w-0 space-y-0.5'>
-            <div className='flex items-baseline justify-between gap-1 text-base text-muted-foreground'>
-              <span>Fable</span>
-              <span className='truncate text-[color:var(--status-warn)]'>
-                {fable.text}
-              </span>
-            </div>
-            <div className='h-1' aria-hidden />
-          </div>
-        ) : (
-          <UsageTrack
-            label='7d'
-            value={u7}
-            resetAt={reset7}
-            detail={weekDetail}
-            cost={costs.d7}
-          />
-        )}
+    <div
+      className='space-y-0.5 font-mono text-xs tabular-nums'
+      title='官方价结算：7d 窗口 / 账号累计'
+    >
+      <div>7d {fmtUsd(week.cost, 2)}</div>
+      <div className='text-muted-foreground'>
+        Σ {fmtUsd(vmTotalCost(vm, accounts), 2)}
       </div>
-      {fable ? (
-        <UsageTrack
-          label='7d'
-          value={u7}
-          resetAt={reset7}
-          detail={weekDetail}
-          cost={costs.d7}
-        />
-      ) : null}
     </div>
   )
 }
 
-function CostCell({ vm, week }: { vm: Vm; week: VmWeekOutcome }) {
+/** pro / max（GPT 为套餐名）跟着账号走，放在账号名同一行。 */
+function TierBadge({ vm }: { vm: Vm }) {
+  if (isCodexVm(vm)) return <OpenaiPlanBadge vm={vm} />
+  const skin = tierVisual(vm)
+  if (skin.key !== 'pro' && skin.key !== 'max' && skin.key !== 'unknown') {
+    return null
+  }
   return (
-    <div className='space-y-1'>
-      <div className='font-mono text-base tabular-nums'>
-        <div>7d {fmtUsd(week.cost, 2)}</div>
-        <div className='text-muted-foreground'>
-          Σ {fmtUsd(vm.total_cost, 2)}
-        </div>
-      </div>
-      <span className='inline-flex rounded-md border border-[color:var(--status-caution)]/45 px-2 py-1 text-sm font-medium text-[color:var(--status-caution)]'>
-        官方结
-      </span>
-    </div>
+    <span
+      className={cn(
+        'shrink-0 rounded px-1.5 py-0.5 text-[10px] leading-none font-bold tracking-[0.03em] uppercase',
+        skin.badge
+      )}
+    >
+      {skin.label}
+    </span>
   )
 }
 
@@ -449,151 +356,212 @@ function SlotCell({ vm }: { vm: Vm }) {
   const name = slotNameLabel(vm)
   const email = String(vm.email || '').trim()
   return (
-    <div className={cn(LIST_COL.vm, 'min-w-0 overflow-hidden')}>
-      <SlotIdentity vm={vm} compact className='font-medium' />
-      <div
-        className='truncate text-[12px] text-muted-foreground'
-        title={email ? name : undefined}
-      >
-        {name}
+    <div className='min-w-0 space-y-0.5 overflow-hidden'>
+      <SlotIdentity vm={vm} compact className='text-sm font-medium' />
+      <div className='flex min-w-0 items-center gap-1.5'>
+        <TierBadge vm={vm} />
+        <span
+          className='min-w-0 truncate text-[11px] text-muted-foreground'
+          title={email ? name : undefined}
+        >
+          {name}
+        </span>
       </div>
     </div>
   )
 }
 
+type CellCtx = {
+  vm: Vm
+  accounts?: UsageAccountRow[]
+  now: number
+  week: VmWeekOutcome
+  statusShow: StatusBarShow
+}
+
+const COLUMNS: Record<
+  VmColumnKey,
+  { label: string; cell: (ctx: CellCtx) => ReactNode }
+> = {
+  vm: { label: '账号', cell: ({ vm }) => <SlotCell vm={vm} /> },
+  sched: {
+    label: '调度',
+    cell: ({ vm }) => (
+      <div onClick={(e) => e.stopPropagation()}>
+        <SchedulableSwitch {...vmSchedulableProps(vm)} />
+      </div>
+    ),
+  },
+  type: {
+    label: '类型',
+    cell: ({ vm, now }) => <TypeCell vm={vm} now={now} />,
+  },
+  status: {
+    label: '状态',
+    cell: ({ vm, statusShow }) => <StatusCell vm={vm} show={statusShow} />,
+  },
+  req: {
+    label: '今日 / 7D 请求',
+    cell: ({ vm, accounts, week }) => (
+      <RequestCell vm={vm} accounts={accounts} week={week} />
+    ),
+  },
+  usage: {
+    label: '用量窗口',
+    cell: ({ vm, accounts }) => (
+      <VmUsageWindows vm={vm} accounts={accounts} quiet quotaActions />
+    ),
+  },
+  cost: {
+    label: '成本',
+    cell: ({ vm, accounts, week }) => (
+      <CostCell vm={vm} accounts={accounts} week={week} />
+    ),
+  },
+}
+
 export function VmTable({
   vms,
   accounts,
-  onReset,
-  onDelete,
-  onClearCooldown,
 }: {
   vms: Vm[]
   accounts?: UsageAccountRow[]
-  onReset?: (vm: Vm) => void
-  onDelete?: (vm: Vm) => void
-  onClearCooldown?: (vm: Vm) => void
 }) {
-  const navigate = useNavigate()
+  const actions = useVmActions()
   const now = useNow()
   const statusBar = useStatusBarShow()
+  const columns = useVmColumnOrder()
+  const [dragKey, setDragKey] = useState<VmColumnKey | null>(null)
+  const [overKey, setOverKey] = useState<VmColumnKey | null>(null)
+  const onRowKey = (e: KeyboardEvent<HTMLDivElement>, vm: Vm) => {
+    if (e.target !== e.currentTarget) return
+    if (e.key !== 'Enter' && e.key !== ' ') return
+    e.preventDefault()
+    actions.openDetail(vm)
+  }
+  const endDrag = () => {
+    setDragKey(null)
+    setOverKey(null)
+  }
+  // 拖动只靠指针；Alt+←/→ 给键盘用户同样的能力。
+  const onHeaderKey = (e: KeyboardEvent<HTMLDivElement>, key: VmColumnKey) => {
+    if (!e.altKey || (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight')) return
+    const i = columns.order.indexOf(key)
+    const target = columns.order[i + (e.key === 'ArrowLeft' ? -1 : 1)]
+    if (!target) return
+    e.preventDefault()
+    columns.move(key, target)
+  }
   return (
     <div className='overflow-x-auto rounded-lg border border-border/60'>
-      <div className='min-w-[1680px]'>
-        <div className='sticky top-0 z-10 flex h-10 items-center border-b bg-muted/30 text-sm font-medium tracking-wide text-muted-foreground'>
-          <div className={LIST_COL.vm}>账号</div>
-          <div className={LIST_COL.sched}>调度</div>
-          <div className={LIST_COL.group}>平台</div>
-          <div className={LIST_COL.pri}>调度优先级</div>
-          <div className={LIST_COL.plan}>等级</div>
-          <div className={`${LIST_COL.status} flex items-center gap-1`}>
-            状态
-            <StatusBarOptions
-              show={statusBar.show}
-              onToggle={statusBar.toggle}
-            />
+      <div className='min-w-[1100px]'>
+        <div className='sticky top-0 z-10 flex h-8 items-center border-b bg-muted/30 pl-1.5 text-xs font-medium tracking-wide text-muted-foreground'>
+          {columns.order.map((key) => {
+            const dragging = dragKey === key
+            const target = overKey === key && dragKey && dragKey !== key
+            const forward =
+              dragKey != null &&
+              columns.order.indexOf(dragKey) < columns.order.indexOf(key)
+            return (
+              <div
+                key={key}
+                draggable
+                tabIndex={0}
+                title='拖动调整列顺序（Alt+←/→）'
+                className={cn(
+                  'group/col flex cursor-grab items-center gap-0.5 px-1.5 py-1 select-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring active:cursor-grabbing',
+                  COL_CLS[key],
+                  dragging && 'opacity-40',
+                  target &&
+                    (forward
+                      ? 'shadow-[inset_-2px_0_0_0_var(--ring)]'
+                      : 'shadow-[inset_2px_0_0_0_var(--ring)]')
+                )}
+                onDragStart={(e) => {
+                  e.dataTransfer.effectAllowed = 'move'
+                  e.dataTransfer.setData('text/plain', key)
+                  setDragKey(key)
+                }}
+                onDragOver={(e) => {
+                  if (!dragKey) return
+                  e.preventDefault()
+                  e.dataTransfer.dropEffect = 'move'
+                  if (overKey !== key) setOverKey(key)
+                }}
+                onDrop={(e) => {
+                  e.preventDefault()
+                  if (dragKey) columns.move(dragKey, key)
+                  endDrag()
+                }}
+                onDragEnd={endDrag}
+                onKeyDown={(e) => onHeaderKey(e, key)}
+              >
+                <GripVertical
+                  className='size-3 shrink-0 opacity-0 transition-opacity group-hover/col:opacity-60'
+                  aria-hidden
+                />
+                <span className='truncate'>{COLUMNS[key].label}</span>
+                {key === 'status' ? (
+                  <StatusBarOptions
+                    show={statusBar.show}
+                    onToggle={statusBar.toggle}
+                  />
+                ) : null}
+              </div>
+            )
+          })}
+          <div className={cn(COL_CLS.actions, 'flex justify-end')}>
+            {columns.isDefault ? null : (
+              <Button
+                type='button'
+                size='icon'
+                variant='ghost'
+                className='size-6 text-muted-foreground'
+                title='恢复默认列顺序'
+                aria-label='恢复默认列顺序'
+                onClick={columns.reset}
+              >
+                <RotateCcw className='size-3.5' />
+              </Button>
+            )}
           </div>
-          <div className={LIST_COL.today}>今日统计</div>
-          <div className={LIST_COL.week}>请求(7D)</div>
-          <div className={LIST_COL.usage}>用量</div>
-          <div className={LIST_COL.cost}>成本</div>
-          <div className={LIST_COL.actions} />
         </div>
         {vms.map((vm) => {
           const week = vmWeekOutcome(vm, accounts)
           const group = fleetGroup(vm)
           const muted = group === 'off' || group === 'none'
+          const ctx: CellCtx = {
+            vm,
+            accounts,
+            now,
+            week,
+            statusShow: statusBar.show,
+          }
           return (
             <div
               key={vm.id}
+              role='button'
+              tabIndex={0}
+              aria-label={`查看 ${vm.id} 详情`}
               className={cn(
-                'group flex cursor-pointer items-start border-b border-border/40 py-3.5 text-base transition-colors duration-150',
-                // 等级色条只走行首 2px，不染整行底色：行是密集数字区，
-                // 底色一染，状态色（真正要被扫到的信号）就没对比空间了。
+                'group flex cursor-pointer items-start border-b border-border/40 py-2 pl-1.5 transition-colors duration-150 last:border-b-0 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring',
+                // 等级色只走行首 2px，不染整行底色：行是密集数字，底色一染就没对比空间了。
                 tierVisual(vm).row || 'hover:bg-accent/40',
                 muted && 'opacity-60'
               )}
-              onClick={() => navigate({ to: '/vm/$id', params: { id: vm.id } })}
+              onClick={() => actions.openDetail(vm)}
+              onKeyDown={(e) => onRowKey(e, vm)}
             >
-              <SlotCell vm={vm} />
-              <div className={LIST_COL.sched}>
-                <SchedulableSwitch {...vmSchedulableProps(vm)} />
-              </div>
-              <div className={LIST_COL.group}>
-                <PlatformChip vm={vm} className='px-2 py-1 text-sm' />
-              </div>
-              <div className={LIST_COL.pri}>
-                <PriorityChip vm={vm} />
-              </div>
-              <div className={LIST_COL.plan}>
-                <PlanCell vm={vm} now={now} />
-              </div>
-              <div className={LIST_COL.status}>
-                <StatusCell vm={vm} show={statusBar.show} />
-              </div>
-              <div className={LIST_COL.today}>
-                <TodayCell vm={vm} accounts={accounts} />
-              </div>
-              <div className={LIST_COL.week}>
-                <WeekReqCell week={week} />
-              </div>
-              <div className={LIST_COL.usage}>
-                <UsageCell vm={vm} week={week} accounts={accounts} />
-              </div>
-              <div className={LIST_COL.cost}>
-                <CostCell vm={vm} week={week} />
-              </div>
-              <div className={LIST_COL.actions}>
-                <div className='flex items-center justify-end gap-0.5'>
-                  {isCodexVm(vm) ? (
-                    <OpenaiQuotaActions vm={vm} compact />
-                  ) : null}
-                  <div className='flex items-center gap-0.5 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100'>
-                    {onClearCooldown && clearableTitle(vm) ? (
-                      <Button
-                        size='sm'
-                        variant='ghost'
-                        title={clearableTitle(vm) || undefined}
-                        className='h-8 px-2 text-sm text-muted-foreground'
-                        data-row-actions
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          onClearCooldown(vm)
-                        }}
-                      >
-                        清冷却
-                      </Button>
-                    ) : null}
-                    {onReset ? (
-                      <Button
-                        size='sm'
-                        variant='ghost'
-                        className='h-8 px-2 text-sm text-muted-foreground'
-                        data-row-actions
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          onReset(vm)
-                        }}
-                      >
-                        重置
-                      </Button>
-                    ) : null}
-                    {onDelete ? (
-                      <Button
-                        size='sm'
-                        variant='ghost'
-                        className='h-8 px-2 text-sm text-destructive'
-                        data-row-actions
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          onDelete(vm)
-                        }}
-                      >
-                        删除
-                      </Button>
-                    ) : null}
-                  </div>
+              {columns.order.map((key) => (
+                <div key={key} className={cn('px-1.5', COL_CLS[key])}>
+                  {COLUMNS[key].cell(ctx)}
                 </div>
+              ))}
+              <div
+                className={cn(COL_CLS.actions, 'flex justify-end')}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <VmActionMenu vm={vm} />
               </div>
             </div>
           )

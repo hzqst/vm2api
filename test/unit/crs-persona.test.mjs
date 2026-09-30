@@ -567,12 +567,12 @@ test('official_prompt keeps billing identity overlay, slot env, and skips inject
     },
     { mode: 'official_prompt', park: true },
   )
-  assert.equal(out.system.length, 4)
+  assert.equal(out.system.length, 3)
   assert.match(out.system[0].text, /x-anthropic-billing-header:/)
   assert.equal(out.system[1].text, CRS_OFFICIAL_SYSTEM)
-  assert.equal(out.system[2].text, `${DEFAULT_AGENT_STANDING}\n`)
-  assert.match(out.system[3].text, /^# Environment\n - Timezone: /)
-  assert.equal(out.system[3].cache_control, undefined)
+  assert.match(out.system[2].text, /^# Environment\n - Timezone: /)
+  assert.equal(out.system[2].cache_control, undefined)
+  assert.ok(!out.system.some((b) => String(b?.text || '').includes(DEFAULT_AGENT_STANDING)))
   assert.ok(!out.system.some((b) => b?.text === CRS_AGENT_EXPANSION))
   assert.ok(!out.system.some((b) => b?.text === CRS_OFFICIAL_AGENT_PROMPT))
   const first = out.messages[0].content
@@ -591,7 +591,7 @@ test('official_prompt writes caller agent into the official slot and leftover af
     { mode: 'official_prompt', park: false },
   )
   assert.equal(out.system.length, 4)
-  assert.equal(out.system[2].text, `${DEFAULT_AGENT_STANDING}\n${CRS_OFFICIAL_AGENT_PROMPT}`)
+  assert.equal(out.system[2].text, CRS_OFFICIAL_AGENT_PROMPT)
   assert.deepEqual(out.system[2].cache_control, { type: 'ephemeral', ttl: '1h', scope: 'global' })
   assert.match(out.system[3].text, /^# Environment/)
   assert.ok(!out.system.some((b) => b?.text === '你是一个高速收费员。'))
@@ -608,7 +608,6 @@ test('official leftover is a mid-conversation role=system after the first user',
     },
     { mode: 'official_prompt', park: false },
   )
-  assert.equal(out.system.length, 4)
   assert.equal(out.messages.length, 2)
   assert.equal(out.messages[0].content, '你是谁？')
   assert.equal(out.messages[1].role, 'system')
@@ -1167,7 +1166,7 @@ test('zero inject writes billing prompt_version, env timezone, and leftover', ()
   assert.ok(!/\n/.test(out.system[0].text))
   assert.equal(out.system[0].cache_control, undefined)
   assert.equal(out.system[1].text, CRS_EMPTY_IDENTITY_TEXT)
-  assert.equal(out.system[2].text, `${DEFAULT_AGENT_STANDING}\n`)
+  assert.equal(out.system[2].text, CRS_EMPTY_IDENTITY_TEXT)
   assert.deepEqual(out.system[2].cache_control, { type: 'ephemeral', ttl: '1h' })
   assert.ok(!out.system.some((b) => b?.text === CRS_AGENT_EXPANSION))
   assert.equal(out.system[3].text, '# Environment\n - Timezone: Asia/Shanghai')
@@ -1180,14 +1179,21 @@ test('zero inject writes billing prompt_version, env timezone, and leftover', ()
 
 test('zero inject prepends standing constraints to caller_agent', () => {
   const agent = 'You are an interactive agent that helps users with software engineering tasks.'
-  const out = applyCrsUnofficialPersona(
-    {
-      system: agent,
-      messages: [{ role: 'user', content: 'hi' }],
-    },
-    { mode: 'zero' },
-  )
-  assert.equal(out.system[2].text, `${DEFAULT_AGENT_STANDING}\n${agent}`)
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-zero-standing-'))
+  const routingFile = path.join(dir, 'routing.json')
+  fs.writeFileSync(routingFile, JSON.stringify({ compatibility: { agent_standing_presets: { zero: true } } }))
+  try {
+    const out = applyCrsUnofficialPersona(
+      {
+        system: agent,
+        messages: [{ role: 'user', content: 'hi' }],
+      },
+      { mode: 'zero', routingFile },
+    )
+    assert.equal(out.system[2].text, `${DEFAULT_AGENT_STANDING}\n${agent}`)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test('zero inject ignores persona_agent and writes env timezone without agent', () => {
@@ -1201,7 +1207,7 @@ test('zero inject ignores persona_agent and writes env timezone without agent', 
   assert.match(out.system[0].text, /prompt_version=</)
   assert.ok(!out.system.some((b) => b?.text === CRS_AGENT_PROMPT_REQUIRED))
   assert.equal(out.system[1].text, CRS_EMPTY_IDENTITY_TEXT)
-  assert.equal(out.system[2].text, `${DEFAULT_AGENT_STANDING}\n`)
+  assert.equal(out.system[2].text, CRS_EMPTY_IDENTITY_TEXT)
   assert.deepEqual(out.system[2].cache_control, { type: 'ephemeral', ttl: '1h' })
   assert.equal(out.system[3].text, '# Environment\n - Timezone: UTC')
 })
@@ -1216,7 +1222,7 @@ test('zero inject with no caller system is billing plus env timezone', () => {
   assert.equal(out.system.length, 4)
   assert.match(out.system[0].text, /prompt_version=<You are Anthropic Claude Agent SDK\.>/)
   assert.equal(out.system[1].text, CRS_EMPTY_IDENTITY_TEXT)
-  assert.equal(out.system[2].text, `${DEFAULT_AGENT_STANDING}\n`)
+  assert.equal(out.system[2].text, CRS_EMPTY_IDENTITY_TEXT)
   assert.ok(!out.system.some((b) => b?.text === CRS_AGENT_EXPANSION))
   assert.match(out.system[3].text, /^# Environment\n - Timezone: \S+$/)
   assert.ok(!String(firstUserContent(out)).includes('<system-reminder>'))
@@ -1233,7 +1239,7 @@ test('refreshOfficialSystemEnvironment rewrites zero inject timezone after VM pi
   const refreshed = refreshOfficialSystemEnvironment(first, { timezone: 'Europe/London' }, 'claude-sonnet-5')
   assert.equal(refreshed.system[0].text, first.system[0].text)
   assert.equal(refreshed.system[1].text, CRS_EMPTY_IDENTITY_TEXT)
-  assert.equal(refreshed.system[2].text, `${DEFAULT_AGENT_STANDING}\n`)
+  assert.equal(refreshed.system[2].text, CRS_EMPTY_IDENTITY_TEXT)
   assert.equal(refreshed.system[3].text, '# Environment\n - Timezone: Europe/London')
 })
 

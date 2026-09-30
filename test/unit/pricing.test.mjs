@@ -221,6 +221,69 @@ test('GPT-6 Sol and Luna use the published Flex and Fast bands', () => {
   assert.equal(lunaFast.total_cost, 1.2)
 })
 
+test('GPT-6.1 Sol uses the published standard, Flex, and Fast rates', () => {
+  const standard = calculateCost(
+    {
+      input_tokens: 250_000,
+      output_tokens: 100_000,
+      input_tokens_details: { cached_tokens: 100_000, cache_write_tokens: 50_000 },
+    },
+    'gpt-6.1-sol',
+  )
+  assert.equal(standard.known, true)
+  assert.equal(standard.long_context, false)
+  assert.equal(standard.pricing_key, 'gpt-6.1-sol')
+  assert.equal(standard.input_cost, 0.2)
+  assert.equal(standard.output_cost, 1)
+  assert.equal(standard.cache_read_cost, 0.01)
+  assert.equal(standard.cache_creation_cost, 0.125)
+  assert.equal(standard.total_cost, 1.335)
+
+  const flex = calculateCost({ input_tokens: 100_000, output_tokens: 100_000, service_tier: 'flex' }, 'gpt-6.1-sol')
+  assert.equal(flex.known, true)
+  assert.equal(flex.long_context, false)
+  assert.equal(flex.total_cost, 0.6)
+
+  const fast = calculateCost({ input_tokens: 100_000, output_tokens: 100_000, service_tier: 'priority' }, 'gpt-6.1-sol')
+  assert.equal(fast.known, true)
+  assert.equal(fast.service_tier, 'fast')
+  assert.equal(fast.long_context, false)
+  assert.equal(fast.total_cost, 2.4)
+})
+
+test('GPT-6.1 Sol above 272K uses 2x input and cache and 1.5x output', () => {
+  const atThreshold = calculateCost({ input_tokens: 272_000, output_tokens: 0 }, 'gpt-6.1-sol')
+  assert.equal(atThreshold.long_context, false)
+  assert.equal(atThreshold.input_cost, 0.544)
+
+  const long = calculateCost(
+    {
+      input_tokens: 3_000_000,
+      output_tokens: 1_000_000,
+      input_tokens_details: { cached_tokens: 1_000_000, cache_write_tokens: 1_000_000 },
+    },
+    'gpt-6.1-sol',
+  )
+  assert.equal(long.long_context, true)
+  assert.equal(long.input_cost, 4)
+  assert.equal(long.cache_read_cost, 0.2)
+  assert.equal(long.cache_creation_cost, 5)
+  assert.equal(long.output_cost, 15)
+  assert.equal(long.total_cost, 24.2)
+
+  const flex = calculateCost({ input_tokens: 300_000, output_tokens: 1_000_000, service_tier: 'flex' }, 'gpt-6.1-sol')
+  assert.equal(flex.long_context, true)
+  assert.equal(flex.total_cost, 8.1)
+
+  const fast = calculateCost(
+    { input_tokens: 300_000, output_tokens: 1_000_000, service_tier: 'priority' },
+    'gpt-6.1-sol',
+  )
+  assert.equal(fast.long_context, true)
+  assert.equal(fast.service_tier, 'fast')
+  assert.equal(fast.total_cost, 32.4)
+})
+
 test('gpt-reserve has no published price and stays unbilled', () => {
   const c = calculateCost({ input_tokens: 100, output_tokens: 10 }, 'gpt-reserve')
   assert.equal(c.known, false)

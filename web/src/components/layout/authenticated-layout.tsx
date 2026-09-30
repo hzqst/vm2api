@@ -7,6 +7,7 @@ import { SearchProvider } from '@/context/search-provider'
 import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar'
 import { AppHeader } from '@/components/layout/app-header'
 import { AppSidebar } from '@/components/layout/app-sidebar'
+import { StarHint } from '@/components/layout/star-hint'
 import { SkipToMain } from '@/components/skip-to-main'
 
 type AuthenticatedLayoutProps = {
@@ -42,6 +43,7 @@ export function AuthenticatedLayout({
             <AppHeader actions={headerActions} />
             {children ?? <Outlet />}
           </SidebarInset>
+          <StarHint />
         </SidebarProvider>
       </LayoutProvider>
     </SearchProvider>

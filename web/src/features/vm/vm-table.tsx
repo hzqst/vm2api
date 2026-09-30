@@ -1,8 +1,7 @@
-import { Link } from '@tanstack/react-router'
+import type { KeyboardEvent } from 'react'
 import type { UsageAccountRow } from '@/types/panel-usage'
 import type { Vm } from '@/types/panel-vm'
 import { credTypeLabel, credTypeOf } from '@/lib/cred-type'
-import { resetCountdown } from '@/lib/fable-status'
 import { fmtNum, fmtUsd, usedPctOf } from '@/lib/format'
 import { tierVisual } from '@/lib/tier-visual'
 import { cn } from '@/lib/utils'
@@ -11,15 +10,10 @@ import {
   claudeTier,
   credentialStatus,
   fleetGroup,
-  vmCircuit,
-  vmCircuitTitle,
-  vmCooldown,
-  vmCooldownTitle,
   vmCredDead,
   vmFailedAt,
 } from '@/lib/vm-status'
-import { vmCacheHitPct, vmWindowCosts } from '@/lib/vm-usage'
-import { useNow } from '@/hooks/use-now'
+import { vmCacheHitPct, vmTotalCost } from '@/lib/vm-usage'
 import { Button } from '@/components/ui/button'
 import {
   CredLaneChip,
@@ -28,318 +22,143 @@ import {
 } from '@/components/platform-chip'
 import { StatusMark } from '@/components/status-mark'
 import { ProxyChip } from '@/features/proxies/proxy-chip'
-import { OpenaiQuotaActions } from '@/features/vm/openai-quota-actions'
 import {
   SchedulableSwitch,
   vmSchedulableProps,
 } from '@/features/vm/schedulable-switch'
-import {
-  fableRow,
-  riskFg,
-  riskLevel,
-  UsageMeter,
-} from '@/features/vm/usage-meter'
-
-/** 5h / 7d / Fable 用量条。倒计时贴在标签行右侧，条本身只表达「烧到哪了」。 */
-function UtilBar({
-  label,
-  value,
-  sub,
-  cost,
-  mutedClass,
-  className,
-}: {
-  label: string
-  /** 用量百分比（越高越危险）。 */
-  value: number
-  /** 窗口重置倒计时（分钟精度），null/undefined 不占位。 */
-  sub?: string | null
-  /** 该窗口调用费用合计。 */
-  cost?: number | null
-  mutedClass?: string
-  className?: string
-}) {
-  return (
-    <div className={cn('space-y-1.5', className)}>
-      <div
-        className={cn(
-          'flex items-baseline justify-between text-[11px] tracking-[-0.005em]',
-          mutedClass ?? 'text-muted-foreground'
-        )}
-      >
-        <span className='flex min-w-0 items-baseline gap-1.5 truncate'>
-          <span className='truncate'>{label}</span>
-          {cost != null ? (
-            <span
-              className='shrink-0 font-mono text-[10.5px] tabular-nums'
-              title={`${label}调用费用合计`}
-            >
-              {fmtUsd(cost, 2)}
-            </span>
-          ) : null}
-        </span>
-        <span className='flex shrink-0 items-baseline gap-1.5'>
-          {sub ? <span className='opacity-75'>{sub}</span> : null}
-          {/* 卡是分诊面：绿色数字铺满一屏就是噪声，颜色只留给越线的档。 */}
-          <span
-            className={cn(
-              'font-medium tabular-nums',
-              riskLevel(value) !== 'ok' && riskFg(value)
-            )}
-          >
-            {value.toFixed(0)}%
-          </span>
-        </span>
-      </div>
-      <UsageMeter value={value} size='sm' />
-    </div>
-  )
-}
+import { VmUsageWindows } from '@/features/vm/usage-windows'
+import { VmActionMenu } from '@/features/vm/vm-action-menu'
+import { useVmActions } from '@/features/vm/vm-actions-context'
 
 /**
- * 网格卡片。三段式：**是谁**（名称 / 邮箱 / 等级）→ **还剩多少**（用量条 + 消耗）
- * → **能不能用**（左下有效性 + 右下调度开关）。
+ * 网格卡片。三段式：**是谁**（名称 / 邮箱 / 等级）→ **还剩多少**（统一用量窗口）
+ * → **能不能用**（左下有效性 + 右下调度开关与扩展菜单）。
  *
- * 卡面底色即等级：Pro 蓝 / Max 紫 / 无凭证中性。代理主机、缓存命中、凭证类型
- * 这些诊断字段留在列表视图与详情页——卡片是分诊面，不是明细面。
+ * 卡面底色即等级：Pro 蓝 / Max 紫 / 无凭证中性。点击卡片弹出详情卡；
+ * 诊断字段留在详情卡与详情页——卡片是分诊面，不是明细面。
  */
 export function VmCards({
   vms,
   accounts,
-  onReset,
-  onDelete,
-  onClearCooldown,
 }: {
   vms: Vm[]
   accounts?: UsageAccountRow[]
-  /** 未传时不渲染对应按钮 —— cluster 页/vm 页按需传入，行为不受影响。 */
-  onReset?: (vm: Vm) => void
-  onDelete?: (vm: Vm) => void
-  onClearCooldown?: (vm: Vm) => void
 }) {
   return (
-    <div className='grid min-w-0 gap-2.5 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4'>
+    <div className='grid min-w-0 gap-2 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4'>
       {vms.map((vm) => (
-        <VmCard
-          key={vm.id}
-          vm={vm}
-          accounts={accounts}
-          onReset={onReset}
-          onDelete={onDelete}
-          onClearCooldown={onClearCooldown}
-        />
+        <VmCard key={vm.id} vm={vm} accounts={accounts} />
       ))}
     </div>
   )
 }
 
-function VmCard({
-  vm,
-  accounts,
-  onReset,
-  onDelete,
-  onClearCooldown,
-}: {
-  vm: Vm
-  accounts?: UsageAccountRow[]
-  onReset?: (vm: Vm) => void
-  onDelete?: (vm: Vm) => void
-  onClearCooldown?: (vm: Vm) => void
-}) {
+function VmCard({ vm, accounts }: { vm: Vm; accounts?: UsageAccountRow[] }) {
+  const actions = useVmActions()
   const skin = tierVisual(vm)
-  const now = useNow()
-  const u5 = usedPctOf(vm, '5h')
-  const u7 = usedPctOf(vm, '7d')
-  const fable = isCodexVm(vm) ? null : fableRow(vm)
-  const hasToken = Boolean(vm.has_token)
-  // 无凭证槽没有窗口，倒计时无意义；有票才算。
-  const cd5 = hasToken ? resetCountdown(vm.reset_5h, now) : null
-  const cd7 = hasToken ? resetCountdown(vm.reset_7d, now) : null
-  const cdFable = hasToken ? resetCountdown(vm.reset_7d_oi, now) : null
-  const tripped = Boolean(vmCircuit(vm))
-  const cooling = tripped || Boolean(vmCooldown(vm))
-  const hasActions = Boolean(onClearCooldown || onReset || onDelete)
-  const fiveLabel = '5h 用量'
-  const sevenLabel = '7d 用量'
-  const costs = vmWindowCosts(vm, accounts)
+  const onKey = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.target !== e.currentTarget) return
+    if (e.key !== 'Enter' && e.key !== ' ') return
+    e.preventDefault()
+    actions.openDetail(vm)
+  }
 
   return (
     <div
+      role='button'
+      tabIndex={0}
+      aria-label={`查看 ${vm.id} 详情`}
       className={cn(
-        'group flex h-full min-w-0 flex-col overflow-hidden rounded-[10px] border p-3.5 transition-[background-color,border-color] duration-150 ease-out',
+        'group flex h-full min-w-0 cursor-pointer flex-col gap-2 overflow-hidden rounded-[10px] border p-3 transition-[background-color,border-color] duration-150 ease-out focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring',
         skin.card
       )}
+      onClick={() => actions.openDetail(vm)}
+      onKeyDown={onKey}
     >
-      <div className='flex min-w-0 flex-1 flex-col'>
-        <Link
-          to='/vm/$id'
-          params={{ id: vm.id }}
-          className='flex min-w-0 flex-1 flex-col gap-3.5 rounded-[5px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring'
-        >
-          <div className='flex min-w-0 items-start justify-between gap-2'>
-            <div className='min-w-0 flex-1 overflow-hidden'>
-              <div className='flex min-w-0 items-center gap-1.5'>
-                <SlotIdentity
-                  vm={vm}
-                  compact
-                  className='min-w-0 flex-1 font-[590]'
-                />
-                <CredLaneChip vm={vm} />
-              </div>
-              <p
-                className={cn(
-                  'truncate text-[11px] leading-[1.45] tracking-[-0.003em]',
-                  skin.muted
-                )}
-              >
-                {slotNameLabel(vm)}
-              </p>
-            </div>
-            {skin.key === 'none' ? null : (
-              <span
-                className={cn(
-                  'shrink-0 rounded-[5px] px-2 py-0.5 text-[10px] leading-none font-bold tracking-[0.03em] uppercase',
-                  skin.badge
-                )}
-              >
-                {skin.label}
-              </span>
-            )}
-          </div>
-
-          <ProxyChip vm={vm} className='w-full' />
-
-          {/* 5h 与 Fable 并排：两者都是「当下还能不能打」的短窗口，并置便于
-              比较；7d 是周配额、另一个时间尺度，独占一行。Pro 没有 Fable，
-              5h 自然占满整行。 */}
-          <div className='space-y-2.5'>
-            <div className='grid grid-cols-2 gap-3'>
-              <UtilBar
-                label={fiveLabel}
-                value={u5}
-                sub={cd5}
-                cost={costs.h5}
-                mutedClass={skin.muted}
-                className='min-w-0'
-              />
-              {fable?.kind === 'bar' ? (
-                <UtilBar
-                  label='Fable'
-                  value={fable.pct}
-                  sub={cdFable}
-                  mutedClass={skin.muted}
-                  className='min-w-0'
-                />
-              ) : fable?.kind === 'note' ? (
-                <div className='min-w-0 space-y-1.5'>
-                  <div
-                    className={cn(
-                      'flex items-baseline justify-between gap-1 text-[11px] tracking-[-0.005em]',
-                      skin.muted
-                    )}
-                  >
-                    <span>Fable</span>
-                    <span className='truncate font-medium text-[color:var(--status-warn)]'>
-                      {fable.text}
-                    </span>
-                  </div>
-                  {/* 占位与 UtilBar 的条等高，否则同一行里两列基线不齐 */}
-                  <div className='h-[3px]' aria-hidden='true' />
-                </div>
-              ) : null}
-            </div>
-            <UtilBar
-              label={sevenLabel}
-              value={u7}
-              sub={cd7}
-              cost={costs.d7}
-              mutedClass={skin.muted}
-            />
-          </div>
-
-          {/* 层级靠尺寸与字重建立，不靠颜色：累计是决策数字，今日是参考值。 */}
-          <div className='mt-auto flex items-end justify-between gap-3 pt-1'>
-            <div className='min-w-0'>
-              <div
-                className={cn(
-                  'text-[10.5px] leading-none',
-                  skin.key === 'none'
-                    ? 'text-[color:var(--text-tertiary)]'
-                    : skin.muted
-                )}
-              >
-                累计消耗
-              </div>
-              <div
-                className={cn(
-                  'mt-1 truncate text-[19px] leading-none font-[590] tracking-[-0.02em] tabular-nums',
-                  skin.accent
-                )}
-              >
-                {fmtUsd(vm.total_cost, 2)}
-              </div>
-            </div>
-            <div className='shrink-0 text-right'>
-              <div
-                className={cn(
-                  'text-[10.5px] leading-none',
-                  skin.key === 'none'
-                    ? 'text-[color:var(--text-tertiary)]'
-                    : skin.muted
-                )}
-              >
-                今日
-              </div>
-              <div className='mt-1 text-[13px] leading-none tracking-[-0.01em] tabular-nums'>
-                {fmtUsd(vm.today_cost, 2)}
-              </div>
-            </div>
-          </div>
-        </Link>
-
-        <div className='hairline-t mt-3 flex items-center justify-between gap-2 pt-2'>
+      <div className='flex min-w-0 items-start justify-between gap-2'>
+        <div className='min-w-0 flex-1 overflow-hidden'>
           <div className='flex min-w-0 items-center gap-1.5'>
-            <StatusMark tone={credentialStatus(vm)} variant='pill' />
-            {isCodexVm(vm) ? <OpenaiQuotaActions vm={vm} compact /> : null}
+            <SlotIdentity
+              vm={vm}
+              compact
+              className='min-w-0 flex-1 font-[590]'
+            />
+            <CredLaneChip vm={vm} />
           </div>
-          <div className='flex items-center gap-1'>
-            {hasActions ? (
-              <div className='hidden items-center gap-0.5 transition-opacity md:flex md:opacity-0 md:group-focus-within:opacity-100 md:group-hover:opacity-100'>
-                {onClearCooldown && cooling ? (
-                  <Button
-                    size='sm'
-                    variant='ghost'
-                    title={tripped ? vmCircuitTitle(vm) : vmCooldownTitle(vm)}
-                    className={cn('h-6 px-1.5 text-[11px]', skin.muted)}
-                    onClick={() => onClearCooldown(vm)}
-                  >
-                    清冷却
-                  </Button>
-                ) : null}
-                {onReset ? (
-                  <Button
-                    size='sm'
-                    variant='ghost'
-                    className={cn('h-6 px-1.5 text-[11px]', skin.muted)}
-                    onClick={() => onReset(vm)}
-                  >
-                    重置
-                  </Button>
-                ) : null}
-                {onDelete ? (
-                  <Button
-                    size='sm'
-                    variant='ghost'
-                    className='h-6 px-1.5 text-[11px] text-destructive'
-                    onClick={() => onDelete(vm)}
-                  >
-                    删除
-                  </Button>
-                ) : null}
-              </div>
-            ) : null}
-            <SchedulableSwitch {...vmSchedulableProps(vm)} />
+          <p
+            className={cn(
+              'truncate text-[11px] leading-[1.45] tracking-[-0.003em]',
+              skin.muted
+            )}
+          >
+            {slotNameLabel(vm)}
+          </p>
+        </div>
+        {skin.key === 'none' ? null : (
+          <span
+            className={cn(
+              'shrink-0 rounded-[5px] px-2 py-0.5 text-[10px] leading-none font-bold tracking-[0.03em] uppercase',
+              skin.badge
+            )}
+          >
+            {skin.label}
+          </span>
+        )}
+      </div>
+
+      <ProxyChip vm={vm} className='w-full' compact />
+
+      <VmUsageWindows vm={vm} accounts={accounts} quiet quotaActions />
+
+      {/* 层级靠尺寸与字重建立，不靠颜色：累计是决策数字，今日是参考值。 */}
+      <div className='mt-auto flex items-end justify-between gap-3'>
+        <div className='min-w-0'>
+          <div
+            className={cn(
+              'text-[10.5px] leading-none',
+              skin.key === 'none'
+                ? 'text-[color:var(--text-tertiary)]'
+                : skin.muted
+            )}
+          >
+            累计消耗
           </div>
+          <div
+            className={cn(
+              'mt-1 truncate text-[17px] leading-none font-[590] tracking-[-0.02em] tabular-nums',
+              skin.accent
+            )}
+          >
+            {fmtUsd(vmTotalCost(vm, accounts), 2)}
+          </div>
+        </div>
+        <div className='shrink-0 text-right'>
+          <div
+            className={cn(
+              'text-[10.5px] leading-none',
+              skin.key === 'none'
+                ? 'text-[color:var(--text-tertiary)]'
+                : skin.muted
+            )}
+          >
+            今日
+          </div>
+          <div className='mt-1 text-[13px] leading-none tracking-[-0.01em] tabular-nums'>
+            {fmtUsd(vm.today_cost, 2)}
+          </div>
+        </div>
+      </div>
+
+      <div className='hairline-t flex items-center justify-between gap-2 pt-1.5'>
+        <div className='flex min-w-0 items-center gap-1.5'>
+          <StatusMark tone={credentialStatus(vm)} variant='pill' />
+        </div>
+        <div
+          className='flex items-center gap-1'
+          onClick={(e) => e.stopPropagation()}
+        >
+          <SchedulableSwitch {...vmSchedulableProps(vm)} />
+          <VmActionMenu vm={vm} className={skin.muted} />
         </div>
       </div>
     </div>

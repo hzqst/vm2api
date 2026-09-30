@@ -10,14 +10,6 @@ const CRED_TYPE_LABEL: Record<CredType, string> = {
   none: '无凭证',
 }
 
-/** 可视化/队列用的短标签：普通 OAuth vs Setup Token（Console 推理票）。 */
-export function credLaneLabel(type: CredType): string {
-  if (type === 'setup-token') return 'Console'
-  if (type === 'apikey') return 'API Key'
-  if (type === 'oauth') return 'OAuth'
-  return '无凭证'
-}
-
 /**
  * 判定槽位的凭证类型。
  *
@@ -48,6 +40,35 @@ export function credTypeOf(vm: Vm | undefined): CredType {
 
 export function credTypeLabel(type: CredType): string {
   return CRED_TYPE_LABEL[type] || '无凭证'
+}
+
+/** 「类型」列的三类，按**实际调用上游的形式**归类，而不是按凭证怎么获得。 */
+export type CredEndpoint = 'console' | 'oauth' | 'api' | 'none'
+
+const CRED_ENDPOINT_LABEL: Record<CredEndpoint, string> = {
+  console: 'Console',
+  oauth: 'OAuth',
+  api: 'API',
+  none: '无凭证',
+}
+
+export function credEndpointLabel(endpoint: CredEndpoint): string {
+  return CRED_ENDPOINT_LABEL[endpoint]
+}
+
+/**
+ * Claude 槽刷新走 OAuth 接口，但实际推理都是 `Authorization: Bearer` 调 Console
+ * （Setup Token 形式），所以 OAuth 与 Setup Token 都归 Console；只有 `x-api-key`
+ * 方案才算 API。GPT 槽走 Codex OAuth，归 OAuth。
+ *
+ * 归类只看实际生效的认证方案（`authSchemeOf`），不看 `credential_mode`：
+ * 后者记录的是凭证怎么导入的，同一个 OAuth 授权可以被「转为 Setup Token」，
+ * 但调用形式并没有因此不同。
+ */
+export function credEndpointOf(vm: Vm | undefined): CredEndpoint {
+  if (credTypeOf(vm) === 'none') return 'none'
+  if (isCodexVm(vm)) return 'oauth'
+  return authSchemeOf(vm) === 'x_api_key' ? 'api' : 'console'
 }
 
 /** 只有 Claude 完整 OAuth 槽才支持官方初装。GPT 槽走 Codex OAuth。 */

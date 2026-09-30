@@ -152,7 +152,18 @@ function AccountRow({ row, vm }: { row: UsageAccountRow; vm?: Vm }) {
             '—'
           )}
           {row.credential_mode ? (
-            <CredLaneChip type={credTypeFromMode(row.credential_mode)} />
+            vm ? (
+              <CredLaneChip vm={vm} />
+            ) : (
+              // 用量行的 credential_mode 只对 Claude 槽有值；没有槽位时按默认方案归类。
+              <CredLaneChip
+                endpoint={
+                  credTypeFromMode(row.credential_mode) === 'apikey'
+                    ? 'api'
+                    : 'console'
+                }
+              />
+            )
           ) : null}
         </div>
       </div>

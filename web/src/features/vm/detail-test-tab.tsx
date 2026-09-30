@@ -50,6 +50,15 @@ const CODEX_EFFORTS = [
 ] as const
 
 export function VmTestTab(props: VmTestTabProps) {
+  return (
+    <TabsContent value='test' className='space-y-3 pt-4'>
+      <VmTestPanel {...props} className='max-w-lg' />
+    </TabsContent>
+  )
+}
+
+/** 不依赖 Tabs 上下文的测试面板，详情页 Tab 与弹窗共用。 */
+export function VmTestPanel(props: VmTestTabProps & { className?: string }) {
   const {
     models,
     model,
@@ -71,8 +80,8 @@ export function VmTestTab(props: VmTestTabProps) {
   } = props
 
   return (
-    <TabsContent value='test' className='space-y-3 pt-4'>
-      <Card className='max-w-lg'>
+    <>
+      <Card className={props.className}>
         <CardHeader className='pb-2'>
           <CardTitle className='text-sm'>发一条测试对话</CardTitle>
         </CardHeader>
@@ -176,6 +185,6 @@ export function VmTestTab(props: VmTestTabProps) {
         </CardContent>
       </Card>
       <TestChatResultCard result={result} running={running} />
-    </TabsContent>
+    </>
   )
 }

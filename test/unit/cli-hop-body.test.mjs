@@ -24,7 +24,9 @@ test('prepareCliHopBody drops metadata and CLI-owned system but keeps official a
   assert.equal(body.system.length, 1)
   assert.equal(body.system[0].text, CRS_OFFICIAL_AGENT_PROMPT)
   assert.equal(body.model, 'claude-sonnet-5')
-  assert.deepEqual(body.messages[0].content, [{ type: 'text', text: 'hi' }])
+  assert.deepEqual(body.messages[0].content, [
+    { type: 'text', text: 'hi', cache_control: { type: 'ephemeral', ttl: '1h' } },
+  ])
   assert.equal(body.stream, true)
 })
 
@@ -123,9 +125,9 @@ test('prepareCliHopBody drops an assistant turn that is only unsigned thinking',
     body.messages.map((message) => message.role),
     ['user'],
   )
-  assert.deepEqual(body.messages[0].content, [
+  assert.deepEqual(body.messages.at(-1).content, [
     { type: 'text', text: 'first' },
-    { type: 'text', text: 'continue' },
+    { type: 'text', text: 'continue', cache_control: { type: 'ephemeral', ttl: '1h' } },
   ])
 })
 
@@ -190,7 +192,36 @@ test('prepareCliHopBody disables Haiku adaptive thinking', () => {
   assert.equal(body.thinking.type, 'disabled')
 })
 
-test('cli-hop removes all cache markers before native CLI processing', () => {
+function withoutMessageCache(body) {
+  return {
+    ...body,
+    messages: (body.messages || []).map((message) => {
+      if (!Array.isArray(message?.content)) return message
+      return {
+        ...message,
+        content: message.content.map((block) => {
+          if (!block || typeof block !== 'object' || !block.cache_control) return block
+          const { cache_control: _drop, ...rest } = block
+          return rest
+        }),
+      }
+    }),
+  }
+}
+
+function messageMarkers(body) {
+  const hits = []
+  for (const [index, message] of (body.messages || []).entries()) {
+    if (!Array.isArray(message?.content)) continue
+    for (const [blockIndex, block] of message.content.entries()) {
+      if (!block?.cache_control) continue
+      hits.push({ index, blockIndex, type: block.type, ttl: block.cache_control.ttl })
+    }
+  }
+  return hits
+}
+
+test('cli-hop drops caller system/tools markers and restamps last plus penultimate user', () => {
   const body = prepareCliHopBody(
     {
       model: 'claude-sonnet-5',
@@ -201,7 +232,8 @@ test('cli-hop removes all cache markers before native CLI processing', () => {
       messages: [
         { role: 'user', content: [{ type: 'text', text: 'u1', cache_control: { type: 'ephemeral', ttl: '1h' } }] },
         { role: 'assistant', content: [{ type: 'text', text: 'a1', cache_control: { type: 'ephemeral' } }] },
-        { role: 'user', content: [{ type: 'text', text: 'u2', cache_control: { type: 'ephemeral', ttl: '5m' } }] },
+        { role: 'user', content: [{ type: 'text', text: 'u2' }] },
+        { role: 'assistant', content: [{ type: 'text', text: 'a2' }] },
       ],
     },
     { cacheTtl: '5m' },
@@ -209,10 +241,13 @@ test('cli-hop removes all cache markers before native CLI processing', () => {
   assert.equal(body.cache_control, undefined)
   assert.equal(body.tools[0].cache_control, undefined)
   assert.equal(body.system[0].cache_control, undefined)
-  assert.ok(body.messages.every((message) => message.content.every((block) => block.cache_control == null)))
+  assert.deepEqual(messageMarkers(body), [
+    { index: 0, blockIndex: 0, type: 'text', ttl: '5m' },
+    { index: 3, blockIndex: 0, type: 'text', ttl: '5m' },
+  ])
 })
 
-test('cli-hop keeps multi-turn history intact for native CLI marker placement', () => {
+test('cli-hop short history only marks the last message', () => {
   const body = prepareCliHopBody({
     model: 'claude-sonnet-5',
     max_tokens: 256,
@@ -220,21 +255,59 @@ test('cli-hop keeps multi-turn history intact for native CLI marker placement', 
       { role: 'user', content: 'u1' },
       { role: 'assistant', content: 'a1' },
       { role: 'user', content: 'u2' },
-      { role: 'assistant', content: 'a2' },
-      { role: 'user', content: 'u3' },
     ],
   })
   assert.deepEqual(
     body.messages.map((message) => message.role),
-    ['user', 'assistant', 'user', 'assistant', 'user'],
+    ['user', 'assistant', 'user'],
   )
-  assert.ok(body.messages.every((message) => message.content.every((block) => block.cache_control == null)))
+  assert.deepEqual(messageMarkers(body), [{ index: 2, blockIndex: 0, type: 'text', ttl: '1h' }])
 })
 
-test('Claude Code turns stay a byte prefix of the next one, from turn 1 on', () => {
+test('cli-hop does not mark thinking blocks', () => {
+  const body = prepareCliHopBody(
+    {
+      model: 'claude-sonnet-5',
+      max_tokens: 256,
+      messages: [
+        {
+          role: 'assistant',
+          content: [
+            { type: 'text', text: 'answer' },
+            { type: 'thinking', thinking: 'hidden', signature: 'sig'.repeat(8) },
+          ],
+        },
+      ],
+    },
+    { cacheTtl: '1h' },
+  )
+  assert.deepEqual(body.messages.at(-1).content[0].cache_control, { type: 'ephemeral', ttl: '1h' })
+  assert.equal(body.messages.at(-1).content[1].cache_control, undefined)
+})
+
+test('cli-hop uses the inbound session TTL on both message anchors', () => {
+  const body = prepareCliHopBody(
+    {
+      model: 'claude-sonnet-5',
+      max_tokens: 256,
+      messages: [
+        { role: 'user', content: 'u1' },
+        { role: 'assistant', content: 'a1' },
+        { role: 'user', content: 'u2' },
+        { role: 'assistant', content: 'a2' },
+      ],
+    },
+    { cacheTtl: '1h' },
+  )
+  assert.deepEqual(
+    messageMarkers(body).map((hit) => hit.ttl),
+    ['1h', '1h'],
+  )
+})
+
+test('Claude Code turns stay a content prefix of the next one, from turn 1 on', () => {
   const reminder = (text) => ({ role: 'system', content: text })
   const budget = (left) => reminder(`<total_tokens>${left} tokens left</total_tokens>`)
-  // No client flag: relays strip the billing block, so this must hold for any caller.
   const turn = (messages) =>
     prepareCliHopBody({
       model: 'claude-opus-5-5',
@@ -242,7 +315,6 @@ test('Claude Code turns stay a byte prefix of the next one, from turn 1 on', () 
       system: [{ type: 'text', text: 'main prompt' }],
       messages,
     })
-  // Turn 1 ends with SessionStart context, later turns with a live token counter.
   const turns = [
     [{ role: 'user', content: 'u1' }, reminder('SessionStart hook context')],
     [{ role: 'assistant', content: 'a1' }, { role: 'user', content: 'u2' }, budget(14930105)],
@@ -256,7 +328,10 @@ test('Claude Code turns stay a byte prefix of the next one, from turn 1 on', () 
     assert.equal(body.messages.at(-1).role, 'system')
     if (previous) {
       assert.deepEqual(body.system, previous.system)
-      assert.deepEqual(body.messages.slice(0, previous.messages.length), previous.messages)
+      assert.deepEqual(
+        withoutMessageCache(body).messages.slice(0, previous.messages.length),
+        withoutMessageCache(previous).messages,
+      )
     }
     previous = body
   }

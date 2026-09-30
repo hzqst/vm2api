@@ -101,11 +101,15 @@ export function openaiResponseFormatToOutputConfig(responseFormat) {
 /** Promote leftover OpenAI structured-output fields before they are dropped. */
 export function applyStructuredOutput(out, source = {}) {
   if (!out || typeof out !== 'object') return out
-  if (out.output_config && typeof out.output_config === 'object') return out
+  const config = out.output_config && typeof out.output_config === 'object' ? out.output_config : source.output_config
+  if (config?.format) {
+    out.output_config = config
+    return out
+  }
   const mapped =
     openaiResponseFormatToOutputConfig(source.response_format) ||
     openaiResponseFormatToOutputConfig(source.text?.format)
-  if (mapped) out.output_config = mapped
+  if (mapped || config) out.output_config = { ...config, ...mapped }
   return out
 }
 

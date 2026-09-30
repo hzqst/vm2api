@@ -54,6 +54,9 @@ export const STABLE_SESSION_SEED = 'kin-stable-session:'
 /** Prefix so rebuild values cannot collide with unofficial / stable hashes. */
 export const REBUILD_SESSION_SEED = 'kin-rebuild-session:'
 
+/** Prefix so a sub-agent session cannot collide with any other derived id. */
+export const AGENT_SESSION_SEED = 'kin-claude-code-agent:'
+
 const SESSION_UA_PRODUCT = /([A-Za-z0-9._-]+)\/[A-Za-z0-9._-]+/g
 const SESSION_UA_VERSION = /\bv?\d+(?:\.\d+){1,3}\b/g
 
@@ -182,6 +185,8 @@ export function resolveInboundIdentity({ inbound = {}, body = {}, headers = {} }
     if (!deviceId) deviceId = cleanIdentityValue(parsed.device_id)
     if (sessionId && deviceId) break
   }
+  // A sub-agent hop keeps the main session_id; it is its own session.
+  sessionId = agentSessionId(sessionId, claudeCodeAgentId(headers))
   if (deviceId) return { sessionId, deviceId, source: 'metadata' }
 
   const explicitDevice =
@@ -195,9 +200,41 @@ export function resolveInboundIdentity({ inbound = {}, body = {}, headers = {} }
 }
 
 /**
+ * Claude Code (>= 2.1.139) sends the main session_id on every hop and marks
+ * sub-agent hops with x-claude-code-agent-id (nested agents add
+ * x-claude-code-parent-agent-id). Main-thread hops carry neither.
+ */
+export function claudeCodeAgentId(headers = {}) {
+  return headerValue(headers, 'x-claude-code-agent-id').trim()
+}
+
+/**
+ * One CLI session per sub-agent, stable for the agent's lifetime. Without an
+ * agent id the root session is the session. UUID-shaped because official
+ * passthrough sends it upstream as metadata.user_id.session_id.
+ */
+export function agentSessionId(rootSessionId, agentId) {
+  const root = String(rootSessionId || '').trim()
+  const agent = String(agentId || '').trim()
+  if (!root || !agent) return root
+  return uuidFromSeed(`${AGENT_SESSION_SEED}${root}#${agent}`)
+}
+
+/** Main session a Claude Code sub-agent hop belongs to; '' on main-thread hops. */
+export function claudeCodeAgentRootSession({ inbound = {}, body = {}, headers = {} } = {}) {
+  if (!claudeCodeAgentId(headers)) return ''
+  return rootCallerSession({ inbound, body, headers })
+}
+
+/**
  * Caller session, in official order: metadata.user_id → sticky headers → body keys.
+ * A Claude Code sub-agent hop gets its own session under that root.
  */
 export function extractCallerSession({ inbound = {}, body = {}, headers = {} } = {}) {
+  return agentSessionId(rootCallerSession({ inbound, body, headers }), claudeCodeAgentId(headers))
+}
+
+function rootCallerSession({ inbound, body, headers }) {
   const raw = inbound?.metadata?.user_id || body?.metadata?.user_id
   const parsed = parseUserId(raw) || {}
   if (parsed.session_id) return String(parsed.session_id)

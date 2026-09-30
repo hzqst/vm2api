@@ -9,6 +9,7 @@ export const OPENAI_PRICING_SOURCE = 'openai-official-2026-09'
 /** USD per million tokens. cache_write 0 = not billed. */
 export const OPENAI_OFFICIAL_RATES = {
   'gpt-6-astra': { input: 10, output: 50, cache_read: 1, cache_write: 12.5 },
+  'gpt-6.1-sol': { input: 2, output: 10, cache_read: 0.1, cache_write: 2.5 },
   'gpt-6-sol': { input: 2, output: 10, cache_read: 0.2, cache_write: 2.5 },
   'gpt-6-luna': { input: 0.1, output: 0.5, cache_read: 0.01, cache_write: 0.125 },
   'gpt-5.6-sol': { input: 5, output: 30, cache_read: 0.5, cache_write: 6.25 },
@@ -72,6 +73,14 @@ const OPENAI_TIER_RATES = {
     long_standard: [20, 75, 2],
     long_flex: [10, 37.5, 1],
     long_fast: [40, 150, 4],
+  },
+  'gpt-6.1-sol': {
+    flex: [1, 5, 0.05],
+    fast: [4, 20, 0.2],
+    // >272K: 2× input and cache, 1.5× output. Flex is half of that band; Fast is double.
+    long_standard: [4, 15, 0.2],
+    long_flex: [2, 7.5, 0.1],
+    long_fast: [8, 30, 0.4],
   },
   'gpt-6-sol': {
     flex: [1, 5, 0.1],

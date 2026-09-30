@@ -34,15 +34,15 @@
 
 **zero 模板**在 agent 槽之后写 `{{env}}` 块（`hide`、`drop_if_empty`、不挂 cache），只含槽位时区。自定义档空模板回落 official，同样带 `{{env}}`。live 已自定义的 zero 模板不会自动多出这一块，需在 system提示词页「恢复预设」。
 
-**agent prompt 常驻约束**：`compatibility.agent_standing`（缺省为 distillation / 思维链 / NSFW 四行，显式空串 = 不加，上限 2000 字符）经模板变量 `{{agent_standing}}` 写成 agent 块第一段：official / 0注入 在 `caller_agent` 之前，official_full 在 `agent_official` 之前（同一块）。关掉后 0注入 agent 槽回到零宽占位。
+**agent prompt 常驻约束**：默认不启用。`compatibility.agent_standing` 仍保留内置 distillation / 思维链 / NSFW 四行文本（显式空串 = 不加，上限 2000 字符），只有当前档的 `agent_standing_presets` 显式为 `true` 才经 `{{agent_standing}}` 写成 agent 块第一段：official / 0注入 在 `caller_agent` 之前，official_full 在 `agent_official` 之前（同一块）。关掉后 0注入 无调用方 agent 时回到零宽占位；已有显式开启的配置不被覆盖。
 
-**按档开关**（`{official,official_full,zero,custom}: boolean`，缺 map 或缺 key 视为开）：
-- `agent_standing_presets`：是否写常驻约束。
-- `agent_standing_hide_presets`：常驻约束是否从客户端 usage 中扣除，独立于整档遮罩（官方档模板不遮罩，约束仍可单独遮罩）。cli-hop 0注入 同样生效。
-- `persona_env_presets`：是否写 `{{env}}`。官方完整的 `env_official` 不受此开关影响。
+**按档开关**（`{official,official_full,zero,custom}: boolean`）：
+- `agent_standing_presets`：是否写常驻约束，缺 map 或缺 key 视为关。控制台开关、预览与 Node 出站使用同一缺省语义。
+- `agent_standing_hide_presets`：常驻约束是否从客户端 usage 中扣除，缺 map/key 视为开，独立于整档遮罩；未启用约束时不扣约束 token。cli-hop 0注入 同样生效。
+- `persona_env_presets`：是否写 `{{env}}`，缺 map/key 视为开。官方完整的 `env_official` 不受此开关影响。
 - `persona_hide_presets`：整档 usage 遮罩（billing / identity / agent / Environment 等 `hide:true` 块）。缺 key 时依次回落旧全局 `persona_hides`、该档模板的 `hide` 标记（默认 zero 开、其余关）。槽位单独指定人设时读该槽位档的开关；cli-hop 0注入 关掉后 CLI billing + Environment 计入 usage。
 
-cli-hop 路径下 wrap CLI 自己也会写 `# Environment\n - Timezone: <kernel.json timezone>`（两种 `system_layout` 都写）；Node 侧的 `# Environment` 块在 hop 前被剥离，不会重复。
+cli-hop 的 kin 分支只组装 `billing →（identity 布局的身份句）→ # Environment\n - Timezone: <kernel.json timezone> → Node/caller leftover`。它剥离重复 billing、身份句、`# Environment` 和 Kin/Crag 自产 persona，不再追加槽内 cwd、Platform、Notes 或默认 agent prompt。leftover 各块原文（包括首尾空白）按原顺序以双换行拼接；调用方真正的 `You are an agent for Claude Code...` 和 `Notes:` 不会被当作自产内容删除。常驻约束若启用，仍在 leftover 的 agent prompt 顶部。billing 的 `isSubagent: true`、`splitSysPromptPrefix` 断点与既有缓存 TTL 策略不因本修复改变。
 
 调用方 `messages[].role=system` 和 tools / `tool_choice` 保留；`overlay_preset=off` 不挂 prompt-leak / identity / no-tools reminder。
 
@@ -51,6 +51,8 @@ cli-hop 路径下 wrap CLI 自己也会写 `# Environment\n - Timezone: <kernel.
 遗留 `persona_inject=rewrite|overwrite|append|none` 仍可用，但不是仓库配置默认值。`rewrite` 使用 KIN 短 agent + env；`overwrite` 使用完整 agent_prompt + continuation + Environment。system提示词页保存时三档写回 `official_prompt` / `official_full` / `zero`；自定义才保留旧 inject。
 
 权威开关是 `routing.json` 的 `compatibility.persona_preset`（system提示词）与 `cache_ttl`（设置 → 协议）。`vms/<id>/run/kernel.json` 不是第二套面板：面板保存、槽位「跟随全局」、外部改写 `routing.json`，或虚拟机环境保存时区之后，才把解析结果投影进去（`persona_preset`、`system_layout`、`default_cache_ttl`、`timezone`）。`system_layout` 只有 `zero` 与 `identity`（`official` / `official_full` / `custom` 都是 `identity`）。字节没变不重写。kernel 热读该文件，不必重启槽。Codex 槽不写。手改 `kernel.json` 会在下一次投影时被盖掉。
+
+面板预览表达 Node 给出的模板内容；cli-hop 最终线序以上述 CLI-owned 前缀为准，不把 Node 对象预览当成最终 wire 抓包。更新 CLI 二进制后需要替换槽内副本并重启相应 kernel/CLI；配置热读不能让旧进程自动加载新 ELF。删除旧环境文本后首次前缀会冷写，后续 cache_read 数值须实测，不能保证必然不低于旧值。0注入 + 常驻约束关闭 + 无调用方 agent 的真实模型可见输出须单独验收。
 
 Go worker JSON 透传，不必因人设重建 worker。
 
@@ -109,7 +111,7 @@ Rikka / 客户端 `search_web`、`scrape_web` **不是** Anthropic 自带搜索�
 1. `thinking` 文本为空的（非官方被补 `display: omitted` 后 haiku 只回签名不回文本，这类块出站前就没了）
 2. 签名短于 24 字符或是 dummy 的（`hasUsableThinkingSignature`，兜第三方截断的 SSE 签名）
 
-HTTP hop 与 cli-hop（`prepareCliHopBody`）共用内容预过滤，但职责不同。cli-hop 的 Node 只做协议转换、非法字段清洗和 caller system/message/tool 准备，并清除所有旧 `cache_control`；native Claude Code CLI 每个 job 热读 slot `kernel.json`，独占最终 persona、system/tools/message marker 位置和 `5m/1h` TTL。Rust kernel 只认证、转发和流式传输，不再重打或降级 cli-hop markers。HTTP hop 仍可由 Node 按自己的路由策略整流缓存。
+HTTP hop 与 cli-hop（`prepareCliHopBody`）共用内容预过滤，但职责不同。cli-hop 的 Node 清除 caller `cache_control` 后写入最后消息及 `messages.length>=4` 时倒数第二 user 的断点，TTL 用入站会话已 pin 值。native Claude Code CLI 每个 job 热读 slot `kernel.json` 做 persona 布局，自产 system/tools 标记必须沿用同一请求 TTL，不得再从面板独立决策。Rust kernel 只认证、转发和流式传输，不再重打 last。Node 出站 JSON 不是最终 wire。HTTP hop 仍可由 Node 按自己的路由策略整流缓存。
 
 长度够的签名原样转发，由 Anthropic 验。上游**严格验签名自身完整性**：乱码签名回 400 `Invalid \`signature\` in \`thinking\` block`。但签名**不与 thinking 文本绑定、也不与模型绑定** —— 真签名配改写过的文本、或 sonnet 的签名打到 opus / haiku，上游都 200（2026-08-28 实测，见 `测试结果/2026-08-28-thinking-signature/`）。
 

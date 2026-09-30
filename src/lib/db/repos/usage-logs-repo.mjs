@@ -677,6 +677,71 @@ export class UsageLogsRepo {
     }))
   }
 
+  /**
+   * Per-slot usage over the last `days` Shanghai calendar days (stats dialog).
+   * Buckets are Shanghai days so the last bucket lines up with billingStats().today.
+   * `models` / `endpoints` are ranked by request count and capped; `endpoints`
+   * is the inbound request path (usage_logs keeps no separate upstream endpoint).
+   */
+  vmUsageStats({ vmId, days = 30 } = {}) {
+    if (!vmId) return { days: 0, since: null, history: [], models: [], endpoints: [] }
+    const span = Math.max(1, Math.min(90, Math.floor(Number(days)) || 30))
+    const since = new Date(Date.parse(shanghaiDayStartIso()) - (span - 1) * 86400_000).toISOString()
+    const { cond, params } = filterCond({ since, vmId })
+    const history = this.db
+      .prepare(`
+      SELECT strftime('%Y-%m-%d', created_at, '+8 hours') AS day,
+             COUNT(*) AS requests,
+             SUM(CASE WHEN ${SLA_ERROR_PRED} THEN 1 ELSE 0 END) AS errors,
+             COALESCE(SUM(input_tokens), 0) AS input_tokens,
+             COALESCE(SUM(output_tokens), 0) AS output_tokens,
+             COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+             COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation_tokens,
+             COALESCE(SUM(total_cost), 0) AS total_cost,
+             COALESCE(SUM(duration_ms), 0) AS duration_ms_sum,
+             SUM(CASE WHEN duration_ms IS NOT NULL THEN 1 ELSE 0 END) AS duration_n
+      FROM usage_logs ${cond}
+      GROUP BY day ORDER BY day
+    `)
+      .all(...params)
+      .map((r) => ({
+        day: r.day,
+        requests: Number(r.requests || 0),
+        errors: Number(r.errors || 0),
+        input_tokens: Number(r.input_tokens || 0),
+        output_tokens: Number(r.output_tokens || 0),
+        cache_read_tokens: Number(r.cache_read_tokens || 0),
+        cache_creation_tokens: Number(r.cache_creation_tokens || 0),
+        total_cost: Number(r.total_cost || 0),
+        duration_ms_sum: Number(r.duration_ms_sum || 0),
+        duration_n: Number(r.duration_n || 0),
+      }))
+    const group = (expr, limit) =>
+      this.db
+        .prepare(`
+      SELECT ${expr} AS name,
+             COUNT(*) AS requests,
+             COALESCE(SUM(input_tokens), 0) + COALESCE(SUM(output_tokens), 0) AS tokens,
+             COALESCE(SUM(total_cost), 0) AS total_cost
+      FROM usage_logs ${cond}
+      GROUP BY name ORDER BY requests DESC, total_cost DESC LIMIT ${limit}
+    `)
+        .all(...params)
+        .map((r) => ({
+          name: r.name,
+          requests: Number(r.requests || 0),
+          tokens: Number(r.tokens || 0),
+          total_cost: Number(r.total_cost || 0),
+        }))
+    return {
+      days: span,
+      since,
+      history,
+      models: group("COALESCE(NULLIF(upstream_model, ''), NULLIF(model, ''), NULLIF(requested_model, ''), '—')", 12),
+      endpoints: group("COALESCE(NULLIF(path, ''), '—')", 8),
+    }
+  }
+
   /** Official-standard totals: all-time + Shanghai calendar today + per account. */
   billingStats({ accountWindows = null, now = Date.now() } = {}) {
     try {

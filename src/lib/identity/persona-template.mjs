@@ -277,12 +277,16 @@ export function agentStandingText(compat = {}) {
 
 /**
  * Per-preset switch maps (agent_standing_presets / agent_standing_hide_presets /
- * persona_env_presets). Missing map or missing key means on.
+ * persona_env_presets). Standing injection is opt-in per preset; other maps
+ * remain opt-out for backwards-compatible masking/env behavior.
  */
 export function presetFlagEnabled(compat, field, preset) {
+  const defaultValue = field === 'agent_standing_presets' ? false : true
   const map = compat?.[field]
-  if (!map || typeof map !== 'object' || Array.isArray(map)) return true
-  return map[normalizePersonaPreset(preset)] !== false
+  if (!map || typeof map !== 'object' || Array.isArray(map)) return defaultValue
+  const value = map[normalizePersonaPreset(preset)]
+  if (field === 'agent_standing_presets') return value === true
+  return value !== false
 }
 
 /**

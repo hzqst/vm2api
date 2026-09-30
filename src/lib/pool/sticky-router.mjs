@@ -7,7 +7,7 @@ import crypto from 'node:crypto'
 import { ENVELOPE_NEEDLES, extractPrompt } from '../core/distill-detect.mjs'
 import { resolveStoreDb } from '../db/database.mjs'
 import { StickyRepo } from '../db/repos/sticky-repo.mjs'
-import { extractCallerSession, parseUserId } from '../identity/identity-rewrite.mjs'
+import { claudeCodeAgentRootSession, extractCallerSession, parseUserId } from '../identity/identity-rewrite.mjs'
 
 export const DEFAULT_STICKY_HEADER_KEYS = [
   'x-session-id',
@@ -189,6 +189,7 @@ export function explicitParentSessionId(body = {}, headers = {}) {
       meta.parent_session_id ||
       headers?.['x-kin-root-session'] ||
       headers?.['x-kin-parent-session'] ||
+      claudeCodeAgentRootSession({ inbound: body, body, headers }) ||
       '',
   ).trim()
 }

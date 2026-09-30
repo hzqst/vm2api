@@ -2020,6 +2020,12 @@ function buildAccountBilling(cost, billing, { vmId, accountId, requestLog } = {}
     byModel = []
   }
   if (!cost && !byModel.length) return null
+  let usageStats = null
+  try {
+    usageStats = vmId ? requestLog?.vmUsageStats?.({ vmId, days: 30 }) || null : null
+  } catch {
+    usageStats = null
+  }
   return {
     source: billing?.source || 'anthropic-official',
     currency: billing?.currency || 'USD',
@@ -2031,6 +2037,7 @@ function buildAccountBilling(cost, billing, { vmId, accountId, requestLog } = {}
     window_7d: window7d,
     total,
     by_model: byModel,
+    usage_stats: usageStats,
     today_cost: today?.total_cost || 0,
     total_cost: total?.total_cost || 0,
     window_5h_cost: window5h?.total_cost || 0,

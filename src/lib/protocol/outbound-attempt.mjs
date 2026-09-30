@@ -15,6 +15,7 @@ import {
 } from './anthropic-policy.mjs'
 import { liftMidConversationSystemMessages } from './sanitize.mjs'
 import { ensureUnofficialAdaptiveThinking, ensureUnofficialEffortHigh, normalizeThinkingForModel } from './thinking.mjs'
+import { ensureOutputConfigSchema } from './request-rectifier.mjs'
 import {
   applyCrsIdentityReplace,
   extractCallerSession,
@@ -38,12 +39,15 @@ import {
 } from '../identity/official-cc-system-2.1.241.mjs'
 import {
   applyCacheTtlToBody,
+  applyMessageBreakpoints,
+  DEFAULT_CACHE_TTL,
   enforceCacheTtlOrder,
+  normalizeCacheTtl,
   removeCacheControlFields,
   stripIllegalCacheControlFields,
 } from './cache-ttl.mjs'
 import { apiKeyBetaHeader, setupTokenBetaHeader } from './claude-code-betas.mjs'
-import { applyOpus55RequestRules } from './model-policy.mjs'
+import { applyModelRequestRules } from './model-policy.mjs'
 import { isApiKeyMode, isSetupTokenMode } from '../oauth/credential-mode.mjs'
 
 export const INFERENCE_UA = 'kin-inference/1.0'
@@ -153,7 +157,8 @@ function stabilizeMessageBudgets(body) {
 }
 
 /**
- * Caller fields only. CLI owns UA / billing / metadata / layoutSystemBlocks.
+ * Caller fields plus Node-owned message breakpoints.
+ * CLI owns persona layout and system/tools markers; kernel only forwards.
  *
  * role=system turns stay where the caller put them, including a trailing one:
  * Claude Code ends most turns with a reminder (SessionStart context, then
@@ -163,7 +168,10 @@ function stabilizeMessageBudgets(body) {
  * This must not depend on client classification: relays strip the billing
  * block and rewrite the UA, so relayed Claude Code looks third-party.
  */
-export function prepareCliHopBody(canonicalBody, { stream = true, repaired = false } = {}) {
+export function prepareCliHopBody(
+  canonicalBody,
+  { stream = true, repaired = false, cacheTtl = DEFAULT_CACHE_TTL } = {},
+) {
   let body = officialMessagesBody(canonicalBody, { stream })
   delete body.metadata
   // Wrap CLI (Claude Code) throws a fatal "max_output_tokens" error if response reaches max_tokens.
@@ -188,10 +196,12 @@ export function prepareCliHopBody(canonicalBody, { stream = true, repaired = fal
     body = ensureClearThinkingContextManagement(body)
   }
   body = stripInvalidThinkingBlocks(body)
-  body = applyOpus55RequestRules(body)
+  body = applyModelRequestRules(body)
+  body = ensureOutputConfigSchema(body)
   body = alignSamplingWithThinking(body)
   body = stripIllegalCacheControlFields(body)
   body = removeCacheControlFields(body)
+  body = applyMessageBreakpoints(body, normalizeCacheTtl(cacheTtl), 'rewrite')
   return body
 }
 /** Wrap CLI process is spawned as sonnet-5/adaptive. Haiku rejects thinking. */

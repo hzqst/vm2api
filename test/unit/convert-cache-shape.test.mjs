@@ -114,7 +114,7 @@ test('openai.chat / messages / responses convert to the same cacheable block sha
   assert.deepEqual(rewriteStamps(responses), rewriteStamps(messages))
 })
 
-test('unofficial cli-hop keeps converted openai.chat and messages shapes marker-free', () => {
+test('unofficial cli-hop converts openai.chat and messages to the same marked shape', () => {
   const turns = [
     { role: 'user', content: 'u1' },
     { role: 'assistant', content: 'a1' },
@@ -124,21 +124,21 @@ test('unofficial cli-hop keeps converted openai.chat and messages shapes marker-
   ]
   const fromChat = prepareCliHopBody(
     toClaudeMessages('openai.chat', { model: MODEL, max_tokens: 256, messages: turns }).claude,
-    { unofficial: true },
+    { unofficial: true, cacheTtl: '1h' },
   )
   const fromMessages = prepareCliHopBody(
     toClaudeMessages('anthropic.messages', { model: MODEL, max_tokens: 256, messages: turns }).claude,
-    { unofficial: true },
+    { unofficial: true, cacheTtl: '1h' },
   )
-  assert.deepEqual(stampMap(fromChat), [])
-  assert.deepEqual(stampMap(fromMessages), [])
+  assert.deepEqual(stampMap(fromChat), ['messages[2].content[0]', 'messages[4].content[0]'])
+  assert.deepEqual(stampMap(fromMessages), stampMap(fromChat))
   assert.deepEqual(
     fromChat.messages.map((message) => message.role),
     fromMessages.messages.map((message) => message.role),
   )
 })
 
-test('openai.chat multi-turn cli-hop leaves current-tail boundary to native CLI', () => {
+test('openai.chat multi-turn cli-hop marks last and penultimate user', () => {
   const chat = toClaudeMessages('openai.chat', {
     model: MODEL,
     max_tokens: 256,
@@ -150,7 +150,8 @@ test('openai.chat multi-turn cli-hop leaves current-tail boundary to native CLI'
       { role: 'user', content: 'u3' },
     ],
   }).claude
-  const body = prepareCliHopBody(chat, { unofficial: true })
-  assert.equal(body.messages[2].content[0].cache_control, undefined)
-  assert.equal(body.messages[4].content[0].cache_control, undefined)
+  const body = prepareCliHopBody(chat, { unofficial: true, cacheTtl: '1h' })
+  assert.deepEqual(body.messages[2].content[0].cache_control, { type: 'ephemeral', ttl: '1h' })
+  assert.deepEqual(body.messages[4].content[0].cache_control, { type: 'ephemeral', ttl: '1h' })
+  assert.equal(body.messages[0].content[0].cache_control, undefined)
 })

@@ -36,6 +36,15 @@ function firstString(...values) {
   return ''
 }
 
+function accountIdFromToken(accessToken) {
+  try {
+    const payload = JSON.parse(Buffer.from(String(accessToken).split('.')[1], 'base64url'))
+    return firstString(payload?.['https://api.openai.com/auth']?.chatgpt_account_id)
+  } catch {
+    return ''
+  }
+}
+
 export function buildOpenaiQuotaHeaders({ accessToken, accountId, fedRamp = false } = {}) {
   const headers = {
     authorization: `Bearer ${String(accessToken || '').trim()}`,
@@ -48,7 +57,7 @@ export function buildOpenaiQuotaHeaders({ accessToken, accountId, fedRamp = fals
     'sec-fetch-dest': 'empty',
     priority: 'u=4, i',
   }
-  const account = firstString(accountId)
+  const account = firstString(accountIdFromToken(accessToken), accountId)
   if (account) headers['chatgpt-account-id'] = account
   if (fedRamp) headers['x-openai-fedramp'] = 'true'
   return headers

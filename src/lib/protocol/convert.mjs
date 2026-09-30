@@ -81,6 +81,7 @@ export function openaiToolsToClaude(tools) {
             name: t.function.name,
             description: t.function.description || '',
             input_schema: t.function.parameters || { type: 'object', properties: {} },
+            ...(typeof t.function.strict === 'boolean' ? { strict: t.function.strict } : {}),
           },
           t.function.cache_control ? t.function : t,
         ),
@@ -99,6 +100,7 @@ export function openaiToolsToClaude(tools) {
           name,
           description: t.description || '',
           input_schema: t.input_schema || t.parameters || { type: 'object', properties: {} },
+          ...(typeof t.strict === 'boolean' ? { strict: t.strict } : {}),
         },
         t,
       ),
@@ -374,6 +376,8 @@ function responsesToClaude(body, opts) {
   if (systemParts.length) out.system = systemParts.map((text) => ({ type: 'text', text }))
   const tools = openaiToolsToClaude(body.tools)
   if (tools?.length) out.tools = tools
+  const tc = openaiToolChoiceToClaude(body.tool_choice)
+  if (tc) out.tool_choice = tc
   const thinking = openaiReasoningToClaudeThinking(body)
   if (thinking) out.thinking = thinking
   applyStructuredOutput(out, body)

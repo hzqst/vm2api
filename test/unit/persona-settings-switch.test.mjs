@@ -124,9 +124,10 @@ test('settings save rewrite/official_prompt/overwrite/zero/none hot-reads withou
 
     persistSettings(file, { persona_inject: 'official_prompt', persona_park: true })
     const official = applyFromSettings(file)
-    assert.equal(official.system.length, 4)
-    assert.equal(official.system[2].text, `${DEFAULT_AGENT_STANDING}\n`)
+    assert.equal(official.system.length, 3)
     assert.equal(official.system[1].text, CRS_OFFICIAL_SYSTEM)
+    assert.match(official.system[2].text, /^# Environment\n - Timezone: /)
+    assert.ok(!official.system.some((b) => String(b?.text || '').includes(DEFAULT_AGENT_STANDING)))
     assert.ok(!official.system.some((b) => b?.text === CRS_AGENT_EXPANSION))
     assert.ok(!official.system.some((b) => b?.text === CRS_OFFICIAL_AGENT_PROMPT))
     assert.equal(envTextAt(official), '# Environment\n - Timezone: America/Los_Angeles')
@@ -148,7 +149,7 @@ test('settings save rewrite/official_prompt/overwrite/zero/none hot-reads withou
     assert.match(zero.system[0].text, /x-anthropic-billing-header:/)
     assert.match(zero.system[0].text, /prompt_version=<You are Anthropic Claude Agent SDK\.>/)
     assert.equal(zero.system[1].text, CRS_EMPTY_IDENTITY_TEXT)
-    assert.equal(zero.system[2].text, `${DEFAULT_AGENT_STANDING}\n`)
+    assert.equal(zero.system[2].text, CRS_EMPTY_IDENTITY_TEXT)
     assert.equal(envTextAt(zero), '# Environment\n - Timezone: America/Los_Angeles')
     assert.ok(!zero.system.some((b) => b?.text === CRS_AGENT_EXPANSION))
     assert.ok(!firstUser(zero).includes('MANDATORY constraints for this turn'))
@@ -185,7 +186,7 @@ test('persona_agent does not change zero; leftover rewrite agent does not flip d
     assert.equal(zeroDefault.system.length, 4)
     assert.match(zeroDefault.system[0].text, /prompt_version=</)
     assert.equal(zeroDefault.system[1].text, CRS_EMPTY_IDENTITY_TEXT)
-    assert.equal(zeroDefault.system[2].text, `${DEFAULT_AGENT_STANDING}\n`)
+    assert.equal(zeroDefault.system[2].text, CRS_EMPTY_IDENTITY_TEXT)
 
     persistSettings(file, { persona_inject: 'zero', persona_agent: 'rewrite' })
     const full = applyFromSettings(file)
@@ -275,7 +276,11 @@ test('zero agent aliases match settings radio values', () => {
 
 test('official_prompt attaches caller agent and keeps leftover overlay', () => {
   withRouting((file) => {
-    persistSettings(file, { persona_inject: 'official_prompt', persona_park: true })
+    persistSettings(file, {
+      persona_inject: 'official_prompt',
+      persona_park: true,
+      agent_standing_presets: { official: true },
+    })
     const withAgent = applyFromSettings(file, {
       ...UNOFFICIAL,
       system: [{ type: 'text', text: CRS_OFFICIAL_AGENT_PROMPT }],

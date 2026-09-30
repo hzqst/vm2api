@@ -44,7 +44,13 @@ test('API backend applies the global official_full persona setting', async () =>
   fs.mkdirSync(path.dirname(socketPath), { recursive: true })
   fs.writeFileSync(
     routingFile,
-    JSON.stringify({ compatibility: { persona_preset: 'official_full', overlay_preset: 'off' } }),
+    JSON.stringify({
+      compatibility: {
+        persona_preset: 'official_full',
+        overlay_preset: 'off',
+        agent_standing_presets: { official_full: true },
+      },
+    }),
   )
   let received = null
   const kernel = http.createServer((req, res) => {
@@ -94,7 +100,11 @@ test('API backend applies the global official_full persona setting', async () =>
     stats,
     routingConfigPath: routingFile,
     routingConfig: {
-      compatibility: { persona_preset: 'official_full', overlay_preset: 'off' },
+      compatibility: {
+        persona_preset: 'official_full',
+        overlay_preset: 'off',
+        agent_standing_presets: { official_full: true },
+      },
       failover: {},
     },
     groupsRepo: { rateMultiplier: () => 1 },
@@ -297,7 +307,7 @@ function companionHaikuBody(sessionId, deviceId = 'device-probe') {
   }
 }
 
-function protocolHarness({ body, stickyRouter, failoverRunner, apiKeyRecord = null }) {
+function protocolHarness({ body, stickyRouter, failoverRunner, apiKeyRecord = null, headers = {} }) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-protocol-seat-'))
   const routingFile = path.join(root, 'routing.json')
   fs.writeFileSync(routingFile, JSON.stringify({ compatibility: { persona_preset: 'zero' } }))
@@ -347,7 +357,7 @@ function protocolHarness({ body, stickyRouter, failoverRunner, apiKeyRecord = nu
   const req = {
     method: 'POST',
     url: '/v1/messages',
-    headers: { authorization: 'Bearer test', 'user-agent': 'Go-http-client/2.0' },
+    headers: { authorization: 'Bearer test', 'user-agent': 'Go-http-client/2.0', ...headers },
     apiKeyKind: apiKeyRecord ? 'managed' : 'master',
     apiKeyRecord,
     once() {},
@@ -444,12 +454,13 @@ test('ordinary Haiku with tools keeps session sticky and session seat', async ()
   }
 })
 
-async function captureRunOpts({ body, stickyRouter, apiKeyRecord }) {
+async function captureRunOpts({ body, stickyRouter, apiKeyRecord, headers }) {
   let runOpts = null
   const harness = protocolHarness({
     body,
     stickyRouter,
     apiKeyRecord,
+    headers,
     failoverRunner: {
       async run(opts) {
         runOpts = opts
@@ -601,6 +612,50 @@ test('parent and child family key is shared across API keys and inherits a live 
     assert.equal(parent.familyVmId, 'vm-fam')
     assert.equal(child.familyVmId, 'vm-fam')
     assert.notEqual(child.stickyKey, parent.stickyKey)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('Claude Code sub-agent hops run as child sessions of the main session', async () => {
+  const { dir, router } = realStickyRouter()
+  try {
+    const apiKeyRecord = { id: 'key-cc', group_id: 1 }
+    const body = sessionBody({ device_id: 'dev-cc', session_id: 'main-sess' })
+    const main = await captureRunOpts({ body, stickyRouter: router, apiKeyRecord })
+    router.bind(main.stickyKey, { accountId: 'acc-cc', vmId: 'vm-cc', slotIndex: 0 })
+    router.bind(main.familyKey, { accountId: 'acc-cc', vmId: 'vm-cc' })
+    const agentHop = (agentId, parentAgentId) =>
+      captureRunOpts({
+        body,
+        stickyRouter: router,
+        apiKeyRecord,
+        headers: {
+          'x-claude-code-session-id': 'main-sess',
+          'x-claude-code-agent-id': agentId,
+          ...(parentAgentId ? { 'x-claude-code-parent-agent-id': parentAgentId } : {}),
+        },
+      })
+    const a = await agentHop('agent-a')
+    const aAgain = await agentHop('agent-a')
+    const b = await agentHop('agent-b')
+    const nested = await agentHop('agent-c', 'agent-a')
+
+    assert.equal(main.stickyKey, 'sess:main-sess')
+    assert.equal(main.windowKey, undefined)
+    // Each agent queues on its own session, never behind the main one.
+    const keys = [main.stickyKey, a.stickyKey, b.stickyKey, nested.stickyKey]
+    assert.equal(new Set(keys).size, keys.length)
+    assert.equal(aAgain.stickyKey, a.stickyKey)
+    assert.deepEqual(a.stickyKeys, [a.stickyKey])
+    for (const child of [a, b, nested]) {
+      assert.match(child.stickyKey, /^sess:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+      // Session seat counts against the main session; placement follows its VM.
+      assert.equal(child.windowKey, 'sess:main-sess')
+      assert.equal(child.familyKey, 'family2:main-sess')
+      assert.equal(child.familyVmId, 'vm-cc')
+      assert.equal(child.deviceKey, main.deviceKey)
+    }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }

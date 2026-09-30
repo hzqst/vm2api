@@ -23,17 +23,26 @@ function billingBandLabels(row: VmBillingModelRow): string[] {
 }
 
 /** 按模型 × 计费档位的官方价费用拆分（累计）。 */
-export function VmCostByModel({ rows }: { rows?: VmBillingModelRow[] }) {
+export function VmCostByModel({
+  rows,
+  compact = false,
+}: {
+  rows?: VmBillingModelRow[]
+  /** 弹窗里与其它信息卡同一内边距；详情页 Tab 保持默认。 */
+  compact?: boolean
+}) {
   if (!rows?.length) return null
   return (
-    <Card>
-      <CardHeader>
+    <Card className={compact ? 'gap-3 rounded-xl py-3.5' : undefined}>
+      <CardHeader className={compact ? 'px-3.5' : undefined}>
         <CardTitle className='text-sm'>按模型费用</CardTitle>
         <p className='text-xs text-muted-foreground'>
           官方价 · 累计 · 按计费档位拆分
         </p>
       </CardHeader>
-      <CardContent className='overflow-x-auto'>
+      <CardContent
+        className={compact ? 'overflow-x-auto px-3.5' : 'overflow-x-auto'}
+      >
         <Table>
           <TableHeader>
             <TableRow>

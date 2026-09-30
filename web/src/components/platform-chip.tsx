@@ -1,5 +1,9 @@
 import type { Vm } from '@/types/panel-vm'
-import { type CredType, credLaneLabel, credTypeOf } from '@/lib/cred-type'
+import {
+  type CredEndpoint,
+  credEndpointLabel,
+  credEndpointOf,
+} from '@/lib/cred-type'
 import { cn } from '@/lib/utils'
 import {
   compactEmail,
@@ -74,43 +78,30 @@ export function SlotIdentity({
   )
 }
 
-export function BrandPlatforms({ className }: { className?: string }) {
-  return (
-    <span
-      className={cn('flex flex-wrap gap-1', className)}
-      aria-label='Anthropic 与 GPT'
-    >
-      <span className='inline-flex items-center rounded-[5px] border border-[color:var(--tier-pro-border)] px-1.5 py-0.5 text-[10px] leading-none font-semibold tracking-[0.03em] text-[color:var(--tier-pro-fg)]'>
-        Anthropic
-      </span>
-      <span className='inline-flex items-center rounded-[5px] border border-[color:var(--tier-codex-border)] px-1.5 py-0.5 text-[10px] leading-none font-semibold tracking-[0.03em] text-[color:var(--tier-codex-fg)]'>
-        GPT
-      </span>
-    </span>
-  )
-}
-
-const LANE_CLASS: Record<CredType, string> = {
+/** Console = Anthropic 陶土橙实心；OAuth = 蓝；API = 白。色值见 theme.css 的 --lane-*。 */
+const LANE_CLASS: Record<CredEndpoint, string> = {
+  console:
+    'border-[color:var(--lane-console-bg)] bg-[color:var(--lane-console-bg)] text-[color:var(--lane-console-fg)]',
   oauth:
-    'border-[color:var(--tier-pro-border)] text-[color:var(--tier-pro-fg)]',
-  'setup-token':
-    'border-[color:var(--status-info,oklch(0.7 0.1 210))] text-[color:var(--status-info,oklch(0.78 0.08 210))]',
-  apikey:
-    'border-[color:var(--tier-codex-border)] text-[color:var(--tier-codex-fg)]',
+    'border-[color:var(--tier-pro-border)] bg-[color:var(--tier-pro-badge-bg)] text-[color:var(--tier-pro-fg)]',
+  api: 'border-[color:var(--lane-api-border)] bg-[color:var(--lane-api-bg)] text-[color:var(--lane-api-fg)]',
   none: 'border-border/70 text-muted-foreground',
 }
 
-/** 集群卡片 / 用量队列：OAuth vs Console（setup-token）vs API Key。 */
+/**
+ * 集群卡片 / 列表 / 用量队列：Console / OAuth / API 三类。
+ * 传 `vm` 按实际认证方案归类；只有 `endpoint` 时（用量行没有槽位）直接用它。
+ */
 export function CredLaneChip({
   vm,
-  type,
+  endpoint,
   className,
 }: {
   vm?: Vm
-  type?: CredType
+  endpoint?: CredEndpoint
   className?: string
 }) {
-  const lane = type || credTypeOf(vm)
+  const lane = endpoint ?? credEndpointOf(vm)
   if (lane === 'none') return null
   return (
     <span
@@ -120,7 +111,7 @@ export function CredLaneChip({
         className
       )}
     >
-      {credLaneLabel(lane)}
+      {credEndpointLabel(lane)}
     </span>
   )
 }

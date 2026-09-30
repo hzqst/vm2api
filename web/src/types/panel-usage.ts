@@ -6,6 +6,7 @@ export type UsageAccountRow = {
   email?: string
   credential_mode?: 'oauth' | 'setup-token' | 'apikey' | string | null
   today_cost?: number
+  total_cost?: number
   today_requests?: number
   today_input_tokens?: number
   today_output_tokens?: number

@@ -159,6 +159,43 @@ const SNAP_MAX_STRING = 80
 const SNAP_MAX_ARRAY = 24
 const SNAP_MAX_DEPTH = 6
 const SNAP_MAX_TOTAL = 12000
+const IMAGE_DATA_KEYS = new Set(['data', 'base64', 'b64_json'])
+
+function imagePayloadSummary(value) {
+  if (typeof value === 'string') return `…[${value.length} bytes]`
+  return '[omitted-image]'
+}
+
+function redactImagePayloads(value, seen = new WeakSet()) {
+  if (!value || typeof value !== 'object') return value
+  if (seen.has(value)) return '[Circular]'
+  seen.add(value)
+  if (Array.isArray(value)) return value.map((item) => redactImagePayloads(item, seen))
+  const type = value.type
+  const isImage = type === 'image' || type === 'input_image' || type === 'image_url' || value.source || value.image_url
+  const out = {}
+  for (const [key, nested] of Object.entries(value)) {
+    if (IMAGE_DATA_KEYS.has(key) && typeof nested === 'string' && nested.length > 32) {
+      out[key] = imagePayloadSummary(nested)
+      continue
+    }
+    if (isImage && key === 'source' && nested && typeof nested === 'object') {
+      out[key] = {
+        type: nested.type || 'base64',
+        media_type: nested.media_type || null,
+        url: Boolean(nested.url),
+        bytes: typeof nested.data === 'string' ? nested.data.length : 0,
+      }
+      continue
+    }
+    if (isImage && key === 'image_url' && nested && typeof nested === 'object') {
+      out[key] = { url: Boolean(nested.url), detail: nested.detail || null }
+      continue
+    }
+    out[key] = redactImagePayloads(nested, seen)
+  }
+  return out
+}
 
 export function sanitizeRequestBodySnapshot(value, opts = {}, seen = new WeakSet(), depth = 0) {
   const maxString = opts.maxStringChars ?? SNAP_MAX_STRING
@@ -178,6 +215,12 @@ export function sanitizeRequestBodySnapshot(value, opts = {}, seen = new WeakSet
     return items
   }
   const out = {}
+  const isImage =
+    value.type === 'image' ||
+    value.type === 'input_image' ||
+    value.type === 'image_url' ||
+    value.source ||
+    value.image_url
   for (const [k, v] of Object.entries(value)) {
     if (SENSITIVE_KEY.test(k)) {
       out[k] = '[REDACTED]'
@@ -191,6 +234,19 @@ export function sanitizeRequestBodySnapshot(value, opts = {}, seen = new WeakSet
       out[k] = v
         .slice(0, maxArray)
         .map((t) => ({ type: t?.type || 'function', name: t?.name || t?.function?.name || null }))
+      continue
+    }
+    if (IMAGE_DATA_KEYS.has(k) && typeof v === 'string' && v.length > 32) {
+      out[k] = imagePayloadSummary(v)
+      continue
+    }
+    if (isImage && k === 'source' && v && typeof v === 'object') {
+      out[k] = {
+        type: v.type || 'base64',
+        media_type: v.media_type || null,
+        url: Boolean(v.url),
+        bytes: typeof v.data === 'string' ? v.data.length : 0,
+      }
       continue
     }
     out[k] = sanitizeRequestBodySnapshot(v, opts, seen, depth + 1)
@@ -210,7 +266,7 @@ export function sanitizeRequestBodySnapshot(value, opts = {}, seen = new WeakSet
 function clampBody(obj, maxChars = 200_000) {
   let raw
   try {
-    raw = redactSecrets(obj)
+    raw = redactSecrets(redactImagePayloads(obj))
   } catch {
     raw = '{"error":"redact_failed"}'
   }
@@ -416,6 +472,7 @@ export class RequestLogStore {
         upstream_status: extra.upstream_status ?? null,
         outbound_summary: extra.outbound_summary || null,
         cache_prefix: extra.cache_prefix || null,
+        cache_continuity: extra.cache_continuity || null,
         outbound_headers: extra.outbound_headers != null ? redactHeaders(extra.outbound_headers) : null,
         outbound_body: extra.outbound_body != null ? clampBody(extra.outbound_body, this.maxDebugBodyChars) : null,
       }
@@ -491,6 +548,10 @@ export class RequestLogStore {
 
   costByModel(opts = {}) {
     return this.repo.costByModel(opts)
+  }
+
+  vmUsageStats(opts = {}) {
+    return this.repo.vmUsageStats(opts)
   }
 
   /** Windowed SLA / QPS / TTFT snapshot for overview + log analysis. */

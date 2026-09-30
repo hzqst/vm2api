@@ -80,19 +80,32 @@ function hideFor(compat, inbound) {
 
 test('standing mask is its own switch, independent of template hide flags', () => {
   const standingTokens = estimateClaudeInputTokens(DEFAULT_AGENT_STANDING)
-  const official = hideFor({ persona_preset: 'official' }, helloBody)
+  const official = hideFor({ persona_preset: 'official', agent_standing_presets: { official: true } }, helloBody)
   assert.equal(Number(official), standingTokens)
   assert.equal(official.overlay, standingTokens)
 
-  const shown = hideFor({ persona_preset: 'official', agent_standing_hide_presets: { official: false } }, helloBody)
+  const missing = hideFor({ persona_preset: 'official' }, helloBody)
+  assert.equal(Number(missing), 0)
+
+  const shown = hideFor(
+    {
+      persona_preset: 'official',
+      agent_standing_presets: { official: true },
+      agent_standing_hide_presets: { official: false },
+    },
+    helloBody,
+  )
   assert.equal(Number(shown), 0)
 
-  const full = hideFor({ persona_preset: 'official_full' }, helloBody)
+  const full = hideFor({ persona_preset: 'official_full', agent_standing_presets: { official_full: true } }, helloBody)
   assert.equal(full.overlay, standingTokens)
   assert.equal(full.official, 0)
 
-  const zeroMasked = hideFor({ persona_preset: 'zero' }, helloBody)
-  const zeroShown = hideFor({ persona_preset: 'zero', agent_standing_hide_presets: { zero: false } }, helloBody)
+  const zeroMasked = hideFor({ persona_preset: 'zero', agent_standing_presets: { zero: true } }, helloBody)
+  const zeroShown = hideFor(
+    { persona_preset: 'zero', agent_standing_presets: { zero: true }, agent_standing_hide_presets: { zero: false } },
+    helloBody,
+  )
   assert.equal(zeroMasked.overlay, standingTokens)
   assert.equal(zeroShown.overlay, 0)
   assert.equal(zeroShown.official, zeroMasked.official)
@@ -129,9 +142,17 @@ test('none mode hides nothing', () => {
 
 test('official_prompt does not start usage hide, even with standing and env', () => {
   const before = { messages: helloBody.messages }
-  const after = applyCrsUnofficialPersona(before, { mode: 'official_prompt' })
-  assert.equal(personaHideForUnofficial(before, after, { mode: 'official_prompt' }), 0)
-  assert.ok(after.system.some((b) => String(b?.text || '').startsWith('# Environment')))
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-official-standing-'))
+  const routingFile = path.join(dir, 'routing.json')
+  fs.writeFileSync(routingFile, JSON.stringify({ compatibility: { agent_standing_presets: { official: true } } }))
+  try {
+    const after = applyCrsUnofficialPersona(before, { mode: 'official_prompt', routingFile })
+    assert.equal(personaHideForUnofficial(before, after, { mode: 'official_prompt' }), 0)
+    assert.ok(after.system.some((b) => String(b?.text || '') === `${DEFAULT_AGENT_STANDING}\n`))
+    assert.ok(after.system.some((b) => String(b?.text || '').startsWith('# Environment')))
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test('zero inject hides billing and env, not leftover', () => {
@@ -143,15 +164,14 @@ test('zero inject hides billing and env, not leftover', () => {
   assert.match(billing, /prompt_version=<You are Anthropic Claude Agent SDK\.>/)
   assert.equal(after.system.length, 5)
   assert.equal(after.system[1].text, '\u200b')
-  // Agent slot carries the editable standing constraints; hidden as injected overlay.
-  assert.equal(after.system[2].text, `${DEFAULT_AGENT_STANDING}\n`)
+  assert.equal(after.system[2].text, '\u200b')
   assert.equal(after.system[3].text, '# Environment\n - Timezone: Asia/Tokyo')
   assert.equal(after.system[4].text, '你是一个高速收费员。')
   const noEnv = structuredClone(after)
   noEnv.system.splice(3, 1)
   assert.ok(hide.official > personaHideInputTokens(before, noEnv).official)
   assert.equal(Number(hide), hide.official + hide.overlay)
-  assert.equal(injectedOverlayText(before, after), DEFAULT_AGENT_STANDING)
+  assert.equal(injectedOverlayText(before, after), '')
   assert.ok(!injectedOverlayText(before, after).includes('高速收费员'))
 })
 
@@ -173,12 +193,19 @@ test('cli-hop zero hides billing+env so 04 usage matches Portunex remainder', ()
 
 test('cli-hop zero also hides the standing Node put in the leftover', () => {
   const before = { system: '你是一个高速收费员。', messages: helloBody.messages }
-  const after = applyCrsUnofficialPersona(before, { mode: 'zero' })
-  const node = personaHideInputTokens(before, after)
-  assert.equal(node.overlay, estimateClaudeInputTokens(DEFAULT_AGENT_STANDING))
-  const hide = personaHideForCliZero(before, after, { timezone: 'America/New_York', overlay: node.overlay })
-  assert.equal(hide.overlay, node.overlay)
-  assert.equal(Number(hide), zeroCliLayoutHideTokens({ timezone: 'America/New_York' }) + node.overlay)
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-cli-zero-standing-'))
+  const routingFile = path.join(dir, 'routing.json')
+  fs.writeFileSync(routingFile, JSON.stringify({ compatibility: { agent_standing_presets: { zero: true } } }))
+  try {
+    const after = applyCrsUnofficialPersona(before, { mode: 'zero', routingFile })
+    const node = personaHideInputTokens(before, after)
+    assert.equal(node.overlay, estimateClaudeInputTokens(DEFAULT_AGENT_STANDING))
+    const hide = personaHideForCliZero(before, after, { timezone: 'America/New_York', overlay: node.overlay })
+    assert.equal(hide.overlay, node.overlay)
+    assert.equal(Number(hide), zeroCliLayoutHideTokens({ timezone: 'America/New_York' }) + node.overlay)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test('append only hides the official one-liner', () => {

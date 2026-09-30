@@ -235,11 +235,26 @@
   animation: seat-rise var(--motion-slow) var(--ease-out-expo) both;
 }
 
+/* Star 提示的剩余时间条：时长由组件用 animation-duration 写入，和自动隐藏计时同源。 */
+@keyframes countdown-shrink {
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
+  }
+}
+.animate-countdown-shrink {
+  transform-origin: left;
+  animation: countdown-shrink linear both;
+}
+
 @media (prefers-reduced-motion: reduce) {
   /* 保留「出现」这个状态事实，去掉位移。opacity 直达终值。 */
   .animate-settings-pane-in,
   .animate-save-bar-in,
-  .animate-seat-rise {
+  .animate-seat-rise,
+  .animate-countdown-shrink {
     animation: none;
   }
 }

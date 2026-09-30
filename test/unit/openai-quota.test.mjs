@@ -74,6 +74,20 @@ test('quota headers carry Codex originator and account id', () => {
   assert.equal(headers['openai-beta'], 'codex-1')
 })
 
+test('quota headers use the access token account when imported metadata has no account id', () => {
+  const payload = Buffer.from(
+    JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: 'account-from-token' } }),
+  ).toString('base64url')
+  const headers = buildOpenaiQuotaHeaders({ accessToken: `header.${payload}.signature` })
+  assert.equal(headers['chatgpt-account-id'], 'account-from-token')
+  assert.equal(
+    buildOpenaiQuotaHeaders({ accessToken: `header.${payload}.signature`, accountId: 'stale-account' })[
+      'chatgpt-account-id'
+    ],
+    'account-from-token',
+  )
+})
+
 function writeGptSlot(root, id = 'vm-codex-01') {
   const dir = path.join(root, 'vms', id)
   fs.mkdirSync(dir, { recursive: true })
