@@ -44,6 +44,8 @@ import { writeSlotSeedFiles, inferProjectRootFromCliHome } from '../vm/slot-seed
 import { touchTelemetrySession } from '../vm/worker-telemetry.mjs'
 import { atomicWriteJson, listVmRecordFiles } from '../vm/vm-file.mjs'
 import { normalizeOfficialCcInference, resolveOfficialCcInference } from '../vm/slot-engine.mjs'
+import { getVm } from '../vm/vm-registry.mjs'
+import { slotHost } from '../vm/slot-host.mjs'
 
 export { officialCcUidGid } from '../vm/vm-runtime.mjs'
 export const DEFAULT_HELLO_PROMPT = 'hello'
@@ -1582,6 +1584,9 @@ export function scheduleOfficialCcBootstrap(opts = {}) {
   if (!vmId || process.env.KIN_CRS_MOCK === '1') {
     return { scheduled: false, reason: process.env.KIN_CRS_MOCK === '1' ? 'mock' : 'vmId required' }
   }
+  // Official CC init drives a host-side PTY and docker exec against the local daemon.
+  const target = opts.vm || (opts.projectRoot ? getVm(opts.projectRoot, vmId) : null)
+  if (!slotHost(target).supports('official_cc')) return { scheduled: false, reason: 'remote_unsupported' }
   const mode = credentialModeOfVm(opts.vm) || opts.credentialMode || opts.mode
   if (mode && !canOfficialCc(mode)) {
     return { scheduled: false, reason: 'credential_mode_unsupported' }

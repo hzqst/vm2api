@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { containerName } from './vm-runtime.mjs'
 import { runtimeKind } from './runtime-kind.mjs'
+import { slotHost } from './slot-host.mjs'
 
 const runFile = promisify(execFile)
 
@@ -21,10 +22,12 @@ export async function readGuestIdentity(exec, _requestPath, { timeoutMs = 5000, 
   }
   if (!exec?.vmId) return fail('vm_required', 'vm required')
   try {
+    const env = slotHost(exec.vm).dockerEnv()
     const { stdout } = await run('docker', ['exec', containerName(exec.vmId), 'sh', '-c', READ_IDENTITY], {
       encoding: 'utf8',
       timeout: timeoutMs,
       maxBuffer: 64 * 1024,
+      ...(env ? { env } : {}),
     })
     const fields = stdout.split('\0')
     if (fields.length !== 9 || fields[8] !== '' || !fields[0] || !fields[3] || !fields[4]) {

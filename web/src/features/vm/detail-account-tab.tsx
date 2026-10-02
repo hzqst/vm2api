@@ -29,6 +29,7 @@ import { CredentialPanel } from '@/features/vm/credential-panel'
 import { Field, Meter } from '@/features/vm/detail-section-primitives'
 import { OfficialCcCard } from '@/features/vm/official-cc-card'
 import { OpenaiPlanBadge } from '@/features/vm/openai-plan-badge'
+import { isRemoteVm, REMOTE_UNSUPPORTED_TEXT } from '@/features/vm/placement'
 import {
   latestProbe,
   probeOutcome,
@@ -78,6 +79,7 @@ export function VmAccountTab(props: VmAccountTabProps) {
   } = props
   const blocked = vm.can_import_credential === false
   const gpt = isCodexVm(vm)
+  const remote = isRemoteVm(vm)
   const probe = latestProbe(
     acc.last_probe_check as ProbeCheck | undefined,
     vm.last_probe_check,
@@ -303,7 +305,10 @@ export function VmAccountTab(props: VmAccountTabProps) {
       </div>
 
       {gpt ? null : officialCc ? (
-        <OfficialCcCard vmId={id} />
+        <OfficialCcCard
+          vmId={id}
+          blockedReason={remote ? REMOTE_UNSUPPORTED_TEXT : ''}
+        />
       ) : credType !== 'none' ? (
         <p className='text-xs text-muted-foreground'>
           官方 Claude Code 初装仅支持完整 OAuth 凭证，当前槽为{' '}

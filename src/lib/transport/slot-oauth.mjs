@@ -1,5 +1,7 @@
 import { spawn } from 'node:child_process'
-import { containerName, officialCcUidGid } from '../vm/vm-runtime.mjs'
+import path from 'node:path'
+import { containerName } from '../vm/vm-runtime.mjs'
+import { slotHost } from '../vm/slot-host.mjs'
 
 const WORKER_CONFIG = '/run/kin/worker.json'
 const WORKER_BIN = '/usr/local/bin/kin-worker'
@@ -18,10 +20,11 @@ function failure(code, message = undefined) {
   }
 }
 
-function runDockerProcess(argv, { stdin = '', timeoutMs = 45000 } = {}) {
+function runDockerProcess(argv, { stdin = '', timeoutMs = 45000, env } = {}) {
   return new Promise((resolve) => {
     const child = spawn(process.env.KIN_DOCKER_BIN || 'docker', argv, {
       stdio: ['pipe', 'pipe', 'pipe'],
+      ...(env ? { env } : {}),
     })
     const stdout = []
     const stderr = []
@@ -93,29 +96,27 @@ export async function runSlotOauth(
   if (process.env.KIN_CRS_MOCK === '1') return null
   if (!OPS.has(op)) return failure('worker_op_invalid', `unsupported oauth operation: ${op}`)
 
-  const { uid, gid } = officialCcUidGid(exec?.vmId)
-  const argv = [
-    'exec',
-    '-i',
-    '-u',
-    `${uid}:${gid}`,
-    containerName(exec?.vmId),
-    WORKER_BIN,
-    'oauth',
-    op,
-    '--config',
-    WORKER_CONFIG,
-  ]
+  const host = slotHost(exec?.vm)
+  const user = host.execUser({ ...exec?.vm, id: exec?.vmId || exec?.vm?.id })
+  const argv = ['exec', '-i', '-u', user, containerName(exec?.vmId), WORKER_BIN, 'oauth', op, '--config', WORKER_CONFIG]
   if (force) argv.push('--force')
 
   const stdin = op === 'count-tokens' ? JSON.stringify({ body: body || {}, headers: headers || {} }) : ''
   let result
   try {
-    result = await runDocker(argv, { stdin, timeoutMs })
+    result = await runDocker(argv, { stdin, timeoutMs, env: host.dockerEnv() })
   } catch (error) {
     return failure('worker_exec_failed', String(error?.message || error).slice(0, 300))
   }
   if (result?.timed_out) return failure('worker_timeout')
+  // A refresh rotates the RT where the slot keeps its credential; the local mirror must follow before anyone reads it.
+  if (op === 'refresh' && exec.homeDir) {
+    try {
+      await host.afterRefresh(exec.vm, path.dirname(exec.homeDir))
+    } catch (error) {
+      return failure('credential_pull_failed', String(error?.message || error).slice(0, 300))
+    }
+  }
 
   const payload = lastJsonLine(result?.stdout)
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {

@@ -6,7 +6,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { atomicWriteJson, withVmLock } from '../vm/vm-file.mjs'
-import { getVm, persistAccountTier, isCodexVm } from '../vm/vm-registry.mjs'
+import { bindVmProxy, getVm, persistAccountTier, isCodexVm } from '../vm/vm-registry.mjs'
 import { isSlotProxyDesynced } from '../vm/vm-runtime.mjs'
 import { reloadSlotReady } from '../vm/slot-runtime.mjs'
 import { resolveImportProxy } from '../vm/proxy-resolve.mjs'
@@ -22,6 +22,7 @@ import {
   materializeOfficialClaudeCredentials,
 } from './official-cc-bootstrap.mjs'
 import { normalizeTiers } from '../pool/quota-tiers.mjs'
+import { slotHost } from '../vm/slot-host.mjs'
 
 export function createImportCommit(ctx) {
   function routing() {
@@ -43,9 +44,11 @@ export function createImportCommit(ctx) {
     const allowProxyBypass = process.env.KIN_CRS_MOCK === '1' && body.require_proxy === false
     if (!resolved.ok && !allowProxyBypass) {
       const message =
-        resolved.reason === 'proxy_unavailable'
-          ? '虚拟机 SOCKS5 不可用，请先更换或探测代理再转换凭证'
-          : '虚拟机未绑定 SOCKS5，请先分配代理再转换凭证'
+        resolved.reason === 'ipv6_disabled'
+          ? 'IPv6 已关闭，请在设置 → SOCKS5 开启 IPv6 代理出口'
+          : resolved.reason === 'proxy_unavailable'
+            ? '虚拟机 SOCKS5 不可用，请先更换或探测代理再转换凭证'
+            : '虚拟机未绑定 SOCKS5，请先分配代理再转换凭证'
       return { ok: false, status: 400, message, resolved }
     }
     return { ok: true, proxyUrl: resolved.proxyUrl, resolved }
@@ -138,6 +141,14 @@ export function createImportCommit(ctx) {
       homeDir: path.join(ctx.cfg.paths.project, 'vms', vmId, 'cli-home'),
     }
     if (process.env.KIN_CRS_MOCK !== '1') {
+      // The exchange already used the pool's SOCKS5; the slot must start on that same
+      // exit. A record whose proxy fell out of sync (null / other id) would start with
+      // no exit — on a node that is a hard refusal after the grant was already minted.
+      const bound = ctx.proxyPool?.getProxyForVm?.(vmId)
+      if (bound && existing.proxy?.id !== bound.id) {
+        bindVmProxy(ctx.cfg.paths.project, vmId, bound)
+        existing.proxy = getVm(ctx.cfg.paths.project, vmId)?.proxy || existing.proxy
+      }
       const socket = existing.runtime?.worker_socket
       const needReload = !socket || !fs.existsSync(socket) || isSlotProxyDesynced(existing, ctx.cfg.paths.project)
       if (needReload) {
@@ -208,12 +219,19 @@ export function createImportCommit(ctx) {
       materializeOfficialClaudeCredentials(workerExec.homeDir, ids)
     } catch {}
     const mode = importedCredential.mode || credentialModeFromOauth(oauth)
-    const skipCc = skipOfficialCc || isCodexVm(existing) || !canOfficialCc(mode)
+    const ccUnsupported = !slotHost(existing).supports('official_cc')
+    const skipCc = skipOfficialCc || ccUnsupported || isCodexVm(existing) || !canOfficialCc(mode)
     const routingConfig = routing()
     const officialCc = skipCc
       ? {
           scheduled: false,
-          reason: isCodexVm(existing) ? 'gpt_slot' : skipOfficialCc ? 'credential_edit' : 'credential_mode_unsupported',
+          reason: ccUnsupported
+            ? 'remote_unsupported'
+            : isCodexVm(existing)
+              ? 'gpt_slot'
+              : skipOfficialCc
+                ? 'credential_edit'
+                : 'credential_mode_unsupported',
         }
       : scheduleOfficialCcBootstrap({
           vmId,

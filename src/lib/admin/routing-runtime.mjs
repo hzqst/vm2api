@@ -6,10 +6,18 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { atomicWriteJson } from '../vm/vm-file.mjs'
-import { listVms, getVm, persistAccountTier, persistVmSessionSlots, setVmSchedulable } from '../vm/vm-registry.mjs'
+import {
+  listVms,
+  getVm,
+  persistAccountTier,
+  persistVmQuotaOverride,
+  persistVmSessionSlots,
+  setVmSchedulable,
+} from '../vm/vm-registry.mjs'
 import { normalizeInferenceConfig, normalizeSessionSlots } from '../vm/slot-engine.mjs'
 
 import { accountTierKey, mergeTierMaps, normalizeTiers } from '../pool/quota-tiers.mjs'
+import { vmQuotaOverrideOf } from '../pool/vm-quota-override.mjs'
 import { setManualScheduleWins } from '../pool/schedule-policy.mjs'
 import { PoolScheduler } from '../pool/pool-scheduler.mjs'
 import { FailoverRunner } from '../pool/failover-runner.mjs'
@@ -81,6 +89,14 @@ export function createRoutingRuntime(ctx) {
 
   function applyVmSessionSlots(id, n, { override = true } = {}) {
     return persistVmSessionSlots(ctx.cfg.paths.project, id, normalizeSessionSlots(n), { override })
+  }
+
+  /** `override` is already parsed (`parseVmQuotaOverride`); null = follow global quota. */
+  function applyVmQuotaOverride(id, override) {
+    const vm = persistVmQuotaOverride(ctx.cfg.paths.project, id, override)
+    if (!vm) return null
+    ctx.accountQuota.setVmQuotaOverride(vm.id, vmQuotaOverrideOf(vm))
+    return vm
   }
 
   function applyRoutingSessionSlots(n) {
@@ -478,6 +494,7 @@ export function createRoutingRuntime(ctx) {
     applyVmConcurrency,
     applyVmRpm,
     applyVmSessionSlots,
+    applyVmQuotaOverride,
     storedAccountTier,
     vmTierKey,
   }

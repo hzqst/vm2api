@@ -72,20 +72,33 @@ export function rustKernelCliReady(health) {
 
 /**
  * Process is up and CLI is alive; idle slots=0 means busy, not dead.
- * Unless the kernel watchdog retired slots whose cancel was never acked:
- * those never come back, so waiting would pin the VM unusable — restart it.
+ * A kernel restarting its own CLI (`recovering`) is busy too: the control
+ * plane waits instead of restarting the container under it. A kernel that
+ * spent its own restarts (`healthy:false`) is never busy.
  */
 export function rustKernelBusy(health) {
   if (!rustKernelProcessUp(health)) return false
+  if (health?.healthy === false) return false
+  if (health?.recovering === true) return true
   if (rustKernelCliReady(health)) return false
-  if (Number(health?.wedged_slots) > 0) return false
   const pid = finiteNumber(health?.cli_pid)
   return pid != null && pid > 0
 }
 
 export function rustKernelReachable(health) {
-  return rustKernelProcessUp(health) && rustKernelCliReady(health)
+  return rustKernelProcessUp(health) && health?.healthy !== false && rustKernelCliReady(health)
 }
+
+/** Only the container restart (L4) can help: the kernel is gone or gave up on its CLI. */
+export function rustKernelNeedsRestart(health) {
+  return !rustKernelProcessUp(health) || health?.healthy === false
+}
+
+/**
+ * vmId -> reason, for kernels whose container restarts are spent (L5).
+ * The watchdog writes it; scheduling and the hop path skip these VMs.
+ */
+export const kernelFaults = new Map()
 
 function finiteNumber(value) {
   if (value == null || value === '') return null
@@ -114,6 +127,11 @@ export function toPublicKernelHealth(health, engine) {
     engine: health?.engine || engine,
     provider: health?.provider ?? null,
     ready_slots: finiteNumber(health?.ready_slots),
+    closed_slots: finiteNumber(health?.closed_slots),
+    cli_restarts: finiteNumber(health?.cli_restarts),
+    recovering: health?.recovering === true,
+    healthy: health?.healthy !== false,
+    unhealthy_reason: health?.unhealthy_reason || null,
     cli_pid: finiteNumber(health?.cli_pid),
     error_code: reachable ? null : health?.code || `${engine}_worker_unavailable`,
   }

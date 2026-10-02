@@ -150,7 +150,14 @@ function toneOf(status?: string): StatusTone {
   return { key: 'none', text: '未初装', cls: 'none' }
 }
 
-export function OfficialCcCard({ vmId }: { vmId: string }) {
+/** `blockedReason` 非空时禁用「执行官方初装」并在按钮旁给出原因（如远端节点）。 */
+export function OfficialCcCard({
+  vmId,
+  blockedReason = '',
+}: {
+  vmId: string
+  blockedReason?: string
+}) {
   const qc = useQueryClient()
   const queryOptions = vmOfficialCcQueryOptions(vmId)
   const key = queryOptions.queryKey
@@ -279,11 +286,11 @@ export function OfficialCcCard({ vmId }: { vmId: string }) {
           </div>
         ) : null}
 
-        <div className='flex flex-wrap gap-2'>
+        <div className='flex flex-wrap items-center gap-2'>
           <Button
             size='sm'
             variant={cc?.status === 'error' ? 'default' : 'outline'}
-            disabled={running || run.isPending}
+            disabled={running || run.isPending || !!blockedReason}
             onClick={() => run.mutate()}
           >
             {run.isPending ? '提交中…' : runLabel}
@@ -300,6 +307,11 @@ export function OfficialCcCard({ vmId }: { vmId: string }) {
                 ? '读取中…'
                 : '刷新进度'}
           </Button>
+          {blockedReason ? (
+            <span className='text-xs text-muted-foreground'>
+              {blockedReason}
+            </span>
+          ) : null}
         </div>
       </CardContent>
     </Card>

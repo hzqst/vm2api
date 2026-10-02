@@ -943,7 +943,7 @@ export function createHandleProtocol(deps) {
         signal: clientAbort.signal,
         applyAttempt: async (body, selected, extra = {}) => {
           try {
-            touchTelemetrySession(cfg.paths.project, selected.vmId)
+            touchTelemetrySession(cfg.paths.project, selected.vmId, selected.exec?.vm)
           } catch {}
           const identity = loadVmIdentity(selected.exec)
           const attemptStartedAt = extra.attemptStartedAt ?? Date.now()

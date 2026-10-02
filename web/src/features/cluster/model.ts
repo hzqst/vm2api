@@ -1,3 +1,4 @@
+import type { ClusterApiNode } from '@/types/panel-cluster'
 import type { Dashboard } from '@/types/panel-overview'
 import type { UsagePayload } from '@/types/panel-usage'
 import type { Vm } from '@/types/panel-vm'
@@ -20,8 +21,10 @@ export type ClusterNode = {
   credCount: number | null
   onlineCredCount: number | null
   spendUsd: number | null
-  /** 控制面未接入前的示意行，刷新即丢。 */
-  synthetic?: boolean
+  /** 远端 Docker 容器数（含 egress）；本机不统计为 null。 */
+  docker: { running: number; total: number } | null
+  /** 远端节点的原始控制面记录；本机为空。 */
+  remote?: ClusterApiNode
 }
 
 export type ClusterTotals = {
@@ -84,6 +87,16 @@ export function localSpendUsd(
   )
 }
 
+/** 一组槽位（本机或某节点）的计数与累计花费；归属按 `node_id`。 */
+export function slotStats(vms: Vm[]) {
+  return {
+    vmCount: vms.length,
+    credCount: vms.filter((vm) => vm.has_token).length,
+    onlineCredCount: vms.filter((vm) => accountUsable(vm)).length,
+    spendUsd: vms.reduce((sum, vm) => sum + (Number(vm.total_cost) || 0), 0),
+  }
+}
+
 export function buildLocalNode(input: {
   host: string
   vms: Vm[] | undefined
@@ -102,9 +115,12 @@ export function buildLocalNode(input: {
       credCount: null,
       onlineCredCount: null,
       spendUsd: null,
+      docker: null,
     }
   }
-  const vms = input.vms || []
+  const all = input.vms || []
+  // 账单总额含节点槽位；节点行各自计入，本机只留差额，合计不重复。
+  const remoteSpend = slotStats(all.filter((vm) => !!vm.node_id)).spendUsd
   return {
     id: 'local',
     role: 'local',
@@ -112,30 +128,54 @@ export function buildLocalNode(input: {
     host: input.host,
     link: 'ok',
     latencyMs: 0,
-    vmCount: vms.length,
-    credCount: vms.filter((vm) => vm.has_token).length,
-    onlineCredCount: vms.filter((vm) => accountUsable(vm)).length,
-    spendUsd: input.spendUsd,
+    ...slotStats(all.filter((vm) => !vm.node_id)),
+    spendUsd: Math.max(0, input.spendUsd - remoteSpend),
+    docker: null,
   }
 }
 
-/**
- * 只要主机名或 IP，可带端口。拒绝协议、路径、user:pass@host。
- * 集群接入还不存在鉴权通道，输入栏不能变成凭证口。
- */
-export function parseNodeHost(raw: string): string | null {
-  const host = raw.trim()
-  if (!host || host.length > 253) return null
-  if (/[\s/@\\]/.test(host)) return null
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(host)) return null
-  const HOST_RE =
-    /^(?:(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?|(?:\d{1,3}\.){3}\d{1,3})(?::\d{1,5})?$/i
-  if (!HOST_RE.test(host)) return null
-  const port = host.includes(':')
-    ? Number(host.slice(host.lastIndexOf(':') + 1))
-    : null
-  if (port != null && (!Number.isInteger(port) || port < 1 || port > 65535)) {
-    return null
+export const LINK_STATE_TEXT: Record<ClusterApiNode['link']['state'], string> =
+  {
+    idle: '未启动',
+    connecting: '连接中',
+    ready: '已连接',
+    backoff: '重连等待',
+    error: '已停止',
   }
-  return host
+
+/**
+ * 链路轴：ready 按延迟分 ok / caution；backoff 与 error 是不可达；
+ * connecting / idle 还没有结论，记 none。
+ */
+export function remoteLink(node: ClusterApiNode): ClusterLink {
+  const state = node.link.state
+  if (state === 'ready') {
+    const lat = node.health?.latency_ms
+    return lat != null && lat > LINK_LATENCY_WARN_MS ? 'caution' : 'ok'
+  }
+  if (state === 'backoff' || state === 'error') return 'bad'
+  return 'none'
+}
+
+/** 节点行：链路来自控制面，槽位 / 凭证 / 花费来自 `node_id` 归属的 VM。 */
+export function remoteNodeFromApi(
+  node: ClusterApiNode,
+  vms: Vm[] | undefined = []
+): ClusterNode {
+  const counts = node.health?.containers
+  return {
+    id: node.id,
+    role: 'remote',
+    label: node.label,
+    host: node.port === 22 ? node.host : `${node.host}:${node.port}`,
+    link: remoteLink(node),
+    latencyMs:
+      node.link.state === 'ready' ? (node.health?.latency_ms ?? null) : null,
+    ...slotStats((vms || []).filter((vm) => vm.node_id === node.id)),
+    docker:
+      counts && counts.total != null
+        ? { running: Number(counts.running) || 0, total: counts.total }
+        : null,
+    remote: node,
+  }
 }

@@ -1,6 +1,8 @@
+import type { ClusterLocalStatus } from '@/types/panel-cluster'
 import type { HostStats } from '@/types/panel-overview'
 import { fmtNum, fmtUsd } from '@/lib/format'
 import { StatusMark } from '@/components/status-mark'
+import { LocalLink } from '@/features/cluster/local-link'
 import {
   formatNodeMetric,
   isLiveLink,
@@ -13,9 +15,15 @@ import { PanelCard, StatCell } from '@/features/overview/panel-card'
 export function LocalBoard({
   node,
   host,
+  link,
+  linkError,
+  outbound,
 }: {
   node: ClusterNode
   host: HostStats | undefined
+  link: ClusterLocalStatus | undefined
+  linkError: Error | null
+  outbound: { ready: number; total: number }
 }) {
   const live = isLiveLink(node.link)
   return (
@@ -51,6 +59,7 @@ export function LocalBoard({
           </div>
         ) : null}
       </div>
+      <LocalLink status={link} error={linkError} outbound={outbound} />
     </PanelCard>
   )
 }

@@ -7,6 +7,7 @@ import {
   isClientCancelledResult,
   isIncompleteAssistantMessage,
   isWrapConnectionError,
+  ErrorCode,
 } from '../core/errors.mjs'
 import { isPlanLimitMessage, parseLimitResetFromMessage, parseResetMs } from './quota-window.mjs'
 import { attachFailureDecision } from './unit-decision.mjs'
@@ -370,7 +371,7 @@ function classifyUpstreamResultRaw(
       retrySameAccount: false,
     }
   }
-  if (workerCode === 'empty_response') {
+  if (workerCode === 'empty_response' || workerCode === ErrorCode.UPSTREAM_EMPTY_STREAM) {
     return {
       scope: 'account',
       action: 'continue',
@@ -378,6 +379,28 @@ function classifyUpstreamResultRaw(
       cooldownUntil: null,
       retrySameAccount: true,
     }
+  }
+  // Kernel / cli-node named the cause; none of these is the account's fault.
+  if (workerCode === ErrorCode.UPSTREAM_NETWORK) {
+    if (isProxyFailure('', message)) {
+      return {
+        scope: 'proxy',
+        action: 'continue-and-cooldown',
+        reason: 'proxy_transport_failure',
+        cooldownUntil: now + 60_000,
+      }
+    }
+    return continueWithoutCooldown({ scope: 'worker', reason: 'upstream_network_error', retrySameAccount: false })
+  }
+  if (workerCode === ErrorCode.UPSTREAM_STREAM_INTERRUPTED) {
+    return continueWithoutCooldown({ scope: 'stream', reason: 'stream_interrupted' })
+  }
+  if (
+    workerCode === ErrorCode.KERNEL_UNAVAILABLE ||
+    workerCode === ErrorCode.CLI_ERROR ||
+    workerCode === ErrorCode.KERNEL_ERROR
+  ) {
+    return continueWithoutCooldown({ scope: 'worker', reason: workerCode, retrySameAccount: false })
   }
   if (isWrapConnectionError(message) || isWrapConnectionError(hay)) {
     return continueWithoutCooldown({

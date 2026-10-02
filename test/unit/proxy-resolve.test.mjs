@@ -78,6 +78,21 @@ test('local egress is a bound exit without a SOCKS URL', () => {
   assert.equal(resolved.proxyUrl, '')
 })
 
+test('local Codex import carries the deployment proxy; local Claude stays direct', (t) => {
+  const saved = process.env.HTTPS_PROXY
+  process.env.HTTPS_PROXY = 'http://proxy.test:8443'
+  t.after(() => {
+    if (saved === undefined) delete process.env.HTTPS_PROXY
+    else process.env.HTTPS_PROXY = saved
+  })
+  const proxy = { id: 'px-local', host: 'local', port: 0, scheme: 'local', url: null }
+  const proxyPool = { snapshot: () => ({ proxies: [] }), getProxyForVm: () => null }
+  const gpt = resolveImportProxy({ vm: { id: 'vm-gpt', platform: 'openai', proxy }, proxyPool })
+  assert.equal(gpt.proxyUrl, 'http://proxy.test:8443')
+  assert.equal(gpt.direct, true)
+  assert.equal(resolveImportProxy({ vm: { id: 'vm-cc', platform: 'anthropic', proxy }, proxyPool }).proxyUrl, '')
+})
+
 test('stale local egress failure is still a direct exit', () => {
   const resolved = resolveImportProxy({
     vm: {

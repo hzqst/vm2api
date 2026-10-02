@@ -1,3 +1,4 @@
+import type { BillingAccountRow } from '@/types/panel-overview'
 import type { UsageAccountRow } from '@/types/panel-usage'
 import type { Vm } from '@/types/panel-vm'
 import { isCodexVm } from '@/lib/vm-kind'
@@ -32,6 +33,19 @@ export function isLeftoverUsageAccount(row: UsageAccountRow): boolean {
   const id = String(row.account_id || '')
   const vmId = String(row.vm_id || '')
   return !!id && id === vmId && !row.email
+}
+
+/**
+ * The slot a billing row may be shown as. Slot ids get reused, so a row from an
+ * earlier account on the same id belongs to that account, not the slot's current one.
+ */
+export function billingRowSlot(
+  row: BillingAccountRow,
+  byId: Map<string, Vm>
+): Vm | undefined {
+  const vm = row.vm_id ? byId.get(String(row.vm_id)) : undefined
+  if (!vm?.account_uuid) return vm
+  return vm.account_uuid === row.account_id ? vm : undefined
 }
 
 export function usageAccountForVm(

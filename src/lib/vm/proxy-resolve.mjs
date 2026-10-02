@@ -4,10 +4,13 @@
  * from the redacted public snapshot.
  *
  * Local egress (`px-local`) is a bound exit with no SOCKS URL. Import and
- * host hops may then use the control-plane default route (`proxyUrl` empty,
- * `direct: true`). That is not "unbound".
+ * host hops may then use the control-plane default route (`direct: true`);
+ * a local Codex slot carries the deployment proxy its kernel also uses.
+ * That is not "unbound".
  */
-import { isLocalEgressProxy } from './egress.mjs'
+import { boundProxyUrl, isLocalEgressProxy, localEgressProxyUrl } from './egress.mjs'
+import { isCodexVm } from './vm-kind.mjs'
+import { configuredIpv6Enabled, proxyBlockedReason } from './proxy-policy.mjs'
 
 function poolHitForVm(proxyPool, vm) {
   if (!proxyPool || typeof proxyPool.snapshot !== 'function') return null
@@ -27,13 +30,12 @@ function poolHitForVm(proxyPool, vm) {
 function socksUrlFromVm(vm) {
   const px = vm?.proxy
   if (!px) return null
-  if (px.url) return String(px.url)
-  if (px.host && px.port) return `socks5h://${px.host}:${px.port}`
-  return null
+  return boundProxyUrl(px) || null
 }
 
 export function poolProxyUnavailable(hit) {
   if (!hit) return false
+  if (hit.blocked_reason) return true
   // Direct exit. A stale fail/dead from the old kin-egress probe is not "no proxy".
   if (isLocalEgressProxy(hit)) return hit.enabled === false
   return !hit.enabled || hit.status === 'dead' || hit.status === 'fail'
@@ -41,15 +43,26 @@ export function poolProxyUnavailable(hit) {
 
 export function resolveImportProxy({ vm, proxyPool, overrideUrl = null } = {}) {
   const hit = poolHitForVm(proxyPool, vm)
+  const ipv6Enabled = proxyPool?.snapshot?.().config?.ipv6_enabled ?? configuredIpv6Enabled()
+  const blocked = proxyBlockedReason(overrideUrl ? { url: overrideUrl } : hit || vm?.proxy, ipv6Enabled)
+  if (blocked || hit?.blocked_reason) {
+    return { ok: false, proxyUrl: null, blocked: true, reason: blocked || hit.blocked_reason }
+  }
   if (poolProxyUnavailable(hit)) {
     return { ok: false, proxyUrl: null, blocked: true, reason: 'proxy_unavailable' }
   }
   if (overrideUrl) {
-    return { ok: true, proxyUrl: String(overrideUrl), blocked: false, reason: null }
+    return { ok: true, proxyUrl: boundProxyUrl({ url: overrideUrl }), blocked: false, reason: null }
   }
   const allocated = vm?.id && typeof proxyPool?.getProxyForVm === 'function' ? proxyPool.getProxyForVm(vm.id) : null
   if (isLocalEgressProxy(hit) || isLocalEgressProxy(allocated) || isLocalEgressProxy(vm?.proxy)) {
-    return { ok: true, proxyUrl: '', blocked: false, reason: null, direct: true }
+    return {
+      ok: true,
+      proxyUrl: isCodexVm(vm) ? localEgressProxyUrl() : '',
+      blocked: false,
+      reason: null,
+      direct: true,
+    }
   }
   if (allocated?.url) {
     return {

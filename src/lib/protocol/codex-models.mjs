@@ -7,7 +7,7 @@
 import fetch from 'node-fetch'
 import fs from 'node:fs'
 import path from 'node:path'
-import { SocksProxyAgent } from 'socks-proxy-agent'
+import { createProxyAgent } from '../vm/proxy-agent.mjs'
 import { isSyncableGptCatalogId } from './gpt-ids.mjs'
 
 export { SKIP_GPT, GPT_ID_PREFIX, isGptSeriesId, isSyncableGptCatalogId } from './gpt-ids.mjs'
@@ -168,16 +168,18 @@ async function readFetchBody(res) {
   return null
 }
 
-export function makeSocksFetch(proxyUrl, timeoutMs = 15000) {
+export function makeProxyFetch(proxyUrl, timeoutMs = 15000) {
   const px = String(proxyUrl || '')
     .trim()
     .replace(/^socks5:\/\//i, 'socks5h://')
   const ms = Math.min(Math.max(Number(timeoutMs) || 15000, 3000), 30000)
   return (url, init = {}) => {
+    // Build the agent before arming the timer, so a bad proxy URL throws without leaking it.
+    const agent = px ? createProxyAgent(px) : undefined
     const ac = new AbortController()
     const timer = setTimeout(() => ac.abort(), ms)
     const opts = { ...init, signal: ac.signal }
-    if (px) opts.agent = new SocksProxyAgent(px)
+    if (agent) opts.agent = agent
     return fetch(url, opts).finally(() => clearTimeout(timer))
   }
 }
@@ -189,7 +191,7 @@ export function makeSocksFetch(proxyUrl, timeoutMs = 15000) {
 export async function refreshCodexAccessToken(opts = {}) {
   const refreshToken = String(opts.refreshToken || '').trim()
   if (!refreshToken) return { ok: false, error: 'missing_refresh_token' }
-  const fetchFn = opts.fetchImpl || makeSocksFetch(opts.proxyUrl, opts.timeoutMs)
+  const fetchFn = opts.fetchImpl || makeProxyFetch(opts.proxyUrl, opts.timeoutMs)
   const body = new URLSearchParams({
     grant_type: 'refresh_token',
     refresh_token: refreshToken,
@@ -236,7 +238,7 @@ export async function exchangeCodexAuthorizationCode(opts = {}) {
   const code = String(opts.code || '').trim()
   const codeVerifier = String(opts.codeVerifier || '').trim()
   if (!code || !codeVerifier) return { ok: false, error: 'code_required' }
-  const fetchFn = opts.fetchImpl || makeSocksFetch(opts.proxyUrl, opts.timeoutMs)
+  const fetchFn = opts.fetchImpl || makeProxyFetch(opts.proxyUrl, opts.timeoutMs)
   const body = new URLSearchParams({
     grant_type: 'authorization_code',
     client_id: CODEX_OAUTH_CLIENT_ID,
@@ -317,7 +319,7 @@ export async function fetchChatgptModelCatalog(opts = {}) {
   if (accountId) headers['chatgpt-account-id'] = accountId
 
   const url = `${CODEX_MODELS_URL}?client_version=${encodeURIComponent(catalogVersion)}`
-  const fetchFn = opts.fetchImpl || makeSocksFetch(proxyUrl, opts.timeoutMs)
+  const fetchFn = opts.fetchImpl || makeProxyFetch(proxyUrl, opts.timeoutMs)
   try {
     const res = await fetchFn(url, { method: 'GET', headers })
     const status = Number(res?.status) || 0

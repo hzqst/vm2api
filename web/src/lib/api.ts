@@ -4,6 +4,8 @@ export type PanelErrorMetadata = {
   type?: string
   code?: string
   details?: unknown
+  /** 放置预检失败（`placement_preflight_failed`）时的 `error.checks`。 */
+  checks?: unknown
   data?: unknown
 }
 
@@ -17,6 +19,7 @@ export class ApiError extends Error {
   type?: string
   code: string
   details?: unknown
+  checks?: unknown
   data?: unknown
 
   constructor(
@@ -32,6 +35,7 @@ export class ApiError extends Error {
     this.type = normalized.type
     this.code = normalized.code || ''
     this.details = normalized.details
+    this.checks = normalized.checks
     this.data = normalized.data
   }
 }
@@ -74,6 +78,9 @@ export function normalizePanelError(
     ...(code ? { code } : {}),
     ...(Object.prototype.hasOwnProperty.call(error || {}, 'details')
       ? { details: error?.details }
+      : {}),
+    ...(Object.prototype.hasOwnProperty.call(error || {}, 'checks')
+      ? { checks: error?.checks }
       : {}),
     ...(Object.prototype.hasOwnProperty.call(body || {}, 'data')
       ? { data: body?.data }

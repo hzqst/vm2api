@@ -19,7 +19,7 @@ test('user sees vm / proxies / keys / billing / logs', () => {
   assert.equal(canViewPage('user', 'vm'), true)
   assert.equal(canViewPage('user', 'overview'), false)
   assert.equal(canViewPage('super', 'vm'), true)
-  assert.equal(canViewPage('admin', 'users'), false)
+  assert.equal(canViewPage('admin', 'users'), true)
   assert.equal(canViewPage('admin', 'api'), true)
   assert.equal(canViewPage('admin', 'system'), true)
   assert.equal(canViewPage('user', 'api'), false)
@@ -73,7 +73,7 @@ test('super can schedule VMs but cannot touch credentials or delete', () => {
 
 test('admin is unrestricted', () => {
   assert.equal(authorizePanelRoute('DELETE', '/api/panel/vms/vm-01', 'admin').ok, true)
-  assert.equal(authorizePanelRoute('POST', '/api/panel/settings', 'admin').ok, true)
+  assert.equal(authorizePanelRoute('POST', '/api/panel/users', 'admin').ok, true)
   assert.equal(authorizePanelRoute('POST', '/api/panel/vms/import', 'admin').ok, true)
   assert.equal(authorizePanelRoute('GET', '/api/panel/database/metrics', 'admin').ok, true)
   assert.equal(authorizePanelRoute('GET', '/api/panel/version', 'admin').ok, true)

@@ -3,7 +3,7 @@
  * Flatten helper/token shapes, then fill gaps from claude_cli/bootstrap.
  * This is part of ticket exchange, not official Claude Code first-run.
  */
-import { makeSocksFetch } from '../protocol/codex-models.mjs'
+import { makeProxyFetch } from '../protocol/codex-models.mjs'
 import { OFFICIAL_STAINLESS } from '../identity/vm-identity.mjs'
 import { BETA_OAUTH, BOOTSTRAP_UA } from './oauth-contract.mjs'
 
@@ -99,7 +99,7 @@ export async function fetchOauthBootstrapAccount({
   const token = String(accessToken || '').trim()
   if (!token) return { ok: false, reason: 'no_access_token' }
   if (proxyUrl == null && !fetchImpl) return { ok: false, reason: 'proxy_required' }
-  const fetchFn = fetchImpl || makeSocksFetch(proxyUrl, timeoutMs)
+  const fetchFn = fetchImpl || makeProxyFetch(proxyUrl, timeoutMs)
   try {
     const res = await fetchFn(CLAUDE_CLI_BOOTSTRAP_URL, {
       method: 'GET',

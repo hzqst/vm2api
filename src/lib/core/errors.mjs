@@ -59,6 +59,12 @@ export const ErrorCode = {
   UPSTREAM_OVERLOADED: 'upstream_overloaded',
   UPSTREAM_TIMEOUT: 'upstream_timeout',
   UPSTREAM_ERROR: 'upstream_error',
+  UPSTREAM_NETWORK: 'upstream_network_error',
+  UPSTREAM_STREAM_INTERRUPTED: 'upstream_stream_interrupted',
+  UPSTREAM_EMPTY_STREAM: 'upstream_empty_stream',
+  CLI_ERROR: 'cli_error',
+  KERNEL_UNAVAILABLE: 'kernel_unavailable',
+  KERNEL_ERROR: 'kernel_error',
   FABLE_REQUIRES_MAX: 'fable_requires_max',
 
   INCOMPLETE_RESPONSE: 'incomplete_response',
@@ -82,6 +88,21 @@ export const ErrorCode = {
   POOL_OVERLOADED: 'pool_overloaded',
   POOL_UNAVAILABLE: 'pool_unavailable',
 }
+
+/**
+ * Real causes the slot kernel / cli-node report for a failed hop, with the
+ * client status. A hop that ends on one of these is that error, never a
+ * generic `incomplete_response`.
+ */
+export const KERNEL_FAILURE_STATUS = Object.freeze({
+  [ErrorCode.UPSTREAM_NETWORK]: 502,
+  [ErrorCode.UPSTREAM_ERROR]: 502,
+  [ErrorCode.UPSTREAM_STREAM_INTERRUPTED]: 502,
+  [ErrorCode.UPSTREAM_EMPTY_STREAM]: 502,
+  [ErrorCode.CLI_ERROR]: 502,
+  [ErrorCode.KERNEL_ERROR]: 502,
+  [ErrorCode.KERNEL_UNAVAILABLE]: 503,
+})
 
 export const CLIENT_POOL_BUSY_MESSAGE = '号池负载过高，稍后再试'
 export const CLIENT_POOL_UNAVAILABLE_MESSAGE = '号池当前没有可用账号'
@@ -335,7 +356,10 @@ export function mapUpstreamError(status, body, headers = {}) {
       status: 503,
     })
   }
-  if (inboundCode === 'wrap_connection_error' || isWrapConnectionError(msg)) {
+  if (
+    inboundCode === 'wrap_connection_error' ||
+    (!Object.hasOwn(KERNEL_FAILURE_STATUS, inboundCode) && isWrapConnectionError(msg))
+  ) {
     return makeError({
       type: ErrorType.API,
       code: 'wrap_connection_error',
@@ -408,13 +432,25 @@ export function mapUpstreamError(status, body, headers = {}) {
     })
   }
 
-  if (status === 400 || upType === 'invalid_request_error') {
+  if (inboundCode === ErrorCode.UPSTREAM_INVALID || status === 400 || upType === 'invalid_request_error') {
     return makeError({
       type: ErrorType.INVALID_REQUEST,
       code: ErrorCode.UPSTREAM_INVALID,
       message: String(msg),
-      status: 400,
+      status: inboundCode === ErrorCode.UPSTREAM_INVALID && status >= 400 && status < 500 ? status : 400,
       param: body?.error?.param || undefined,
+      details: { upstream_type: upType, upstream_status: status },
+      request_id,
+    })
+  }
+
+  const kernelStatus = KERNEL_FAILURE_STATUS[inboundCode]
+  if (kernelStatus) {
+    return makeError({
+      type: ErrorType.UPSTREAM,
+      code: inboundCode,
+      message: String(msg),
+      status: inboundCode === ErrorCode.UPSTREAM_ERROR && status >= 500 && status < 600 ? status : kernelStatus,
       details: { upstream_type: upType, upstream_status: status },
       request_id,
     })
@@ -438,7 +474,12 @@ export function mapUpstreamError(status, body, headers = {}) {
     })
   }
 
-  if (status === 408 || (/timeout/i.test(String(msg)) && !/aborted|econnreset|cancel/i.test(String(msg)))) {
+  if (
+    inboundCode === ErrorCode.UPSTREAM_TIMEOUT ||
+    status === 504 ||
+    status === 408 ||
+    (/timeout/i.test(String(msg)) && !/aborted|econnreset|cancel/i.test(String(msg)))
+  ) {
     return makeError({
       type: ErrorType.TIMEOUT,
       code: ErrorCode.UPSTREAM_TIMEOUT,

@@ -19,6 +19,12 @@ export const KERNEL_DATAPLANES = Object.freeze(['wrap', 'cc', 'crag'])
 export const CONTAINER_CLI_NODE_BIN = '/home/kincli/.kin/cli-node'
 export const CONTAINER_CC_NODE_BIN = '/home/kincli/.kin/cc-node'
 export const CONTAINER_CRAG_CLAUDE_BIN = CONTAINER_CC_NODE_BIN
+// Cluster-node slots run the self-contained image: binaries live in the image,
+// not in the bind-mounted home (see cluster/slot-image.mjs).
+export const REMOTE_KIN_DIR = '/opt/kin'
+export const REMOTE_KERNEL_ENTRY = `${REMOTE_KIN_DIR}/kin-kernel`
+export const REMOTE_CLI_NODE_BIN = `${REMOTE_KIN_DIR}/cli-node`
+export const REMOTE_CC_NODE_BIN = `${REMOTE_KIN_DIR}/cc-node`
 
 export const KERNEL_NATIVE_SLOT_COUNT = 20
 export const SESSION_SLOT_MIN = 1

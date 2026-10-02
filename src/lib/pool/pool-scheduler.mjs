@@ -37,7 +37,12 @@ import { isCodexVm } from '../vm/vm-kind.mjs'
 import { detectInboundPlatform } from '../protocol/platform-detect.mjs'
 import { resolveCredentialScheduleLevel } from './credential-weight.mjs'
 import { PLATFORM_SCOPE, vmMatchesOwnerScope } from '../admin/resource-owner.mjs'
-import { rustKernelBusy, rustKernelProcessUp, rustKernelReachable } from '../transport/rust-kernel-client.mjs'
+import {
+  kernelFaults,
+  rustKernelBusy,
+  rustKernelProcessUp,
+  rustKernelReachable,
+} from '../transport/rust-kernel-client.mjs'
 import { resolveSessionSlots } from '../vm/slot-engine.mjs'
 
 const WAIT_TIMEOUT_MIN_MS = 1000
@@ -716,6 +721,8 @@ export class PoolScheduler {
         else return { ok: false, reason: quotaGate.reason || 'quota_gate' }
       }
     }
+    // A sticky preference must not bypass exhausted kernel recovery.
+    if (kernelFaults.has(vm.id)) return { ok: false, reason: 'kernel_faulted' }
     if (rustKernelBusy(workerStatus)) {
       markWait('slot_busy')
     } else if (workerStatus && rustKernelProcessUp(workerStatus) && !rustKernelReachable(workerStatus)) {

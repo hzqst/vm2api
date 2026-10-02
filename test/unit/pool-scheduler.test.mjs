@@ -8,6 +8,7 @@ import { SessionLimitRegistry } from '../../src/lib/pool/session-limit.mjs'
 import { AccountQuota } from '../../src/lib/pool/account-quota.mjs'
 import { StickyRouter } from '../../src/lib/pool/sticky-router.mjs'
 import { FailoverRunner } from '../../src/lib/pool/failover-runner.mjs'
+import { kernelFaults } from '../../src/lib/transport/rust-kernel-client.mjs'
 import {
   applyCrsIdentityReplace,
   rebuildOutboundSession,
@@ -167,6 +168,26 @@ test('healthy sticky binding outranks weighted selection', async (t) => {
   })
   assert.equal(selected.accountId, 'account-2')
   assert.equal(selected.selectionReason, 'sticky')
+  selected.release()
+})
+
+test('an exhausted kernel is excluded even when the conversation is pinned to it', async (t) => {
+  const root = project()
+  kernelFaults.set('vm-02', 'container recovery exhausted')
+  t.after(() => {
+    kernelFaults.delete('vm-02')
+    fs.rmSync(root, { recursive: true, force: true })
+  })
+  const pool = scheduler(root, {
+    stickyRouter: { resolve: () => ({ vmId: 'vm-02', accountId: 'account-2' }) },
+  })
+  const selected = await pool.selectAndReserve({
+    model: 'claude-test',
+    stickyKey: 'conversation-fault',
+    allowWait: false,
+  })
+  assert.equal(selected.ok, true)
+  assert.equal(selected.vmId, 'vm-01')
   selected.release()
 })
 

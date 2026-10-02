@@ -1104,6 +1104,37 @@ test('one VM gets at most three executions for a request, hidden retries include
   assert.deepEqual(seen, ['vm-01', 'vm-01'])
 })
 
+test('a hop that failed with a kernel-named cause ends with that cause, not incomplete_response', async () => {
+  const scheduler = new Scheduler([candidate(1), candidate(2)])
+  const seen = []
+  const runner = new FailoverRunner({
+    scheduler,
+    config: { same_account_retry_delay_ms: 0 },
+  })
+  const result = await runner.run({
+    requestId: 'req-network',
+    canonicalBody: { model: 'claude-opus-test' },
+    model: 'claude-opus-test',
+    callAttempt: ({ candidate: selected }) => {
+      seen.push(selected.vmId)
+      return {
+        ok: false,
+        status: 502,
+        committed: false,
+        terminalState: 'incomplete',
+        body: {
+          type: 'error',
+          error: { type: 'api_error', code: 'upstream_network_error', message: 'fetch failed: ECONNRESET' },
+        },
+      }
+    },
+  })
+  assert.equal(result.status, 502)
+  assert.equal(result.body.error.code, 'upstream_network_error')
+  assert.ok(seen.includes('vm-02'), 'a network failure moves on to another VM')
+  assert.deepEqual(scheduler.cooldowns, [], 'no account is penalised for it')
+})
+
 test('the fifth candidate is reached after four VMs fail', async () => {
   const scheduler = new Scheduler([candidate(1), candidate(2), candidate(3), candidate(4), candidate(5)])
   const seen = []

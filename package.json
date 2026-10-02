@@ -20,8 +20,11 @@
     "format:check": "biome format && node scripts/check-gofmt.mjs && pnpm -C web format:check"
   },
   "dependencies": {
+    "https-proxy-agent": "^9.1.0",
     "node-fetch": "^2.7.0",
-    "socks-proxy-agent": "^10.1.0"
+    "socks-proxy-agent": "^10.1.0",
+    "ssh2": "^1.17.0",
+    "ws": "^8.22.0"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.11"

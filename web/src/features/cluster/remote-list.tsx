@@ -7,6 +7,7 @@ import {
   formatNodeMetric,
   isLiveLink,
   LINK_LATENCY_WARN_MS,
+  LINK_STATE_TEXT,
   LINK_TONE,
   type ClusterNode,
 } from '@/features/cluster/model'
@@ -18,41 +19,50 @@ const COL = {
   link: 'min-w-[128px] flex-[1.1]',
   metric: 'min-w-[64px] flex-[0.7] text-right',
   spend: 'min-w-[88px] flex-[0.9] pr-2 text-right',
-  action: 'w-14 shrink-0 pr-2 text-right',
+  action: 'w-28 shrink-0 pr-2 text-right',
 }
 
 export function RemoteList({
   nodes,
   onJoin,
+  onOpen,
   onDisconnect,
+  canManage,
 }: {
   nodes: ClusterNode[]
   onJoin: () => void
+  onOpen: (node: ClusterNode) => void
   onDisconnect: (node: ClusterNode) => void
+  canManage: boolean
 }) {
   return (
     <PanelCard
       title='扩展节点'
-      meta='多台 VPS 把槽位扩进当前项目'
+      meta='SSH 接入的 VPS，远端 Docker 经同一条连接管理'
       action={
-        <Button size='sm' variant='outline' onClick={onJoin}>
-          接入
-        </Button>
+        canManage ? (
+          <Button size='sm' variant='outline' onClick={onJoin}>
+            接入
+          </Button>
+        ) : undefined
       }
     >
       {nodes.length === 0 ? (
         <EmptyState
-          reason='还没有扩展节点。接入一台 VPS，把它上面的槽位并进这台控制台。'
-          actionLabel='接入 VPS'
-          onAction={onJoin}
+          reason='还没有扩展节点。用 SSH 接入一台 VPS，在面板里管理它的终端和 Docker。'
+          actionLabel={canManage ? '接入 VPS' : undefined}
+          onAction={canManage ? onJoin : undefined}
         />
       ) : (
         <div className='overflow-x-auto'>
-          <div className='min-w-[760px]'>
+          <div className='min-w-[840px]'>
             <div className='flex h-8 items-center border-b bg-muted/30 text-[11px] font-medium tracking-wide text-muted-foreground/80'>
               <div className={COL.name}>节点</div>
               <div className={COL.host}>IP</div>
               <div className={COL.link}>链路</div>
+              <div className={COL.metric} title='运行中 / 全部容器（含出口）'>
+                Docker
+              </div>
               <div className={COL.metric}>槽位</div>
               <div className={COL.metric}>凭证</div>
               <div className={COL.metric}>在线</div>
@@ -81,9 +91,9 @@ export function RemoteList({
                     )}
                   >
                     <span className='truncate font-medium'>{node.label}</span>
-                    {node.synthetic ? (
+                    {node.remote ? (
                       <span className='shrink-0 text-[10px] text-muted-foreground'>
-                        示意
+                        {LINK_STATE_TEXT[node.remote.link.state]}
                       </span>
                     ) : null}
                   </div>
@@ -103,6 +113,18 @@ export function RemoteList({
                       </span>
                     ) : null}
                   </div>
+                  <div
+                    className={cn(COL.metric, 'field-metric')}
+                    title={
+                      node.docker
+                        ? `运行 ${node.docker.running} / 共 ${node.docker.total} 个容器`
+                        : undefined
+                    }
+                  >
+                    {isLiveLink(node.link) && node.docker
+                      ? `${fmtNum(node.docker.running)}/${fmtNum(node.docker.total)}`
+                      : '—'}
+                  </div>
                   <div className={cn(COL.metric, 'field-metric')}>
                     {formatNodeMetric(node, node.vmCount, fmtNum)}
                   </div>
@@ -116,14 +138,26 @@ export function RemoteList({
                     {formatNodeMetric(node, node.spendUsd, (n) => fmtUsd(n, 2))}
                   </div>
                   <div className={COL.action}>
-                    <Button
-                      size='sm'
-                      variant='ghost'
-                      className='h-7 px-2 text-xs'
-                      onClick={() => onDisconnect(node)}
-                    >
-                      断开
-                    </Button>
+                    {canManage ? (
+                      <>
+                        <Button
+                          size='sm'
+                          variant='ghost'
+                          className='h-7 px-2 text-xs'
+                          onClick={() => onOpen(node)}
+                        >
+                          管理
+                        </Button>
+                        <Button
+                          size='sm'
+                          variant='ghost'
+                          className='h-7 px-2 text-xs'
+                          onClick={() => onDisconnect(node)}
+                        >
+                          移除
+                        </Button>
+                      </>
+                    ) : null}
                   </div>
                 </div>
               )

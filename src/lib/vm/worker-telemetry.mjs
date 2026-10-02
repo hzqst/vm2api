@@ -18,6 +18,7 @@ import {
   telemetryCodeUa,
 } from '../identity/telemetry-env.mjs'
 import { readOfficialCcIdentity } from '../identity/official-fingerprint.mjs'
+import { slotHost } from './slot-host.mjs'
 
 const DROP_HEADER = /^(authorization|cookie|x-api-key|proxy-authorization)$/i
 
@@ -25,16 +26,18 @@ export function telemetryTouchPath(projectRoot, vmId) {
   return path.join(projectRoot, 'vms', vmId, 'run', 'telemetry.touch')
 }
 
-export function touchTelemetrySession(projectRoot, vmId) {
+/** `vm` given: the touch also reaches wherever that slot reads it (throttled for node slots). */
+export function touchTelemetrySession(projectRoot, vmId, vm = null) {
   if (!projectRoot || !vmId) return { wrote: false }
   const file = telemetryTouchPath(projectRoot, vmId)
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true })
     fs.writeFileSync(file, `${new Date().toISOString()}\n`, { mode: 0o600 })
-    return { wrote: true }
   } catch {
     return { wrote: false }
   }
+  slotHost(vm).touch(vm, path.join(projectRoot, 'vms', vmId))
+  return { wrote: true }
 }
 
 function telemetryHeaders(identity) {

@@ -133,6 +133,8 @@ docker exec kin-<槽> curl -sS -o /dev/null -w '%{http_code}\n' --max-time 10 ht
 
 能解析且打印 HTTP 状态码（如 `404`）即通。两条都超时就是仍被拦截。本地出口（`px-local`）不经过 `kin-egress`，不需要这一步。
 
+本地出口上的 GPT 槽位：控制面进程环境里有 `HTTPS_PROXY`（其次 `https_proxy`、`ALL_PROXY`、`all_proxy`；`HTTP_PROXY` 不算）时，Codex kernel 推理和目录同步、额度、token 刷新、OAuth 换票都走这个代理，代理不通就失败，不回落直连；`NO_PROXY` 对它不生效。没设就直连。本地出口上的 Claude 槽位始终直连。
+
 ## 上线后
 
 1. 打开 `/cc#/login`，用管理台密码登录（未配置时为 `admin` / `123456`）。
@@ -147,6 +149,17 @@ docker exec kin-<槽> curl -sS -o /dev/null -w '%{http_code}\n' --max-time 10 ht
 Node 听 `:8787`。HTTPS 放在 nginx。
 
 ```nginx
+# 集群页终端是 WebSocket：必须透传 Upgrade，并直连 Node（前面若有会丢 Upgrade 的网关，也要绕过）。
+location ~ ^/api/panel/cluster/nodes/[^/]+/shell$ {
+  proxy_pass http://127.0.0.1:8787;
+  proxy_http_version 1.1;
+  proxy_set_header Host $host;
+  proxy_set_header Upgrade $http_upgrade;
+  proxy_set_header Connection "upgrade";
+  proxy_buffering off;
+  proxy_read_timeout 3600s;
+}
+
 location / {
   proxy_pass http://127.0.0.1:8787;
   proxy_http_version 1.1;
@@ -157,6 +170,8 @@ location / {
   proxy_read_timeout 600s;
 }
 ```
+
+`Connection ""` 会剥掉 Upgrade，终端握手拿不到 101，面板里一直连不上；所以 shell 路径单独放在前面。
 
 ## 本机 Node（备选）
 

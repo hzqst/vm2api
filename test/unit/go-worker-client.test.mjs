@@ -30,6 +30,46 @@ test('restoreUncommittedHop keeps a structured upstream code', () => {
   assert.notEqual(restored.body.error.code, 'empty_response')
 })
 
+test('a coded kernel stream error keeps its code and the status it names', () => {
+  const restored = restoreUncommittedHop({
+    ok: false,
+    status: 200,
+    committed: false,
+    terminalState: 'incomplete',
+    headers: {},
+    body: {
+      type: 'error',
+      error: {
+        type: 'api_error',
+        code: 'kernel_unavailable',
+        status: 503,
+        message: 'native cli host unavailable',
+      },
+    },
+  })
+  assert.equal(restored.status, 503)
+  assert.equal(restored.body.error.code, 'kernel_unavailable')
+
+  const limited = restoreUncommittedHop({
+    ok: false,
+    status: 200,
+    committed: false,
+    headers: {},
+    body: {
+      type: 'error',
+      error: {
+        type: 'rate_limit_error',
+        code: 'upstream_rate_limit',
+        status: 429,
+        retry_after: '42',
+        message: 'slow down',
+      },
+    },
+  })
+  assert.equal(limited.status, 429)
+  assert.equal(limited.headers['retry-after'], '42')
+})
+
 test('setup-token worker envelope is inference-only', () => {
   const out = finalizeWorkerPayload({
     body: { model: 'claude-sonnet-5', messages: [{ role: 'user', content: 'hi' }] },
@@ -186,6 +226,43 @@ unixTest('streamGoWorker accepts message_stop before delayed EOF', async () => {
     assert.equal(result.terminalState, 'verified')
     assert.equal(result.committed, true)
     assert.ok(lines.some((line) => line.includes('message_stop')))
+  } finally {
+    await fx.close()
+  }
+})
+
+unixTest('streamGoWorker names the aborted hop to the kernel cancel route', async () => {
+  let hopId = null
+  let cancelled = null
+  const sawCancel = new Promise((resolve) => {
+    cancelled = resolve
+  })
+  const fx = await fixture(async (req, res) => {
+    const chunks = []
+    for await (const chunk of req) chunks.push(chunk)
+    const payload = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+    if (req.url === '/internal/v1/cancel') {
+      res.setHeader('content-type', 'application/json')
+      res.end('{"ok":true,"cancelled":true}')
+      cancelled(payload.request_id)
+      return
+    }
+    hopId = payload.request_id
+    res.setHeader('content-type', 'text/event-stream')
+    res.write('event: message_start\ndata: {"type":"message_start","message":{}}\n\n')
+  })
+  try {
+    const controller = new AbortController()
+    const pending = streamGoWorker({
+      exec: fx.exec,
+      body: { model: 'claude-test', stream: true, messages: [{ role: 'user', content: 'hi' }] },
+      signal: controller.signal,
+    })
+    while (!hopId) await new Promise((resolve) => setTimeout(resolve, 5))
+    controller.abort()
+    const result = await pending
+    assert.equal(result.body.error.code, 'client_cancelled')
+    assert.equal(await sawCancel, hopId)
   } finally {
     await fx.close()
   }

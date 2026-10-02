@@ -44,6 +44,7 @@ import { StatusMark } from '@/components/status-mark'
 import { ProxyChip } from '@/features/proxies/proxy-chip'
 import { restrictionTitle } from '@/features/vm/clear-restriction'
 import { Field } from '@/features/vm/detail-section-primitives'
+import { NodeChip } from '@/features/vm/node-chip'
 import { OpenaiPlanBadge } from '@/features/vm/openai-plan-badge'
 import {
   SchedulableSwitch,
@@ -52,6 +53,7 @@ import {
 import { VmUsageWindows } from '@/features/vm/usage-windows'
 import { refreshBlockedReason } from '@/features/vm/vm-action-menu'
 import { useVmActions } from '@/features/vm/vm-actions-context'
+import { VmQuotaField } from '@/features/vm/vm-quota-editor'
 
 function Section({
   title,
@@ -103,6 +105,8 @@ function CardBody({ vm, accounts }: { vm: Vm; accounts?: UsageAccountRow[] }) {
       <Section title='用量窗口'>
         <VmUsageWindows vm={vm} accounts={accounts} quotaActions />
       </Section>
+
+      {codex ? null : <VmQuotaField vm={vm} />}
 
       <div className='grid gap-2 sm:grid-cols-2'>
         <Section title='今日'>
@@ -265,8 +269,9 @@ export function VmDetailCard({
         }}
       >
         <DialogHeader>
-          <DialogTitle className='text-base'>
+          <DialogTitle className='flex min-w-0 items-center gap-1.5 text-base'>
             {vm ? <SlotIdentity vm={vm} compact /> : '槽位详情'}
+            {vm ? <NodeChip nodeId={vm.node_id} /> : null}
           </DialogTitle>
           <DialogDescription className='sr-only'>槽位详情</DialogDescription>
         </DialogHeader>

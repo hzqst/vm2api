@@ -15,8 +15,8 @@ test('runtimeKind accepts kvm aliases', () => {
   assert.equal(isKvmRuntime({ runtime: { type: 'libvirt' } }), true)
 })
 
-test('kvm reload refuses without adapter', () => {
-  const out = reloadSlot({ id: 'vm-99', runtime: { type: 'kvm' } }, '/tmp/kin')
+test('kvm reload refuses without adapter', async () => {
+  const out = await reloadSlot({ id: 'vm-99', runtime: { type: 'kvm' } }, '/tmp/kin')
   assert.equal(out.ok, false)
   assert.equal(out.code, 'kvm_not_configured')
 })

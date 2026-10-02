@@ -53,8 +53,8 @@ export async function lookupProxyGeo(proxyUrl, { endpoint, timeoutMs, fetchImpl 
   const impl = fetchImpl || nodeFetch
   const opts = { method: 'GET', headers: { accept: 'application/json' } }
   if (proxyUrl) {
-    const { SocksProxyAgent } = await import('socks-proxy-agent')
-    opts.agent = new SocksProxyAgent(proxyUrl)
+    const { createProxyAgent } = await import('./proxy-agent.mjs')
+    opts.agent = createProxyAgent(proxyUrl)
   }
   if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) opts.signal = AbortSignal.timeout(timeout)
   let res

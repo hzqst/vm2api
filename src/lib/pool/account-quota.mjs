@@ -28,6 +28,7 @@ import {
 import { accountTierKey, isNearLimit, normalizeTiers, resolveTierPolicy } from './quota-tiers.mjs'
 import { resolvePolicyModelId } from '../protocol/model-policy.mjs'
 import { SessionLimitRegistry } from './session-limit.mjs'
+import { applyVmQuotaConfig, applyVmQuotaPolicy } from './vm-quota-override.mjs'
 import { isFablePlanDenied, isInventedFableWindow, isOfficialUsageRateLimited } from '../oauth/crs-usage-probe.mjs'
 import { normalizeUsage } from '../admin/pricing.mjs'
 import { isTestProbeSource } from './schedule-eligibility.mjs'
@@ -49,6 +50,8 @@ export class AccountQuota {
     this.inflight = new Map() // accountId → count
     this.rpmBuckets = new Map() // accountId → number[] timestamps ms
     this.sessions = config?.sessions instanceof SessionLimitRegistry ? config.sessions : new SessionLimitRegistry()
+    // vm_id → normalized `vm.policy.quota`; vm.json is the source of truth, this is the hot-path copy.
+    this.vmQuota = new Map()
     // seed accounts
     for (const a of accounts || []) this.ensure(a)
   }
@@ -463,14 +466,39 @@ export class AccountQuota {
    * @returns {{ ok: true } | { ok: false, reason, detail }}
    */
   policyFor(acc, { tier } = {}) {
-    return resolveTierPolicy(
-      {
-        tiers: this.tiers,
-        quota: this.config,
-        concurrency: this.concurrency,
-      },
-      acc?.unified?.account_tier || acc?.account_tier || tier,
+    return applyVmQuotaPolicy(
+      resolveTierPolicy(
+        {
+          tiers: this.tiers,
+          quota: this.config,
+          concurrency: this.concurrency,
+        },
+        acc?.unified?.account_tier || acc?.account_tier || tier,
+      ),
+      this.vmQuotaOverrideFor(acc),
     )
+  }
+
+  /** Global `quota` block (block switches, weekly split) with the account's VM override applied. */
+  quotaConfigFor(acc) {
+    return applyVmQuotaConfig(this.config, this.vmQuotaOverrideFor(acc))
+  }
+
+  vmQuotaOverrideFor(acc) {
+    return acc?.vm_id ? this.vmQuota.get(acc.vm_id) || null : null
+  }
+
+  /** @param {string} vmId @param {object|null} override normalized (`vmQuotaOverrideOf`) */
+  setVmQuotaOverride(vmId, override) {
+    if (!vmId) return
+    if (override) this.vmQuota.set(vmId, override)
+    else this.vmQuota.delete(vmId)
+  }
+
+  /** Replace every VM override from `listVms` summaries (boot / backup restore). */
+  loadVmQuotaOverrides(vms) {
+    this.vmQuota.clear()
+    for (const vm of vms || []) this.setVmQuotaOverride(vm?.id, vm?.quota_override || null)
   }
 
   canAccept(accountId, { sessionKey = null, tier = null } = {}) {
@@ -481,6 +509,7 @@ export class AccountQuota {
       policy.limit_7d ?? policy.weekly_safety_ratio ?? this.config.weekly_safety_ratio ?? ratio,
     )
     const warnRatio = Number(policy.warn_ratio ?? this.config.warn_ratio ?? 0.75)
+    const quotaConfig = this.quotaConfigFor(acc)
     const inflight = this.inflight.get(accountId) || 0
 
     const limit = this.limitFor(acc, policy)
@@ -492,7 +521,7 @@ export class AccountQuota {
       }
     }
 
-    if (this.config.block_on_5h && headerHardBlocked(acc.unified, '5h')) {
+    if (quotaConfig.block_on_5h && headerHardBlocked(acc.unified, '5h')) {
       const h5 = headerWindow(acc.unified, '5h')
       acc.last_blocked = { at: new Date().toISOString(), window: '5h', status: h5.status, source: 'headers' }
       this.repo.save(acc)
@@ -506,7 +535,7 @@ export class AccountQuota {
         },
       }
     }
-    if (this.config.block_on_7d && headerHardBlocked(acc.unified, '7d')) {
+    if (quotaConfig.block_on_7d && headerHardBlocked(acc.unified, '7d')) {
       const h7 = headerWindow(acc.unified, '7d')
       acc.last_blocked = { at: new Date().toISOString(), window: '7d', status: h7.status, source: 'headers' }
       this.repo.save(acc)
@@ -526,7 +555,7 @@ export class AccountQuota {
     const u5 = asUtilRatio(w5.utilization)
     const u7 = asUtilRatio(w7.utilization)
 
-    if (this.config.block_on_5h && safetyTripped(u5, ratio, inflight)) {
+    if (quotaConfig.block_on_5h && safetyTripped(u5, ratio, inflight)) {
       acc.last_blocked = { at: new Date().toISOString(), window: '5h', utilization: u5, status: w5.status }
       this.repo.save(acc)
       return {
@@ -543,7 +572,7 @@ export class AccountQuota {
       }
     }
 
-    if (this.config.block_on_7d && safetyTripped(u7, weeklyRatio, inflight)) {
+    if (quotaConfig.block_on_7d && safetyTripped(u7, weeklyRatio, inflight)) {
       acc.last_blocked = { at: new Date().toISOString(), window: '7d', utilization: u7, status: w7.status }
       this.repo.save(acc)
       return {
@@ -619,10 +648,10 @@ export class AccountQuota {
     return Number.isFinite(parsed) ? parsed : null
   }
 
-  /** Experimental 50/50 weekly split. Off unless quota.weekly_split.enabled. */
+  /** Experimental 50/50 weekly split. Off unless quota.weekly_split.enabled (or the VM override). */
   weeklySplitOf(accountId) {
-    const cfg = weeklySplitConfig(this.config)
     const acc = this.repo.get(accountId)
+    const cfg = weeklySplitConfig(this.quotaConfigFor(acc))
     const u = acc?.unified || {}
     return computeWeeklySplit({
       enabled: cfg.enabled,

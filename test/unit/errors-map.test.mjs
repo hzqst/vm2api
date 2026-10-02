@@ -233,6 +233,34 @@ test('incomplete_response maps to HTTP 502', () => {
   assert.equal(mapped.body.error.code, 'incomplete_response')
 })
 
+test('kernel-reported failure codes reach the client as themselves', () => {
+  for (const [code, status] of [
+    ['upstream_network_error', 502],
+    ['upstream_stream_interrupted', 502],
+    ['upstream_empty_stream', 502],
+    ['cli_error', 502],
+    ['kernel_unavailable', 503],
+    ['upstream_error', 502],
+  ]) {
+    const mapped = mapUpstreamError(200, { error: { type: 'api_error', code, message: 'cause' } })
+    assert.equal(mapped.status, status, code)
+    assert.equal(mapped.body.error.code, code)
+  }
+})
+
+test('structured upstream causes outrank text heuristics and preserve actual HTTP status', () => {
+  for (const [status, code, message] of [
+    [502, 'upstream_network_error', 'Connection error.'],
+    [500, 'upstream_error', 'fixture server failure'],
+    [404, 'upstream_invalid_request', 'fixture missing model'],
+    [504, 'upstream_timeout', 'upstream body read failed'],
+  ]) {
+    const mapped = mapUpstreamError(status, { error: { type: 'api_error', code, message } })
+    assert.equal(mapped.status, status)
+    assert.equal(mapped.body.error.code, code)
+  }
+})
+
 test('wrap Connection error is not upstream', () => {
   assert.equal(isWrapConnectionError('provider error: provider error: Connection error.'), true)
   const mapped = mapUpstreamError(200, {

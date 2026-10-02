@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { slotContainerName } from '../transport/rust-kernel-supervisor.mjs'
+import { slotHost } from './slot-host.mjs'
 
 const exec = promisify(execFile)
 const PROBE = String.raw`
@@ -44,10 +45,12 @@ export async function readSlotProcessStatus({ projectRoot, vm, run = exec } = {}
   }
   if (vm.runtime?.type !== 'docker') return { ...unknown, telemetry: { enabled, running: null } }
   try {
+    const env = slotHost(vm).dockerEnv()
     const { stdout } = await run('docker', ['exec', slotContainerName({ vm }), 'sh', '-c', PROBE], {
       timeout: 2500,
       maxBuffer: 4096,
       encoding: 'utf8',
+      ...(env ? { env } : {}),
     })
     const match = String(stdout)
       .trim()

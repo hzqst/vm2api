@@ -8,7 +8,6 @@ import {
   resolveHopEngine,
   dispatchStreamInference,
   dispatchCallInference,
-  isDeadWrapHop,
   rustHealthTtlMs,
   rustSlotWaitMs,
   resolveHopSlotWaitMs,
@@ -42,40 +41,6 @@ import { socksUidFor } from '../../src/lib/vm/vm-runtime.mjs'
 
 const unix = process.platform !== 'win32'
 const unixTest = unix ? test : test.skip
-
-test('empty assistant hop does not SIGKILL the supervisor', () => {
-  assert.equal(
-    isDeadWrapHop({
-      ok: false,
-      status: 200,
-      terminalState: 'incomplete',
-      transportError: false,
-      body: { type: 'message', role: 'assistant', content: [], stop_reason: null },
-    }),
-    false,
-  )
-  assert.equal(
-    isDeadWrapHop({
-      ok: false,
-      status: 499,
-      clientCancelled: true,
-      terminalState: 'cancelled',
-      transportError: false,
-      body: { error: { code: 'client_cancelled', message: 'Client closed the connection' } },
-    }),
-    false,
-  )
-  assert.equal(
-    isDeadWrapHop({
-      ok: false,
-      status: 0,
-      terminalState: 'transport_error',
-      transportError: true,
-      body: { error: { message: 'socket hang up' } },
-    }),
-    true,
-  )
-})
 
 test('wrap system error is not a credential ensure; 401 still is', () => {
   assert.equal(
@@ -575,7 +540,7 @@ unixTest('committed Rust stream transport failure is not replayed on Go', async 
     assert.equal(result.wanted_engine, 'rust')
     assert.equal(result.committed, false)
     assert.equal(result.transportError, true)
-    assert.deepEqual(recycled, ['vm-01'])
+    assert.deepEqual(recycled, [], 'request failures leave recovery to the bounded watchdog')
   } finally {
     await new Promise((resolve) => server.close(resolve))
     fs.rmSync(root, { recursive: true, force: true })
@@ -584,7 +549,7 @@ unixTest('committed Rust stream transport failure is not replayed on Go', async 
   }
 })
 
-unixTest('sibling wrap hop defers recycle until the last hop ends', async () => {
+unixTest('a failed sibling hop cannot bypass watchdog recovery after other hops finish', async () => {
   resetWrapRecycleState()
   const previous = process.env.KIN_KERNEL_BIN
   process.env.KIN_KERNEL_BIN = '/bin/true'
@@ -634,7 +599,7 @@ unixTest('sibling wrap hop defers recycle until the last hop ends', async () => 
     })
     assert.deepEqual(recycled, [])
     endWrapHop(exec)
-    assert.deepEqual(recycled, ['vm-02'])
+    assert.deepEqual(recycled, [], 'ending the sibling does not trigger a request-side restart')
   } finally {
     endWrapHop(exec)
     resetWrapRecycleState()

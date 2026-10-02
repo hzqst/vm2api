@@ -4,6 +4,7 @@ import type { BillingAccountRow, BillingSnapshot } from '@/types/panel-overview'
 import type { Vm } from '@/types/panel-vm'
 import { fmtUsd } from '@/lib/format'
 import { indexVms, isCodexVm } from '@/lib/vm-kind'
+import { billingRowSlot } from '@/lib/vm-usage'
 import { Button } from '@/components/ui/button'
 import { SlotIdentity } from '@/components/platform-chip'
 import { billingQueryOptions } from '@/features/billing/queries'
@@ -80,10 +81,15 @@ export function BillingStrip({
       {rows.length ? (
         <div className='flex flex-wrap gap-2 border-t bg-card px-4 py-3'>
           {rows.map((row) => {
-            const vm = row.vm_id ? byId.get(row.vm_id) : undefined
+            const vm = billingRowSlot(row, byId)
             const chipContent = (
               <>
-                <SlotIdentity vm={vm} vmId={row.vm_id} email={row.email} />
+                <SlotIdentity
+                  vm={vm}
+                  vmId={vm?.id}
+                  email={row.email}
+                  emptyLabel={row.vm_id ? `${row.vm_id} 旧账号` : undefined}
+                />
                 <b className='font-semibold tabular-nums'>
                   {fmtUsd(row.today_cost || 0)}
                 </b>
@@ -94,17 +100,19 @@ export function BillingStrip({
             )
             const chipClass =
               'inline-flex items-center gap-2 rounded-full border bg-card px-2.5 py-1.5 text-xs transition-colors'
-            return row.vm_id ? (
+            // One row per (account, slot id): either alone can repeat when ids are reused.
+            const key = `${row.account_id || row.email || ''}:${row.vm_id || ''}`
+            return vm ? (
               <Link
-                key={row.vm_id || row.account_id || row.email}
+                key={key}
                 to='/vm/$id'
-                params={{ id: String(row.vm_id) }}
+                params={{ id: vm.id }}
                 className={`${chipClass} hover:bg-accent/50`}
               >
                 {chipContent}
               </Link>
             ) : (
-              <span key={row.account_id || row.email} className={chipClass}>
+              <span key={key} className={chipClass}>
                 {chipContent}
               </span>
             )

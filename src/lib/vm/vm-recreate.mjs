@@ -13,6 +13,7 @@ import { manualScheduleLevelOf } from '../pool/credential-weight.mjs'
 import { stampVmKind } from './vm-kind.mjs'
 import { materializeWrapCli } from './wrap-cli-runtime.mjs'
 import { listVms } from './vm-registry.mjs'
+import { slotHost } from './slot-host.mjs'
 import {
   applyGeneratedFingerprint,
   generateWorkstationFingerprint,
@@ -34,9 +35,12 @@ export function wipeSlotHome(projectRoot, id) {
 
 export function seedFreshCliHome(projectRoot, vm) {
   const written = writeSlotSeedFiles(projectRoot, vm)
-  try {
-    materializeWrapCli(projectRoot, vm)
-  } catch {}
+  // A baked slot image carries its binaries; no .kin copy in the home.
+  if (!slotHost(vm).bakedKernel) {
+    try {
+      materializeWrapCli(projectRoot, vm)
+    } catch {}
+  }
   return { homeDir: written.homeDir, seed_policy: written.seed_policy || defaultSeedPolicy(vm.seed_policy || {}) }
 }
 
@@ -75,6 +79,7 @@ export function buildRecreatedVmRecord(prev, generated) {
       ...(priority == null ? {} : { priority }),
       inflight: 0,
       ...(allowed.length ? { allowed_models: allowed } : {}),
+      ...(policy.quota && typeof policy.quota === 'object' ? { quota: policy.quota } : {}),
     },
     claude: {},
     fingerprint: applyGeneratedFingerprint({}, { ...pack, timezone, locale, reset_at: now }),
@@ -89,6 +94,7 @@ export function buildRecreatedVmRecord(prev, generated) {
     proxy_required: prev.proxy_required,
     ...(prev.inference_engine ? { inference_engine: prev.inference_engine } : {}),
     ...(prev.persona_preset ? { persona_preset: prev.persona_preset } : {}),
+    ...(prev.node_id ? { node_id: prev.node_id } : {}),
   }
   stampVmKind(next, prev)
   return next

@@ -9,7 +9,7 @@ describe('panel error envelope', () => {
           type: 'permission_error',
           code: 'forbidden',
           message: '没有权限',
-          details: { capability: 'keys' },
+          details: { capability: 'users' },
         },
         data: { refresh_class: 'fatal' },
       },
@@ -22,7 +22,7 @@ describe('panel error envelope', () => {
       status: 403,
       type: 'permission_error',
       code: 'forbidden',
-      details: { capability: 'keys' },
+      details: { capability: 'users' },
       data: { refresh_class: 'fatal' },
     })
   })

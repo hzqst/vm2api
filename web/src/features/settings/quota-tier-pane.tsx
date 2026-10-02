@@ -24,8 +24,8 @@ const TIER_DEFAULTS: Record<QuotaTierKey, QuotaTierPolicy> = {
   max: { max_concurrency: 4, max_rpm: 0, limit_5h: 0.95, limit_7d: 0.95 },
 }
 
-const SESSION_STEPS = [0, 1, 2, 4, 8, 12, 16, 20]
-const IDLE_STEPS: [number, string][] = [
+export const SESSION_STEPS = [0, 1, 2, 4, 8, 12, 16, 20]
+export const IDLE_STEPS: [number, string][] = [
   [1, '1 分钟'],
   [5, '5 分钟'],
   [15, '15 分钟'],
@@ -33,7 +33,7 @@ const IDLE_STEPS: [number, string][] = [
   [60, '1 小时'],
 ]
 // 30–100% in 5-point steps, matching the legacy ratio slider's snap-down rule
-const RATIO_STEPS = Array.from({ length: 15 }, (_, i) => 30 + i * 5)
+export const RATIO_STEPS = Array.from({ length: 15 }, (_, i) => 30 + i * 5)
 
 function snapRatio(v: unknown, fallback: number): number {
   const n = Number(v)
@@ -205,7 +205,7 @@ export function QuotaTierPane({
 
         <p className='text-xs text-muted-foreground'>
           RPM 满了排队等窗口，不切号。过 5h/7d 闸写入受限并切号，不是调度关。 0
-          为不限制。机器页改过并发 / RPM 的槽位保持手动值。
+          为不限制。机器页改过并发 / RPM 或「配额」的槽位，改过的项保持槽位值。
         </p>
       </CardContent>
     </Card>

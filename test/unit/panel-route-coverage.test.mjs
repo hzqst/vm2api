@@ -131,6 +131,10 @@ const PANEL_ROUTE_SAMPLES = [
   ['GET', '/api/panel/probe-test'],
   ['GET', '/api/panel/probe-test/job-1'],
   ['POST', '/api/panel/probe-test/job-1/cancel'],
+  ['GET', '/api/panel/users'],
+  ['POST', '/api/panel/users'],
+  ['PATCH', '/api/panel/users/u1'],
+  ['DELETE', '/api/panel/users/u1'],
 ]
 
 test('panel route samples all have server handlers', () => {

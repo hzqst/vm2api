@@ -26,6 +26,7 @@ export default defineConfig({
           process.env.VM2API_API_PROXY ||
           process.env.KIN_API_PROXY ||
           'http://127.0.0.1:8787',
+        ws: true,
         changeOrigin: true,
         secure: true,
       },

@@ -25,6 +25,7 @@ import { Route as AuthenticatedProtocolRouteImport } from './routes/_authenticat
 import { Route as AuthenticatedProxiesRouteImport } from './routes/_authenticated/proxies'
 import { Route as AuthenticatedSystemRouteImport } from './routes/_authenticated/system'
 import { Route as AuthenticatedUsageRouteImport } from './routes/_authenticated/usage'
+import { Route as AuthenticatedUsersRouteImport } from './routes/_authenticated/users'
 import { Route as AuthenticatedWrapRouteImport } from './routes/_authenticated/wrap'
 import { Route as AuthenticatedLoadtestIndexRouteImport } from './routes/_authenticated/loadtest/index'
 import { Route as AuthenticatedLoadtestTabRouteImport } from './routes/_authenticated/loadtest/$tab'
@@ -112,6 +113,11 @@ const AuthenticatedUsageRoute = AuthenticatedUsageRouteImport.update({
   path: '/usage',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
+const AuthenticatedUsersRoute = AuthenticatedUsersRouteImport.update({
+  id: '/users',
+  path: '/users',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
 const AuthenticatedWrapRoute = AuthenticatedWrapRouteImport.update({
   id: '/wrap',
   path: '/wrap',
@@ -168,6 +174,7 @@ export interface FileRoutesByFullPath {
   '/proxies': typeof AuthenticatedProxiesRoute
   '/system': typeof AuthenticatedSystemRoute
   '/usage': typeof AuthenticatedUsageRoute
+  '/users': typeof AuthenticatedUsersRoute
   '/wrap': typeof AuthenticatedWrapRoute
   '/loadtest/$tab': typeof AuthenticatedLoadtestTabRoute
   '/settings/$tab': typeof AuthenticatedSettingsTabRoute
@@ -191,6 +198,7 @@ export interface FileRoutesByTo {
   '/proxies': typeof AuthenticatedProxiesRoute
   '/system': typeof AuthenticatedSystemRoute
   '/usage': typeof AuthenticatedUsageRoute
+  '/users': typeof AuthenticatedUsersRoute
   '/wrap': typeof AuthenticatedWrapRoute
   '/': typeof AuthenticatedIndexRoute
   '/loadtest/$tab': typeof AuthenticatedLoadtestTabRoute
@@ -217,6 +225,7 @@ export interface FileRoutesById {
   '/_authenticated/proxies': typeof AuthenticatedProxiesRoute
   '/_authenticated/system': typeof AuthenticatedSystemRoute
   '/_authenticated/usage': typeof AuthenticatedUsageRoute
+  '/_authenticated/users': typeof AuthenticatedUsersRoute
   '/_authenticated/wrap': typeof AuthenticatedWrapRoute
   '/_authenticated/': typeof AuthenticatedIndexRoute
   '/_authenticated/loadtest/$tab': typeof AuthenticatedLoadtestTabRoute
@@ -244,6 +253,7 @@ export interface FileRouteTypes {
     | '/proxies'
     | '/system'
     | '/usage'
+    | '/users'
     | '/wrap'
     | '/loadtest/$tab'
     | '/settings/$tab'
@@ -267,6 +277,7 @@ export interface FileRouteTypes {
     | '/proxies'
     | '/system'
     | '/usage'
+    | '/users'
     | '/wrap'
     | '/'
     | '/loadtest/$tab'
@@ -292,6 +303,7 @@ export interface FileRouteTypes {
     | '/_authenticated/proxies'
     | '/_authenticated/system'
     | '/_authenticated/usage'
+    | '/_authenticated/users'
     | '/_authenticated/wrap'
     | '/_authenticated/'
     | '/_authenticated/loadtest/$tab'
@@ -421,6 +433,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedUsageRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/users': {
+      id: '/_authenticated/users'
+      path: '/users'
+      fullPath: '/users'
+      preLoaderRoute: typeof AuthenticatedUsersRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/_authenticated/wrap': {
       id: '/_authenticated/wrap'
       path: '/wrap'
@@ -487,6 +506,7 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedProxiesRoute: typeof AuthenticatedProxiesRoute
   AuthenticatedSystemRoute: typeof AuthenticatedSystemRoute
   AuthenticatedUsageRoute: typeof AuthenticatedUsageRoute
+  AuthenticatedUsersRoute: typeof AuthenticatedUsersRoute
   AuthenticatedWrapRoute: typeof AuthenticatedWrapRoute
   AuthenticatedIndexRoute: typeof AuthenticatedIndexRoute
   AuthenticatedLoadtestTabRoute: typeof AuthenticatedLoadtestTabRoute
@@ -511,6 +531,7 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedProxiesRoute: AuthenticatedProxiesRoute,
   AuthenticatedSystemRoute: AuthenticatedSystemRoute,
   AuthenticatedUsageRoute: AuthenticatedUsageRoute,
+  AuthenticatedUsersRoute: AuthenticatedUsersRoute,
   AuthenticatedWrapRoute: AuthenticatedWrapRoute,
   AuthenticatedIndexRoute: AuthenticatedIndexRoute,
   AuthenticatedLoadtestTabRoute: AuthenticatedLoadtestTabRoute,

@@ -44,6 +44,7 @@ import { OpenaiPlanBadge } from '@/features/vm/openai-plan-badge'
 import { OpenaiQuotaPanel } from '@/features/vm/openai-quota-panel'
 import { proxyHealthOf } from '@/features/vm/proxy-health'
 import { SessionSlotsEditor } from '@/features/vm/session-slots-editor'
+import { VmQuotaField } from '@/features/vm/vm-quota-editor'
 import { telemetryStatusLabel } from './telemetry-status'
 
 type Props = {
@@ -366,6 +367,9 @@ export function VmStatusBoard(props: Props) {
                   <SessionSlotsEditor vm={vm} />
                 </div>
               </Field>
+            )}
+            {isCodexVm(vm) || !vm.quota_policy ? null : (
+              <VmQuotaField vm={vm} />
             )}
             {isCodexVm(vm) ? null : (
               <>
