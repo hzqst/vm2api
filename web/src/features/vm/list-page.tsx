@@ -31,6 +31,7 @@ import { CreateVmDialog } from '@/features/vm/create-vm-dialog'
 import { FleetPulse } from '@/features/vm/fleet-pulse'
 import { VmListSkeleton } from '@/features/vm/list-skeleton'
 import { vmsListQueryOptions } from '@/features/vm/queries'
+import { usePoolSeatStream } from '@/features/vm/use-pool-seat-stream'
 import { VmActionsProvider } from '@/features/vm/vm-actions-provider'
 import {
   filterVms,
@@ -53,6 +54,7 @@ const SORT_CHIPS = [
 export function VmListPage() {
   const me = useQuery(meQueryOptions())
   const vmsQ = useQuery(vmsListQueryOptions(5000))
+  usePoolSeatStream()
   const usage = useQuery({
     ...usageQueryOptions(5000),
     enabled: me.data?.role !== 'user',

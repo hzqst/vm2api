@@ -217,6 +217,44 @@ test('official OAuth probe still ingests real usage and exposes its actual resul
   assert.equal(detail.account.last_probe.error, 'probe_failed')
 })
 
+test('probe errors remain text across the response, persisted checks and detail reload', async (t) => {
+  const cases = [
+    { usage_error: { code: 'worker_timeout' }, expected: 'worker_timeout' },
+    { error: { message: 'Probe timed out', code: 'worker_timeout' }, expected: 'Probe timed out' },
+    { error: { message: {}, code: 'worker_timeout' }, expected: 'worker_timeout' },
+    { error: 'probe_failed', expected: 'probe_failed' },
+    { error: { message: {}, code: {} }, expected: null },
+  ]
+  for (const { expected, ...errors } of cases) {
+    await t.test(JSON.stringify(errors), async (t) => {
+      const f = fixture(t, { mode: 'oauth' })
+      const result = (
+        await buildProbeOne({
+          ...f.args,
+          accountQuota: f.quota,
+          usageCache: usageCache({
+            ok: false,
+            source: 'official-cc-usage',
+            via: 'slot-worker',
+            usage_status: 502,
+            probed_at: '2026-10-02T02:00:00Z',
+            ...errors,
+          }),
+        })
+      ).data
+      assert.equal(result.ok, false)
+      assert.equal(result.error, expected)
+      const detail = await f.detail(f.reopen())
+      for (const record of [detail.vm, detail.account]) {
+        assert.equal(record.last_probe.ok, false)
+        assert.equal(record.last_probe.error, expected)
+        assert.equal(record.last_probe_check.ok, false)
+        assert.equal(record.last_probe_check.error, expected)
+      }
+    })
+  }
+})
+
 test('confirmed usage revoke parks the VM and reports revoked status', async (t) => {
   const f = fixture(t, { mode: 'oauth' })
   const result = (

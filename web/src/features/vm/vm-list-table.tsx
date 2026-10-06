@@ -188,9 +188,29 @@ function CountPill({ tone, n }: { tone: 'ok' | 'bad'; n: number }) {
   )
 }
 
+/** 实时席位占用（调度器席位簿）；Codex 行没有席位。 */
+function SeatTag({ vm }: { vm: Vm }) {
+  if (vm.seats_max == null) return null
+  const used = Number(vm.seats_used) || 0
+  const queued = Number(vm.queue_depth) || 0
+  if (!used && !queued) return null
+  return (
+    <span
+      className={cn(
+        'shrink-0 text-[11px] text-muted-foreground tabular-nums',
+        queued > 0 && 'text-[color:var(--status-warn)]'
+      )}
+      title={`席位 ${used}/${vm.seats_max}${queued ? ` · 排队 ${queued}` : ''}`}
+    >
+      席位 {used}/{vm.seats_max}
+      {queued ? ` · 排队 ${queued}` : ''}
+    </span>
+  )
+}
+
 function StatusCell({ vm, show }: { vm: Vm; show: StatusBarShow }) {
   const tone = poolStatus(vm)
-  const inflight = Number(vm.inflight) || Number(vm.session_active) || 0
+  const inflight = Number(vm.inflight) || 0
   const health = healthModel(vm)
   const showInflight =
     inflight > 0 &&
@@ -210,6 +230,7 @@ function StatusCell({ vm, show }: { vm: Vm; show: StatusBarShow }) {
               {inflight}
             </span>
           ) : null}
+          <SeatTag vm={vm} />
         </div>
       ) : null}
       {show.bar ? (

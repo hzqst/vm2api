@@ -49,20 +49,51 @@ export function readLocalVersion(root = projectRoot()) {
   return '0.0.0'
 }
 
-export function normalizeVersion(value) {
+const ARCH_ALIASES = Object.freeze({ amd64: 'amd64', x86_64: 'amd64', x64: 'amd64', arm64: 'arm64', aarch64: 'arm64' })
+const RELEASE_TAG_RE = /^v?(\d+\.\d+\.\d+)(?:-(amd64|x86_64|arm64|aarch64))?$/i
+
+/** Docker architecture name for uname / Node / Docker spellings; '' when unsupported. */
+export function normalizeArch(value) {
+  return (
+    ARCH_ALIASES[
+      String(value || '')
+        .trim()
+        .toLowerCase()
+    ] || ''
+  )
+}
+
+/** `v1.2.3`, `1.2.3-arm64`, `v1.2.3-aarch64` → { version, tag, arch }; arch is '' without a suffix. */
+export function parseReleaseTag(value) {
   const m = String(value || '')
     .trim()
-    .match(/^v?(\d+\.\d+\.\d+)$/)
-  return m ? m[1] : ''
+    .match(RELEASE_TAG_RE)
+  if (!m) return null
+  return { version: m[1], tag: `v${m[1]}`, arch: m[2] ? normalizeArch(m[2]) : '' }
+}
+
+export function normalizeVersion(value) {
+  return parseReleaseTag(value)?.version || ''
 }
 
 export function normalizeTag(value) {
-  const ver = normalizeVersion(value)
-  return ver ? `v${ver}` : ''
+  return parseReleaseTag(value)?.tag || ''
 }
 
 export function isReleaseTag(value) {
   return /^v\d+\.\d+\.\d+$/.test(String(value || '').trim())
+}
+
+/**
+ * Control-plane image tag for a release on this architecture. amd64 keeps the
+ * bare tag (a manifest list, so existing installs keep working); arm64 pins
+ * its single-arch image so a host-wide DOCKER_DEFAULT_PLATFORM cannot swap it.
+ */
+export function imageTagFor(tag, arch = process.arch) {
+  const parsed = parseReleaseTag(tag)
+  const target = normalizeArch(arch)
+  if (!parsed || !target) return ''
+  return target === 'arm64' ? `${parsed.tag}-arm64` : parsed.tag
 }
 
 export function compareSemver(a, b) {
@@ -315,24 +346,40 @@ export async function startHostUpgrade({
   projectRoot: root,
   confirm = false,
   version,
+  arch = process.arch,
   spawnImpl = spawn,
   fetchImpl,
   now,
 } = {}) {
-  if (version != null && String(version).trim() !== '' && !normalizeTag(version)) {
+  const requested = version != null && String(version).trim() !== '' ? parseReleaseTag(version) : null
+  if (version != null && String(version).trim() !== '' && !requested) {
     return {
       status: 400,
       error: { message: '无效版本', code: 'invalid_version' },
     }
   }
+  const hostArch = normalizeArch(arch)
+  if (!hostArch) {
+    return {
+      status: 400,
+      error: { message: `不支持的控制面架构 ${arch}`, code: 'unsupported_arch' },
+    }
+  }
+  if (requested?.arch && requested.arch !== hostArch) {
+    return {
+      status: 400,
+      error: { message: `版本后缀 -${requested.arch} 与控制面架构 ${hostArch} 不符`, code: 'arch_mismatch' },
+    }
+  }
   const status = await buildUpdateStatus({ projectRoot: root, fetchImpl, now })
-  const target = version ? normalizeTag(version) : status.latest_tag
+  const target = requested ? requested.tag : status.latest_tag
   if (!isReleaseTag(target)) {
     return {
       status: 400,
       error: { message: '无效版本', code: 'invalid_version' },
     }
   }
+  const imageTag = imageTagFor(target, hostArch)
   const command = upgradeCommand(target)
   if (!confirm) {
     return {
@@ -360,11 +407,23 @@ export async function startHostUpgrade({
     }
   }
   const rootDir = hostRoot(root)
-  // Image install (no .git): flip the tag in .env and pull. Source install: keep the git flow.
+  // Image install (no .git): flip the arch-specific tag in .env and pull.
+  // Source install: keep the git flow. An ARM64 checkout must build through
+  // docker-compose.arm64.yml; without COMPOSE_FILE a bare `docker compose`
+  // would start the base service on ./vms and ./data instead of .local/arm64.
   const script = [
     'set -eu',
     `TAG=${target}`,
+    `IMAGE_TAG=${imageTag}`,
     'if [ -d .git ]; then',
+    ...(hostArch === 'arm64'
+      ? [
+          '  if ! grep -q "^COMPOSE_FILE=.*docker-compose.arm64.yml" .env 2>/dev/null; then',
+          '    echo "ARM64 source install lacks COMPOSE_FILE in .env; see docs/ARM64.md" >&2',
+          '    exit 1',
+          '  fi',
+        ]
+      : []),
     '  export GIT_TERMINAL_PROMPT=0',
     '  command -v git >/dev/null || apk add --no-cache git >/dev/null',
     `  git config --global --add safe.directory ${rootDir} || true`,
@@ -376,9 +435,9 @@ export async function startHostUpgrade({
     'else',
     '  touch .env',
     '  if grep -q "^VM2API_IMAGE_TAG=" .env; then',
-    '    sed -i "s|^VM2API_IMAGE_TAG=.*|VM2API_IMAGE_TAG=$TAG|" .env',
+    '    sed -i "s|^VM2API_IMAGE_TAG=.*|VM2API_IMAGE_TAG=$IMAGE_TAG|" .env',
     '  else',
-    '    printf "VM2API_IMAGE_TAG=%s\\n" "$TAG" >> .env',
+    '    printf "VM2API_IMAGE_TAG=%s\\n" "$IMAGE_TAG" >> .env',
     '  fi',
     '  docker compose pull',
     '  docker compose up -d',

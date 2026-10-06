@@ -28,6 +28,7 @@ import {
 } from '../vm/slot-engine.mjs'
 import { probeAccount } from '../oauth/usage-probe.mjs'
 import { queryOpenaiQuota, resetOpenaiQuota } from '../oauth/openai-quota.mjs'
+import { queryClaudeResetCredits, redeemClaudeResetCredit } from '../oauth/claude-reset-credits.mjs'
 import { canOfficialUsage, credentialModeOfVm, isSetupTokenMode } from '../oauth/credential-mode.mjs'
 import { getUsageCache } from '../oauth/usage-cache.mjs'
 import { makeError, ErrorType, ErrorCode } from '../core/errors.mjs'
@@ -57,6 +58,7 @@ import {
   probeFromPassiveHeaders,
   shouldHopOfficialUsage,
   shouldProbeFable,
+  usageErrorText,
 } from '../oauth/crs-usage-probe.mjs'
 import { proxyHasVm } from '../vm/proxy-pool.mjs'
 import { collectLivePanelCredentials } from './panel-live-credentials.mjs'
@@ -416,6 +418,12 @@ function snapshotPool(proxyPool) {
   }
 }
 
+/** Deleting a VM leaves its `accounts` row behind; list only accounts whose slot still exists. */
+function liveAccounts(accounts, vms) {
+  const ids = new Set((vms || []).map((v) => String(v.id)))
+  return (accounts || []).filter((a) => !a.vm_id || ids.has(String(a.vm_id)))
+}
+
 export async function buildDashboard({
   cfg,
   accountQuota,
@@ -444,7 +452,7 @@ export async function buildDashboard({
     }),
   )
   const snap = accountQuota.snapshot()
-  const accounts = snap.accounts || []
+  const accounts = liveAccounts(snap.accounts, listed)
   const peak5 = Math.max(0, ...accounts.map((a) => Number(a.unified?.['5h']?.utilization || 0)), 0)
   const peak7 = Math.max(0, ...accounts.map((a) => Number(a.unified?.['7d']?.utilization || 0)), 0)
   const near = accounts.filter(
@@ -468,7 +476,7 @@ export async function buildDashboard({
     vms,
     (() => {
       try {
-        return attachBillingMeta(panelBillingStats(requestLog, accountQuota, vms), accounts)
+        return attachBillingMeta(panelBillingStats(requestLog, accountQuota, vms), snap.accounts || [])
       } catch {
         return null
       }
@@ -549,6 +557,7 @@ export async function buildVmList({
   proxyPool = null,
   ownerUserId = null,
   role = 'admin',
+  requestLog = null,
 } = {}) {
   try {
     accountQuota?.runtimeRepo?.clearExpired?.(Date.now())
@@ -566,6 +575,23 @@ export async function buildVmList({
       liveById,
       projectRoot: cfg.paths.project,
     }),
+  )
+  const accounts = (() => {
+    try {
+      return accountQuota?.snapshot?.().accounts || []
+    } catch {
+      return []
+    }
+  })()
+  stampVmBilling(
+    vms,
+    (() => {
+      try {
+        return attachBillingMeta(panelBillingStats(requestLog, accountQuota, vms), accounts)
+      } catch {
+        return null
+      }
+    })(),
   )
   return ok({ items: vms, active_vm: active, total: vms.length, proxy_pool: summarizeProxyPool(proxyPool) })
 }
@@ -751,6 +777,56 @@ export async function buildOpenaiQuotaReset({ cfg, id, rotate = true } = {}) {
   })
 }
 
+function claudeResetFail(result) {
+  const status = result.status || 400
+  return fail(
+    makeError({
+      type:
+        status === 404
+          ? ErrorType.NOT_FOUND
+          : status >= 500
+            ? ErrorType.UPSTREAM
+            : status === 409
+              ? ErrorType.API
+              : ErrorType.INVALID_REQUEST,
+      code: result.error || 'claude_reset_failed',
+      message: result.message || 'Claude 限额重置失败',
+      status,
+    }),
+  )
+}
+
+export async function buildClaudeResetQuery({ cfg, id, transport, now } = {}) {
+  const result = await queryClaudeResetCredits({
+    projectRoot: cfg.paths.project,
+    vmId: id,
+    ...(transport ? { transport } : {}),
+    ...(now ? { now } : {}),
+  })
+  if (!result.ok) return claudeResetFail(result)
+  return ok({
+    vm_id: id,
+    source: 'claude-reset-credits',
+    ...result,
+  })
+}
+
+export async function buildClaudeResetRedeem({ cfg, id, idempotencyKey, transport, now } = {}) {
+  const result = await redeemClaudeResetCredit({
+    projectRoot: cfg.paths.project,
+    vmId: id,
+    idempotencyKey,
+    ...(transport ? { transport } : {}),
+    ...(now ? { now } : {}),
+  })
+  if (!result.ok) return claudeResetFail(result)
+  return ok({
+    vm_id: id,
+    source: 'claude-reset-redeem',
+    ...result,
+  })
+}
+
 function applyFableProbeResult(accountQuota, accountId, found) {
   if (found?.tier !== 'pro' && found?.tier !== 'max') return null
   const saved = accountQuota.repo.get(accountId)
@@ -856,7 +932,7 @@ export async function buildProbeOne({
   accountQuota.ensure({
     account_id: accountId,
     vm_id: vm.id,
-    email: vm.claude?.email,
+    email: vm.email || vm.codex?.email || vm.claude?.email,
     max_concurrency: vm.policy?.maxConcurrency,
     max_rpm: vm.policy?.maxRpm ?? 0,
   })
@@ -1003,7 +1079,7 @@ export async function buildProbeOne({
         ? null
         : rateLimited
           ? '官方 /usage 限流，请稍后再试'
-          : result.error || result.usage_error || null,
+          : usageErrorText({ error: result.error || result.usage_error }) || null,
     usage_scope_missing: result.usage_scope_missing === true,
     credential_scope_required: result.credential_scope_required || null,
   }
@@ -1049,13 +1125,13 @@ export function buildUsage({ accountQuota, cfg, requestLog = null }) {
     }
   })()
   const costByKey = indexBillingAccounts(billing)
-  const accounts = (snap.accounts || []).map((a) => {
+  const accounts = liveAccounts(snap.accounts, listed).map((a) => {
     const cost = lookupBilling(costByKey, a)
     const vm = a.vm_id ? getVm(cfg?.paths?.project, a.vm_id) : null
     return {
       account_id: a.account_id,
       vm_id: a.vm_id,
-      email: a.email,
+      email: a.email || vm?.email || vm?.codex?.email || vm?.claude?.email || null,
       credential_mode: vm && vmHasClaudeCredential(vm) ? credentialModeOfVm(vm) : null,
       ...quotaFromAccount(a, accountQuota?.config),
       inflight: a.inflight,
@@ -1398,6 +1474,7 @@ function mergeVmProxy(v, poolSnap) {
       id: hit?.id || base.id || v.proxy_id || null,
       host: normalizeSocksHost(hit?.host || base.host) || hit?.host || base.host || null,
       port: hit?.port ?? base.port ?? null,
+      label: hit?.label || null,
       scheme: hit?.scheme || base.scheme || (hit?.id === 'px-local' || base.id === 'px-local' ? 'local' : 'socks5'),
       has_auth: hit?.has_auth ?? !!(base.url && /\/\/[^/@]+@/.test(base.url)),
       status: hit?.status ?? null,
@@ -1561,6 +1638,7 @@ function enrichVm(v, accountQuota, active, extras = {}) {
     oauth_source: v.oauth_source || null,
     credential_mode: v.credential_mode || v.claude?.mode || 'oauth',
     auth_scheme: v.auth_scheme || v.claude?.auth_scheme || null,
+    can_claude_reset: isCodex ? false : v.can_claude_reset === true,
     has_refresh: !!(v.has_refresh || workerCred?.has_refresh),
     has_session_key: !!v.has_session_key,
     proxy: merged.proxy,
@@ -1596,6 +1674,7 @@ function enrichVm(v, accountQuota, active, extras = {}) {
     status_7d_oi: isCodex ? null : q.status_7d_oi,
     codex_usage: v.codex_usage || null,
     reset_credits: isCodex ? v.reset_credits || v.codex?.reset_credits || null : null,
+    claude_reset_credits: isCodex ? null : v.claude_reset_credits || null,
     plan_type: isCodex ? v.plan_type || null : null,
     ...(q.weekly_split ? { weekly_split: q.weekly_split } : {}),
     fable_inflight: fablePool.fable_inflight,
@@ -1640,6 +1719,10 @@ function enrichVm(v, accountQuota, active, extras = {}) {
     sessions,
     session_active: sessions.active,
     session_max: sessions.max,
+    // Live seat book from PoolScheduler; session_active above is the idle-retained window count.
+    seats_used: isCodex ? null : Number(extras.pool?.seats?.[v.id]?.seats_used) || 0,
+    seats_max: isCodex ? null : resolveSessionSlots(v, extras.routingConfig || {}),
+    queue_depth: isCodex ? null : Number(extras.pool?.seats?.[v.id]?.queue_depth) || 0,
     inflight: acc?.inflight ?? 0,
     requests: acc?.requests ?? v.stats?.requests ?? 0,
     tokens_in: acc?.tokens_in ?? 0,

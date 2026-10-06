@@ -8,10 +8,12 @@ const runFile = promisify(execFile)
 
 // Run inside the guest: never substitute the control plane's OS or machine ID.
 // NUL separators preserve whitespace and quotes without requiring jq or Node.
-const READ_IDENTITY = `
+// Minimal images (kin-os-arch) ship without `hostname`; `uname -n` is the same nodename.
+export const READ_IDENTITY = `
 set -eu
 if [ -r /etc/os-release ]; then . /etc/os-release; fi
-printf '%s\\000' "$(hostname)" "\${ID:-}" "\${PRETTY_NAME:-}" "$(uname -r)" "$(uname -m)"
+host="$(hostname 2>/dev/null || uname -n)"
+printf '%s\\000' "$host" "\${ID:-}" "\${PRETTY_NAME:-}" "$(uname -r)" "$(uname -m)"
 printf '%s\\000' "$(cat /etc/machine-id 2>/dev/null || true)" "\${TZ:-$(cat /etc/timezone 2>/dev/null || true)}" "\${LC_ALL:-\${LANG:-}}"
 `
 

@@ -124,6 +124,53 @@ test('tenant user cannot list or modify panel users', async () => {
   }
 })
 
+test('proxy DNS URLs remain admin-only in list and config responses', async () => {
+  const gw = await startGateway()
+  try {
+    const admin = await login(gw, 'admin', 'testpass')
+    assert.equal(admin.status, 200)
+    const primary = 'https://dns.example.com/private/dns-query?token=private-doh-token'
+    const updated = await panel(gw, 'PUT', '/api/panel/proxies/config', {
+      cookie: admin.cookie,
+      body: { dns_primary: primary, disconnect_on_error: true },
+    })
+    assert.equal(updated.status, 200, updated.text)
+    for (const role of ['user', 'super']) {
+      const created = await panel(gw, 'POST', '/api/panel/users', {
+        cookie: admin.cookie,
+        body: { username: `dns-${role}`, password: 'reader-pass', role },
+      })
+      assert.equal(created.status, 201, created.text)
+      const reader = await login(gw, `dns-${role}`, 'reader-pass')
+      assert.equal(reader.status, 200)
+      for (const route of ['/api/panel/proxies', '/api/panel/proxies/config']) {
+        const response = await panel(gw, 'GET', route, { cookie: reader.cookie })
+        if (role === 'super') {
+          assert.equal(response.status, 403, response.text)
+          assert.equal(response.text.includes('private-doh-token'), false)
+          continue
+        }
+        assert.equal(response.status, 200, response.text)
+        const data = response.json.data || response.json
+        const config = route.endsWith('/config') ? data : data.config
+        assert.equal(Object.hasOwn(config, 'dns_primary'), false)
+        assert.equal(config.disconnect_on_error, true)
+        assert.equal(response.text.includes('private-doh-token'), false)
+      }
+    }
+    for (const route of ['/api/panel/proxies', '/api/panel/proxies/config']) {
+      const response = await panel(gw, 'GET', route, { cookie: admin.cookie })
+      assert.equal(response.status, 200, response.text)
+      const data = response.json.data || response.json
+      const config = route.endsWith('/config') ? data : data.config
+      assert.equal(config.dns_primary, primary)
+      assert.equal(config.disconnect_on_error, true)
+    }
+  } finally {
+    await gw.stop()
+  }
+})
+
 test('super can toggle schedule but cannot import or delete VMs', async () => {
   const gw = await startGateway()
   try {

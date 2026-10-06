@@ -12,6 +12,7 @@
  *   bins            in-container CLI paths written to kernel.json
  *   supports(cap)   'official_cc' | 'wrap_cli' | 'engine_switch' | 'auth_scheme' | 'codex'
  *   dockerEnv()     env for async docker CLI spawns (undefined = this host's daemon)
+ *   dockerApi()     Engine API connector for the daemon that runs the slot
  *   execUser(vm)    `docker exec -u` for in-slot kin-worker commands
  *   start/reload/stop/destroy   same result contract as vm-runtime
  *   setProxyEgressEnabled(vm, projectRoot, enabled) stop/resume only the proxy helper
@@ -25,6 +26,7 @@
  * with vm-runtime / the kernel supervisor, so bindings are read at call time.
  */
 
+import { localDocker } from '../cluster/docker-remote.mjs'
 import { clusterManager, SLOT_CAPS_NODE, vmNodeId } from '../cluster/placement.mjs'
 import {
   pullSlotCredentials,
@@ -61,6 +63,7 @@ const LOCAL_HOST = Object.freeze({
   bins: Object.freeze({ cli: CONTAINER_CLI_NODE_BIN, cc: CONTAINER_CC_NODE_BIN }),
   supports: () => true,
   dockerEnv: () => undefined,
+  dockerApi: () => localDocker(),
   execUser: (vm) => {
     const { uid, gid } = officialCcUidGid(vm?.id)
     return `${uid}:${gid}`
@@ -113,6 +116,7 @@ function nodeHost(nodeId) {
     bins: { cli: REMOTE_CLI_NODE_BIN, cc: REMOTE_CC_NODE_BIN },
     supports: (cap) => SLOT_CAPS_NODE.has(cap),
     dockerEnv: () => ({ ...process.env, DOCKER_HOST: `unix://${clusterManager().bridgeSocketPath(nodeId)}` }),
+    dockerApi: () => clusterManager().docker(nodeId),
     // The container runs as the node's SSH uid (or 10000+n when that is root); runtime.user records it.
     execUser: (vm) => vm?.runtime?.user || LOCAL_HOST.execUser(vm),
     start: (vm, projectRoot, opts) => startRemoteSlot(vm, projectRoot, opts),

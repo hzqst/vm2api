@@ -23,6 +23,7 @@ import { proxyBlockedReason } from './proxy-policy.mjs'
 export const MAX_VMS_PER_PROXY = 5
 export const BIND_LIMIT_MIN = 1
 export const BIND_LIMIT_MAX = 32
+export const PROXY_LABEL_MAX = 64
 
 const DEFAULT_CONFIG = {
   probe_interval_min: 10, // 5 | 10 | 30 | 60
@@ -37,6 +38,7 @@ const DEFAULT_CONFIG = {
   bind_limit: MAX_VMS_PER_PROXY,
   // Transparent-egress DNS tried first; the other built-ins remain as fallback.
   dns_primary: DNS_PRIMARY_AUTO,
+  dns_disable_svcb_https: false,
   ipv6_enabled: false,
 }
 
@@ -365,6 +367,7 @@ export class ProxyPool {
       id: p.id,
       host: p.host,
       port: p.port,
+      label: p.label || null,
       has_auth: !!(p.username || p.password),
       status: p.status, // unknown | ok | fail | dead
       enabled: p.enabled,
@@ -591,7 +594,9 @@ export class ProxyPool {
   }
 
   /**
-   * Edit one proxy in place. Only keys present in `patch` are touched, so the
+   * Edit one proxy in place. `label` is display-only: a label-only patch skips
+   * endpoint validation and reports `connection_changed: false` so the caller
+   * can leave bound workers alone. Only keys present in `patch` are touched, so the
    * caller can clear credentials (`username: ''`) without having to resend host
    * and port. Absent key = leave alone; empty string = clear.
    *
@@ -602,8 +607,20 @@ export class ProxyPool {
     const p = this.state.proxies.find((x) => x.id === proxyId)
     if (!p) return { ok: false, error: 'proxy_not_found' }
     const has = (k) => Object.prototype.hasOwnProperty.call(patch, k)
-    if (!['host', 'port', 'username', 'password'].some(has)) {
+    const connection = ['host', 'port', 'username', 'password'].some(has)
+    if (!connection && !has('label')) {
       return { ok: false, error: 'no_editable_fields' }
+    }
+    let label = p.label || null
+    if (has('label')) {
+      if (patch.label != null && typeof patch.label !== 'string') return { ok: false, error: 'invalid_label' }
+      label = String(patch.label || '').trim() || null
+      if (label && label.length > PROXY_LABEL_MAX) return { ok: false, error: 'label_too_long', max: PROXY_LABEL_MAX }
+    }
+    if (!connection) {
+      p.label = label
+      this.save()
+      return { ok: true, proxy: this.publicProxy(p), connection_changed: false }
     }
     const username = has('username') ? patch.username : p.username
     // SOCKS5 has no password-only auth: socks5Record() drops the password
@@ -630,19 +647,30 @@ export class ProxyPool {
     // socks5://user:pass@host form means a plaintext password sitting in the
     // store. Rewrite it to host:port so editing also cleans that up.
     p.raw = socksEndpoint(next.host, next.port)
+    p.label = label
     this.save()
-    return { ok: true, proxy: this.publicProxy(p) }
+    return { ok: true, proxy: this.publicProxy(p), connection_changed: true }
   }
 
   updateConfig(patch = {}) {
     const allowed = [5, 10, 30, 60]
+    if (Object.hasOwn(patch, 'dns_disable_svcb_https') && typeof patch.dns_disable_svcb_https !== 'boolean') {
+      return { ok: false, error: 'invalid_dns_disable_svcb_https' }
+    }
     if (patch.ipv6_enabled != null && typeof patch.ipv6_enabled !== 'boolean') {
       return { ok: false, error: 'invalid_ipv6_enabled' }
     }
     if (patch.dns_primary != null && !validDnsPrimary(patch.dns_primary)) {
-      return { ok: false, error: 'invalid_dns_primary', allowed: [DNS_PRIMARY_AUTO, ...DNS_UPSTREAMS] }
+      return {
+        ok: false,
+        error: 'invalid_dns_primary',
+        message:
+          'dns_primary must be auto, a built-in DNS upstream, or a valid https:// URL with a valid host and port, without userinfo, fragment, whitespace, backslash, or raw comma',
+        allowed: [DNS_PRIMARY_AUTO, ...DNS_UPSTREAMS],
+      }
     }
     if (patch.dns_primary != null) this.state.config.dns_primary = patch.dns_primary
+    if (patch.dns_disable_svcb_https != null) this.state.config.dns_disable_svcb_https = patch.dns_disable_svcb_https
     if (patch.probe_interval_min != null) {
       const n = Number(patch.probe_interval_min)
       if (!allowed.includes(n)) {
@@ -1030,6 +1058,11 @@ export class ProxyPool {
    * password, so it must never be handed to a panel response untouched. Only
    * `POST /api/panel/proxies/:id/reveal` may surface it, and only as a URI.
    */
+  /** Display name only — safe for panel responses, unlike getProxyByIdWithAuth(). */
+  labelOf(proxyId) {
+    return this.state.proxies.find((x) => x.id === proxyId)?.label || null
+  }
+
   getProxyByIdWithAuth(proxyId) {
     const p = this.state.proxies.find((x) => x.id === proxyId)
     if (!p) return null

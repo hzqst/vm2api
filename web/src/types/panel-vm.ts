@@ -32,6 +32,8 @@ export type VmProxySnap = {
   id?: string
   host?: string
   port?: number | string
+  /** 代理名称，运维手写（如对应哪台机器）；未填为 null。 */
+  label?: string | null
   status?: string
   enabled?: boolean
   blocked_reason?: 'ipv6_disabled' | null
@@ -116,7 +118,7 @@ export type Vm = {
   has_refresh?: boolean
   cred_status?: string | { text?: string; key?: string; tone?: string }
   /**
-   * 凭证类型的权威字段（连字符风格：`oauth` / `setup-token` / `apikey` / `console`）。
+   * 凭证类型的权威字段（`oauth` / `setup-token` / `official-setup-token` / `apikey`）。
    * gateway 的三个 Vm 序列化函数只产出这一个。
    */
   credential_mode?: string
@@ -177,6 +179,23 @@ export type Vm = {
   reset_credits?: {
     available_count?: number
     credits?: Array<{ expires_at?: string }>
+    fetched_at?: string
+  } | null
+  /** 限额重置按钮。setup-token 标签但 scope 含 user:profile 时也为 true。 */
+  can_claude_reset?: boolean
+  claude_reset_credits?: {
+    eligible?: boolean
+    available_count?: number
+    credits?: Array<{
+      label?: string
+      resets_left?: number
+      starts_at?: string
+      expires_at?: string
+      clears?: string[]
+      redeemable?: boolean
+    }>
+    cooldown_until?: string
+    weekly_resets_at?: string
     fetched_at?: string
   } | null
   near_limit?: boolean
@@ -248,7 +267,7 @@ export type Vm = {
   last_probe?: {
     at?: string
     ok?: boolean
-    error?: string
+    error?: unknown
     source?: string
     transport?: boolean
     rate_limited?: boolean
@@ -258,7 +277,7 @@ export type Vm = {
     ok?: boolean
     source?: string
     via?: string
-    error?: string | null
+    error?: unknown
     data_at?: string | null
   } | null
   probe_source?: string
@@ -281,6 +300,12 @@ export type Vm = {
   sessions?: { active?: number; max?: number }
   session_active?: number
   session_max?: number
+  /** 调度器实时席位簿：正在被请求占用的不同席位数（Codex 为 null）。 */
+  seats_used?: number | null
+  /** 席位上限（VM 覆盖 → 全局 `inference.session_slots`）。 */
+  seats_max?: number | null
+  /** 在该 VM 上排队等待席位/并发的请求数。 */
+  queue_depth?: number | null
   status_7d_oi?: string
   window_5h_cost?: number
   window_5h_requests?: number
@@ -291,6 +316,15 @@ export type Vm = {
   window_7d_errors?: number
   window_7d_tokens?: number
   [key: string]: unknown
+}
+
+/** `GET /api/panel/pool/stream` 的 `event: seats` 负载；缺席的 VM 表示空闲。 */
+export type PoolSeatSnapshot = {
+  seats: Record<
+    string,
+    { seats_used: number; holds: number; queue_depth: number }
+  >
+  ts: number
 }
 
 /** `billing.by_model` 一行：同一上游模型按计费档位（tier / speed / 长上下文）拆开。 */

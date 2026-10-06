@@ -23,12 +23,11 @@ import { Route as AuthenticatedModelsRouteImport } from './routes/_authenticated
 import { Route as AuthenticatedOverviewRouteImport } from './routes/_authenticated/overview'
 import { Route as AuthenticatedProtocolRouteImport } from './routes/_authenticated/protocol'
 import { Route as AuthenticatedProxiesRouteImport } from './routes/_authenticated/proxies'
+import { Route as AuthenticatedStatisticsRouteImport } from './routes/_authenticated/statistics'
 import { Route as AuthenticatedSystemRouteImport } from './routes/_authenticated/system'
 import { Route as AuthenticatedUsageRouteImport } from './routes/_authenticated/usage'
 import { Route as AuthenticatedUsersRouteImport } from './routes/_authenticated/users'
 import { Route as AuthenticatedWrapRouteImport } from './routes/_authenticated/wrap'
-import { Route as AuthenticatedLoadtestIndexRouteImport } from './routes/_authenticated/loadtest/index'
-import { Route as AuthenticatedLoadtestTabRouteImport } from './routes/_authenticated/loadtest/$tab'
 import { Route as AuthenticatedSettingsIndexRouteImport } from './routes/_authenticated/settings/index'
 import { Route as AuthenticatedSettingsTabRouteImport } from './routes/_authenticated/settings/$tab'
 import { Route as AuthenticatedVmIndexRouteImport } from './routes/_authenticated/vm/index'
@@ -103,6 +102,11 @@ const AuthenticatedProxiesRoute = AuthenticatedProxiesRouteImport.update({
   path: '/proxies',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
+const AuthenticatedStatisticsRoute = AuthenticatedStatisticsRouteImport.update({
+  id: '/statistics',
+  path: '/statistics',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
 const AuthenticatedSystemRoute = AuthenticatedSystemRouteImport.update({
   id: '/system',
   path: '/system',
@@ -123,18 +127,6 @@ const AuthenticatedWrapRoute = AuthenticatedWrapRouteImport.update({
   path: '/wrap',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
-const AuthenticatedLoadtestIndexRoute =
-  AuthenticatedLoadtestIndexRouteImport.update({
-    id: '/loadtest/',
-    path: '/loadtest/',
-    getParentRoute: () => AuthenticatedRouteRoute,
-  } as any)
-const AuthenticatedLoadtestTabRoute =
-  AuthenticatedLoadtestTabRouteImport.update({
-    id: '/loadtest/$tab',
-    path: '/loadtest/$tab',
-    getParentRoute: () => AuthenticatedRouteRoute,
-  } as any)
 const AuthenticatedSettingsIndexRoute =
   AuthenticatedSettingsIndexRouteImport.update({
     id: '/settings/',
@@ -172,14 +164,13 @@ export interface FileRoutesByFullPath {
   '/overview': typeof AuthenticatedOverviewRoute
   '/protocol': typeof AuthenticatedProtocolRoute
   '/proxies': typeof AuthenticatedProxiesRoute
+  '/statistics': typeof AuthenticatedStatisticsRoute
   '/system': typeof AuthenticatedSystemRoute
   '/usage': typeof AuthenticatedUsageRoute
   '/users': typeof AuthenticatedUsersRoute
   '/wrap': typeof AuthenticatedWrapRoute
-  '/loadtest/$tab': typeof AuthenticatedLoadtestTabRoute
   '/settings/$tab': typeof AuthenticatedSettingsTabRoute
   '/vm/$id': typeof AuthenticatedVmIdRoute
-  '/loadtest/': typeof AuthenticatedLoadtestIndexRoute
   '/settings/': typeof AuthenticatedSettingsIndexRoute
   '/vm/': typeof AuthenticatedVmIndexRoute
 }
@@ -196,15 +187,14 @@ export interface FileRoutesByTo {
   '/overview': typeof AuthenticatedOverviewRoute
   '/protocol': typeof AuthenticatedProtocolRoute
   '/proxies': typeof AuthenticatedProxiesRoute
+  '/statistics': typeof AuthenticatedStatisticsRoute
   '/system': typeof AuthenticatedSystemRoute
   '/usage': typeof AuthenticatedUsageRoute
   '/users': typeof AuthenticatedUsersRoute
   '/wrap': typeof AuthenticatedWrapRoute
   '/': typeof AuthenticatedIndexRoute
-  '/loadtest/$tab': typeof AuthenticatedLoadtestTabRoute
   '/settings/$tab': typeof AuthenticatedSettingsTabRoute
   '/vm/$id': typeof AuthenticatedVmIdRoute
-  '/loadtest': typeof AuthenticatedLoadtestIndexRoute
   '/settings': typeof AuthenticatedSettingsIndexRoute
   '/vm': typeof AuthenticatedVmIndexRoute
 }
@@ -223,15 +213,14 @@ export interface FileRoutesById {
   '/_authenticated/overview': typeof AuthenticatedOverviewRoute
   '/_authenticated/protocol': typeof AuthenticatedProtocolRoute
   '/_authenticated/proxies': typeof AuthenticatedProxiesRoute
+  '/_authenticated/statistics': typeof AuthenticatedStatisticsRoute
   '/_authenticated/system': typeof AuthenticatedSystemRoute
   '/_authenticated/usage': typeof AuthenticatedUsageRoute
   '/_authenticated/users': typeof AuthenticatedUsersRoute
   '/_authenticated/wrap': typeof AuthenticatedWrapRoute
   '/_authenticated/': typeof AuthenticatedIndexRoute
-  '/_authenticated/loadtest/$tab': typeof AuthenticatedLoadtestTabRoute
   '/_authenticated/settings/$tab': typeof AuthenticatedSettingsTabRoute
   '/_authenticated/vm/$id': typeof AuthenticatedVmIdRoute
-  '/_authenticated/loadtest/': typeof AuthenticatedLoadtestIndexRoute
   '/_authenticated/settings/': typeof AuthenticatedSettingsIndexRoute
   '/_authenticated/vm/': typeof AuthenticatedVmIndexRoute
 }
@@ -251,14 +240,13 @@ export interface FileRouteTypes {
     | '/overview'
     | '/protocol'
     | '/proxies'
+    | '/statistics'
     | '/system'
     | '/usage'
     | '/users'
     | '/wrap'
-    | '/loadtest/$tab'
     | '/settings/$tab'
     | '/vm/$id'
-    | '/loadtest/'
     | '/settings/'
     | '/vm/'
   fileRoutesByTo: FileRoutesByTo
@@ -275,15 +263,14 @@ export interface FileRouteTypes {
     | '/overview'
     | '/protocol'
     | '/proxies'
+    | '/statistics'
     | '/system'
     | '/usage'
     | '/users'
     | '/wrap'
     | '/'
-    | '/loadtest/$tab'
     | '/settings/$tab'
     | '/vm/$id'
-    | '/loadtest'
     | '/settings'
     | '/vm'
   id:
@@ -301,15 +288,14 @@ export interface FileRouteTypes {
     | '/_authenticated/overview'
     | '/_authenticated/protocol'
     | '/_authenticated/proxies'
+    | '/_authenticated/statistics'
     | '/_authenticated/system'
     | '/_authenticated/usage'
     | '/_authenticated/users'
     | '/_authenticated/wrap'
     | '/_authenticated/'
-    | '/_authenticated/loadtest/$tab'
     | '/_authenticated/settings/$tab'
     | '/_authenticated/vm/$id'
-    | '/_authenticated/loadtest/'
     | '/_authenticated/settings/'
     | '/_authenticated/vm/'
   fileRoutesById: FileRoutesById
@@ -419,6 +405,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedProxiesRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/statistics': {
+      id: '/_authenticated/statistics'
+      path: '/statistics'
+      fullPath: '/statistics'
+      preLoaderRoute: typeof AuthenticatedStatisticsRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/_authenticated/system': {
       id: '/_authenticated/system'
       path: '/system'
@@ -445,20 +438,6 @@ declare module '@tanstack/react-router' {
       path: '/wrap'
       fullPath: '/wrap'
       preLoaderRoute: typeof AuthenticatedWrapRouteImport
-      parentRoute: typeof AuthenticatedRouteRoute
-    }
-    '/_authenticated/loadtest/': {
-      id: '/_authenticated/loadtest/'
-      path: '/loadtest'
-      fullPath: '/loadtest/'
-      preLoaderRoute: typeof AuthenticatedLoadtestIndexRouteImport
-      parentRoute: typeof AuthenticatedRouteRoute
-    }
-    '/_authenticated/loadtest/$tab': {
-      id: '/_authenticated/loadtest/$tab'
-      path: '/loadtest/$tab'
-      fullPath: '/loadtest/$tab'
-      preLoaderRoute: typeof AuthenticatedLoadtestTabRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
     '/_authenticated/settings/': {
@@ -504,15 +483,14 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedOverviewRoute: typeof AuthenticatedOverviewRoute
   AuthenticatedProtocolRoute: typeof AuthenticatedProtocolRoute
   AuthenticatedProxiesRoute: typeof AuthenticatedProxiesRoute
+  AuthenticatedStatisticsRoute: typeof AuthenticatedStatisticsRoute
   AuthenticatedSystemRoute: typeof AuthenticatedSystemRoute
   AuthenticatedUsageRoute: typeof AuthenticatedUsageRoute
   AuthenticatedUsersRoute: typeof AuthenticatedUsersRoute
   AuthenticatedWrapRoute: typeof AuthenticatedWrapRoute
   AuthenticatedIndexRoute: typeof AuthenticatedIndexRoute
-  AuthenticatedLoadtestTabRoute: typeof AuthenticatedLoadtestTabRoute
   AuthenticatedSettingsTabRoute: typeof AuthenticatedSettingsTabRoute
   AuthenticatedVmIdRoute: typeof AuthenticatedVmIdRoute
-  AuthenticatedLoadtestIndexRoute: typeof AuthenticatedLoadtestIndexRoute
   AuthenticatedSettingsIndexRoute: typeof AuthenticatedSettingsIndexRoute
   AuthenticatedVmIndexRoute: typeof AuthenticatedVmIndexRoute
 }
@@ -529,15 +507,14 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedOverviewRoute: AuthenticatedOverviewRoute,
   AuthenticatedProtocolRoute: AuthenticatedProtocolRoute,
   AuthenticatedProxiesRoute: AuthenticatedProxiesRoute,
+  AuthenticatedStatisticsRoute: AuthenticatedStatisticsRoute,
   AuthenticatedSystemRoute: AuthenticatedSystemRoute,
   AuthenticatedUsageRoute: AuthenticatedUsageRoute,
   AuthenticatedUsersRoute: AuthenticatedUsersRoute,
   AuthenticatedWrapRoute: AuthenticatedWrapRoute,
   AuthenticatedIndexRoute: AuthenticatedIndexRoute,
-  AuthenticatedLoadtestTabRoute: AuthenticatedLoadtestTabRoute,
   AuthenticatedSettingsTabRoute: AuthenticatedSettingsTabRoute,
   AuthenticatedVmIdRoute: AuthenticatedVmIdRoute,
-  AuthenticatedLoadtestIndexRoute: AuthenticatedLoadtestIndexRoute,
   AuthenticatedSettingsIndexRoute: AuthenticatedSettingsIndexRoute,
   AuthenticatedVmIndexRoute: AuthenticatedVmIndexRoute,
 }

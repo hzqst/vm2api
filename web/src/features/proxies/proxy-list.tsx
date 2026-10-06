@@ -119,7 +119,7 @@ export function ProxyList({
                 onQuery('')
               }
             }}
-            placeholder='搜地址、槽位、国家或时区'
+            placeholder='搜地址、名称、槽位、国家或时区'
             aria-label='搜索代理'
             className='h-8 ps-8 pe-8 text-sm'
           />

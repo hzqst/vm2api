@@ -15,8 +15,8 @@ import { proxyBlockedReason } from '../vm/proxy-policy.mjs'
 export const AUTH_COOLDOWN_REASON = /authentication_failed_after_refresh|permission_denied/i
 const FATAL_CREDENTIAL_COOLDOWN =
   /oauth_invalid_grant|invalid_grant|refresh_token_missing|organization_disabled|oauth_revoked|token has been revoked/i
-/** Panel test / loadtest probes are not grant-death. Stale access 401 must not eject a live ticket. */
-export const TEST_PROBE_SOURCES = new Set(['test-chat', 'kin-console-test', 'kin-console-loadtest'])
+/** Panel VM test probes are not grant-death. Stale access 401 must not eject a live ticket. */
+export const TEST_PROBE_SOURCES = new Set(['test-chat', 'kin-console-test'])
 
 export function isTestProbeSource(probe = null, source = null) {
   return TEST_PROBE_SOURCES.has(String(probe?.source || source || ''))

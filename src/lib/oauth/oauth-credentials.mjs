@@ -12,9 +12,15 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { atomicWriteJson } from '../vm/vm-file.mjs'
 import { isManualScheduleLocked } from '../pool/schedule-policy.mjs'
-import { credentialModeFromOauth, isApiKeyMode } from './credential-mode.mjs'
+import {
+  credentialModeFromOauth,
+  isApiKeyMode,
+  isAnySetupTokenMode,
+  isOfficialSetupTokenMode,
+  isSetupTokenMode,
+} from './credential-mode.mjs'
 import { resolveAuthScheme } from './auth-scheme.mjs'
-import { flattenOauthIdentity } from './oauth-identity.mjs'
+import { flattenOauthIdentity, normalizeSubscriptionType } from './oauth-identity.mjs'
 
 export const REFRESH_SKEW_MS = 5 * 60 * 1000
 
@@ -186,10 +192,15 @@ export function readWorkerCredentialFile(homeDir) {
     const scope = Array.isArray(oauth.scopes) ? oauth.scopes.join(' ') : oauth.scope || null
     const mode = credentialModeFromOauth({
       type: doc.type || oauth.type,
+      mode: doc.mode || oauth.mode,
       scope,
       scopes: oauth.scopes,
       access_token: oauth.accessToken || oauth.access_token,
+      refresh_token: oauth.refreshToken || oauth.refresh_token,
+      source: oauth.source,
+      flavor: oauth.flavor,
     })
+
     return {
       type: mode,
       mode,
@@ -200,6 +211,7 @@ export function readWorkerCredentialFile(homeDir) {
       account_uuid: oauth.accountUuid || oauth.account_uuid || null,
       org_uuid: oauth.orgUuid || oauth.org_uuid || null,
       scope,
+      subscription_type: oauth.subscriptionType || oauth.subscription_type || null,
       source: 'go-slot-worker',
       auth_scheme: resolveAuthScheme({
         mode,
@@ -264,13 +276,11 @@ export function replaceSlotOwnedFile(filePath, body, vm) {
 }
 
 export function slotUidGidFromHomeDir(homeDir) {
-  const m = String(homeDir || '')
+  const id = String(homeDir || '')
     .replace(/\\/g, '/')
-    .match(/\/(vm-\d+)\/cli-home\/?$/i)
-  if (!m) return null
-  const n = Number(String(m[1]).slice(3))
-  if (!Number.isFinite(n) || n < 1) return null
-  return { uid: 10000 + n, gid: Number(process.env.KIN_VM_GID || 987) }
+    .match(/\/([^/]+)\/cli-home\/?$/i)?.[1]
+  if (!id) return null
+  return slotRuntimeOwner({ id })
 }
 
 export function ensureSlotClaudeOwnership(homeDir, uid = null, gid = null) {
@@ -350,21 +360,34 @@ export function writeWorkerCredentialFile(homeDir, cred) {
     : String(n.scope || cred.scope || '')
         .split(/\s+/)
         .filter(Boolean)
-  if (mode === 'setup-token') {
+  if (isOfficialSetupTokenMode(mode)) {
+    scopes = ['user:inference']
+  } else if (isSetupTokenMode(mode)) {
     scopes = scopes.map((s) => (s === 'inference' ? 'user:inference' : s))
     if (!scopes.includes('user:inference')) scopes = ['user:inference']
   }
   const expiresAtMs = expiresAtToMs(n.expires_at) || null
+  let previousType = null
+  try {
+    const prev = JSON.parse(fs.readFileSync(file, 'utf8'))
+    previousType = normalizeSubscriptionType(prev?.claudeAiOauth?.subscriptionType)
+  } catch {}
+  const subscriptionType =
+    normalizeSubscriptionType(cred.subscription_type || cred.subscriptionType) ||
+    normalizeSubscriptionType(cred.account_tier) ||
+    previousType
   const oauth = {
     accessToken: n.access_token || '',
   }
-  if (n.refresh_token) oauth.refreshToken = n.refresh_token
+  if (n.refresh_token && !isOfficialSetupTokenMode(mode)) oauth.refreshToken = n.refresh_token
   if (expiresAtMs) oauth.expiresAt = expiresAtMs
   if (n.email) oauth.email = n.email
   if (n.account_uuid) oauth.accountUuid = n.account_uuid
   if (n.org_uuid) oauth.orgUuid = n.org_uuid
   if (scopes.length) oauth.scopes = scopes
-  if (mode === 'setup-token') oauth.type = 'setup-token'
+  if (isAnySetupTokenMode(mode)) oauth.type = mode
+
+  if (subscriptionType) oauth.subscriptionType = subscriptionType
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
   ensureSlotClaudeOwnership(homeDir)
   try {
@@ -375,6 +398,40 @@ export function writeWorkerCredentialFile(homeDir, cred) {
   sealSlotCredentialFile(file)
   ensureOfficialCredentialLink(homeDir)
   return file
+}
+
+/**
+ * Old slot files predate subscriptionType. Fill from the identified plan,
+ * otherwise pro; repair the legacy pro fallback for an identified Max slot.
+ */
+export function ensureSlotSubscriptionType(homeDir, accountTier = null) {
+  const file = slotWorkerCredentialPath(homeDir)
+  if (!file || !fs.existsSync(file)) return { wrote: false, reason: 'missing' }
+  let doc
+  try {
+    doc = JSON.parse(fs.readFileSync(file, 'utf8'))
+  } catch {
+    return { wrote: false, reason: 'unreadable' }
+  }
+  const oauth = doc?.claudeAiOauth
+  if (!oauth || typeof oauth !== 'object') return { wrote: false, reason: 'no_oauth' }
+  const present = normalizeSubscriptionType(oauth.subscriptionType)
+  const identified = normalizeSubscriptionType(accountTier)
+  // Startup summaries used to lose the identified tier and write pro. A pro
+  // hint may itself be a default, so it must not downgrade an existing plan.
+  if (present && !(present === 'pro' && identified === 'max')) {
+    chownSlotCredentialFile(homeDir, file)
+    return { wrote: false, reason: 'present' }
+  }
+
+  const tier = identified || 'pro'
+  oauth.subscriptionType = tier
+  try {
+    fs.chmodSync(file, 0o600)
+  } catch {}
+  atomicWriteJson(file, doc, { mode: 0o600 })
+  chownSlotCredentialFile(homeDir, file)
+  return { wrote: true, subscriptionType: tier }
 }
 
 export function persistSlotAuthScheme(projectRoot, vmId, rawScheme) {
@@ -465,9 +522,11 @@ export function persistOauthToVm(vmPath, cred, { acceptLiveGrant = false } = {})
   if (n.email) vm.claude.email = n.email
   if (n.account_uuid) vm.claude.account_uuid = n.account_uuid
   if (n.org_uuid) vm.claude.org_uuid = n.org_uuid
-  if (n.scope) {
-    vm.claude.scope = mode === 'setup-token' && n.scope === 'inference' ? 'user:inference' : n.scope
-  } else if (mode === 'setup-token') {
+  if (isOfficialSetupTokenMode(mode)) {
+    vm.claude.scope = 'user:inference'
+  } else if (n.scope) {
+    vm.claude.scope = isSetupTokenMode(mode) && n.scope === 'inference' ? 'user:inference' : n.scope
+  } else if (isSetupTokenMode(mode)) {
     vm.claude.scope = 'user:inference'
   }
   if (n.source) vm.claude.source = n.source
@@ -485,7 +544,7 @@ export function persistOauthToVm(vmPath, cred, { acceptLiveGrant = false } = {})
     vm.claude.has_refresh = false
     delete vm.claude.expires_at
     delete vm.claude.scope
-  } else if (mode === 'setup-token' && !n.refresh_token) {
+  } else if (isOfficialSetupTokenMode(mode) || (isSetupTokenMode(mode) && !n.refresh_token)) {
     delete vm.claude.has_api_key
     vm.claude.has_refresh = false
   } else {

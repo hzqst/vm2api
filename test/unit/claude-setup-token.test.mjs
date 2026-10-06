@@ -46,15 +46,16 @@ test('extractSetupTokenValue strips ANSI around the oat', () => {
   assert.equal(extractSetupTokenValue(raw), token)
 })
 
-test('officialSetupTokenToOauth is 1-year setup-token without refresh', () => {
+test('officialSetupTokenToOauth is 1-year official-setup-token without refresh', () => {
   const token = 'sk-ant-oat01-' + 'b'.repeat(96)
   const oauth = officialSetupTokenToOauth(token)
-  assert.equal(oauth.type, 'setup-token')
-  assert.equal(oauth.mode, 'setup-token')
+  assert.equal(oauth.type, 'official-setup-token')
+  assert.equal(oauth.mode, 'official-setup-token')
   assert.equal(oauth.access_token, token)
   assert.equal(oauth.refresh_token, '')
   assert.equal(oauth.scope, 'user:inference')
   assert.equal(oauth.source, 'claude-setup-token')
+
   assert.ok(oauth.expires_at > Date.now() + 360 * 24 * 60 * 60 * 1000)
   assert.throws(() => officialSetupTokenToOauth('sk-ant-ort01-nope'), /一年期/)
 })

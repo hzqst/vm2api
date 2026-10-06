@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import type { VmProxySnap } from '@/types/panel-vm'
 import { Activity, Globe } from 'lucide-react'
@@ -7,6 +7,7 @@ import { api } from '@/lib/api'
 import { fmtAgo } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import {
   Select,
   SelectContent,
@@ -22,11 +23,15 @@ import { useRefreshProxies } from './queries'
 
 const BIND_LIMITS = [1, 2, 3, 4, 5, 8, 10, 16, 20, 32]
 const PROBE_MINS = [5, 10, 30, 60]
-// Values mirror DNS_UPSTREAMS in src/lib/vm/egress.mjs. The chosen one is tried
-// first; the rest stay behind it as automatic fallback.
+// The chosen upstream is tried first; the existing automatic fallback order
+// is unchanged, including when a domain or custom HTTPS endpoint is selected.
 const DNS_CHOICES = [
   { value: 'auto', label: '自动（默认顺序）' },
   { value: 'https://1.1.1.1/dns-query', label: 'Cloudflare DoH' },
+  {
+    value: 'https://cloudflare-dns.com/dns-query',
+    label: 'Cloudflare DoH（域名）',
+  },
   { value: 'https://8.8.8.8/dns-query', label: 'Google DoH' },
   { value: '8.8.8.8:53', label: 'Google TCP 53（明文）' },
   { value: '1.1.1.1:53', label: 'Cloudflare TCP 53（明文）' },
@@ -41,15 +46,18 @@ export function ProxyManagePanel({
   bindLimit,
   probeMin,
   dnsPrimary,
+  dnsDisableSvcbHttps,
   followProxyTimezone,
 }: {
   proxies: VmProxySnap[]
   bindLimit: number
   probeMin: number
   dnsPrimary: string
+  dnsDisableSvcbHttps: boolean
   followProxyTimezone: boolean
 }) {
   const refresh = useRefreshProxies()
+  const [customDnsDraft, setCustomDnsDraft] = useState<string | null>(null)
   const lastProbe = useMemo(() => {
     let max = 0
     for (const p of proxies) {
@@ -75,8 +83,11 @@ export function ProxyManagePanel({
         toast.warning(
           `DNS 已保存，但 ${failed.length} 个出口重载失败：${failed.map((entry) => entry.proxy_id).join('、')}`
         )
-      } else if (patch.dns_primary != null) {
-        toast.success('出口 DNS 已保存，运行中的出口已同步')
+      } else if (
+        patch.dns_primary != null ||
+        patch.dns_disable_svcb_https != null
+      ) {
+        toast.success('出口 DNS 已保存，本机出口已同步')
       } else if (patch.bind_limit != null) {
         toast.success(`每条最多绑 ${String(patch.bind_limit)} 台`)
       } else if (patch.probe_interval_min != null) {
@@ -85,6 +96,7 @@ export function ProxyManagePanel({
         toast.success('已保存')
       }
       await refresh()
+      if (patch.dns_primary != null) setCustomDnsDraft(null)
     },
     onError: (error: Error) => toast.error(error.message),
   })
@@ -115,6 +127,13 @@ export function ProxyManagePanel({
   const pending = saveConfig.isPending ? saveConfig.variables : undefined
   const limitShown = Number(pending?.bind_limit ?? bindLimit)
   const probeShown = Number(pending?.probe_interval_min ?? probeMin)
+  const dnsShown = String(pending?.dns_primary ?? dnsPrimary)
+  const dnsDisableShown = Boolean(
+    pending?.dns_disable_svcb_https ?? dnsDisableSvcbHttps
+  )
+  const customDnsShown =
+    customDnsDraft !== null ||
+    !DNS_CHOICES.some((choice) => choice.value === dnsShown)
   const over = proxies.filter((p) => proxyBoundIds(p).length > limitShown)
 
   return (
@@ -216,8 +235,16 @@ export function ProxyManagePanel({
             </span>
           </label>
           <Select
-            value={dnsPrimary}
-            onValueChange={(value) => saveConfig.mutate({ dns_primary: value })}
+            value={customDnsShown ? 'custom' : dnsShown}
+            disabled={saveConfig.isPending}
+            onValueChange={(value) => {
+              if (value === 'custom') {
+                setCustomDnsDraft(customDnsShown ? dnsShown : '')
+              } else {
+                setCustomDnsDraft(null)
+                saveConfig.mutate({ dns_primary: value })
+              }
+            }}
           >
             <SelectTrigger id='proxy-dns' className='mt-2 h-8 w-full text-xs'>
               <SelectValue />
@@ -228,8 +255,82 @@ export function ProxyManagePanel({
                   {choice.label}
                 </SelectItem>
               ))}
+              <SelectItem value='custom'>自定义 HTTPS DoH</SelectItem>
             </SelectContent>
           </Select>
+          {customDnsShown && (
+            <form
+              className='mt-2 space-y-2'
+              onSubmit={(event) => {
+                event.preventDefault()
+                if (!saveConfig.isPending) {
+                  saveConfig.mutate({ dns_primary: customDnsDraft ?? dnsShown })
+                }
+              }}
+            >
+              <label htmlFor='proxy-dns-url' className='text-xs font-medium'>
+                自定义 DoH URL
+              </label>
+              <Input
+                id='proxy-dns-url'
+                type='url'
+                required
+                title='请输入完整的 HTTPS DoH URL，例如 https://dns.example.com/dns-query'
+                pattern='https://.+'
+                value={customDnsDraft ?? dnsShown}
+                onChange={(event) => setCustomDnsDraft(event.target.value)}
+                disabled={saveConfig.isPending}
+                placeholder='https://dns.example.com/dns-query'
+                aria-describedby='proxy-dns-url-help'
+                className='h-8 text-xs'
+              />
+              <p
+                id='proxy-dns-url-help'
+                className='text-[11px] text-muted-foreground'
+              >
+                输入完整 HTTPS URL，支持域名或 IP（IPv6
+                地址需加方括号）；不能包含用户名、密码、片段（#）或逗号。
+              </p>
+              <Button
+                type='submit'
+                size='sm'
+                variant='outline'
+                disabled={saveConfig.isPending}
+                loading={saveConfig.isPending}
+              >
+                保存 DNS
+              </Button>
+            </form>
+          )}
+        </div>
+
+        <div className='flex items-start justify-between gap-3'>
+          <div className='space-y-0.5'>
+            <label
+              htmlFor='proxy-dns-empty-types'
+              className='block text-xs font-medium'
+            >
+              关闭 DNS type 64 / 65
+            </label>
+            <p
+              id='proxy-dns-empty-types-help'
+              className='text-[11px] text-muted-foreground'
+            >
+              通过 DNS 覆写让 SVCB（64）、HTTPS（65）返回空答案；A / AAAA
+              解析不受影响。 仅用于 SOCKS5
+              出口，集群出口在下次启动或重载槽位时生效。
+            </p>
+          </div>
+          <Switch
+            id='proxy-dns-empty-types'
+            checked={dnsDisableShown}
+            disabled={saveConfig.isPending}
+            onCheckedChange={(value) =>
+              saveConfig.mutate({ dns_disable_svcb_https: value })
+            }
+            aria-describedby='proxy-dns-empty-types-help'
+            className='mt-0.5'
+          />
         </div>
 
         <label className='flex cursor-pointer items-start justify-between gap-3'>

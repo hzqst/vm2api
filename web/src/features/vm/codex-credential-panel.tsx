@@ -4,7 +4,7 @@ import type { Vm } from '@/types/panel-vm'
 import { Copy, ExternalLink, Upload } from 'lucide-react'
 import { toast } from 'sonner'
 import { api } from '@/lib/api'
-import { proxyHostLabel } from '@/lib/vm-status'
+import { proxyNamedLabel } from '@/lib/vm-status'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
@@ -110,7 +110,7 @@ export function CodexCredentialPanel({
   const remaining = useCountdown(link.expiresAt)
   const linkReady = !!(link.sessionId && link.authUrl)
   const proxyHint =
-    link.proxyHint || (vm.proxy?.host ? proxyHostLabel(vm.proxy) : '')
+    link.proxyHint || (vm.proxy?.host ? proxyNamedLabel(vm.proxy) : '')
 
   useEffect(() => {
     setText('')

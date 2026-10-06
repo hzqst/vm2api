@@ -19,15 +19,15 @@ const HINTS: Record<string, string> = {
   session_expired: '授权会话已过期：请重新生成授权链接。',
   session_vm_mismatch: '授权会话与当前槽不匹配：请重新生成授权链接。',
   code_required: '请填写回调 code。',
-  // 官方 CLI 喂码超时。gateway 明确要求「不要重新生成」，
+  // 槽内 CLI 喂码超时。gateway 明确要求「不要重新生成」，
   // 而是再打开当前链接取新授权码 —— 别把用户引到「重新生成」按钮上。
   setup_token_timeout:
-    '官方 CLI 等待授权码超时：请再打开当前这条链接取新授权码（须含 # 后半段），不要重新生成。',
+    '槽内 CLI 等待授权码超时：请再打开当前这条链接取新授权码（须含 # 后半段），不要重新生成。',
   setup_token_invalid_code:
     '授权码不完整或已被用过：请再打开当前链接复制完整授权码，含 # 后半段。',
-  official_cli_missing: '该槽没有官方 Claude Code，请先完成官方初装。',
+  cli_node_missing: '该槽没有 cli-node：请先在内核页同步 wrap-cli。',
   setup_token_url_timeout:
-    '槽内官方 CLI 45 秒内没吐出授权链接：确认容器在线与 SOCKS5 可用后重试。',
+    '槽内 CLI 45 秒内没吐出授权链接：确认容器在线与 SOCKS5 可用后重试。',
   bridge_failed: '槽内 SOCKS5→HTTP 桥没起来：检查该槽代理后重试。',
   worker_credential_import_failed:
     '凭证已取得但槽位凭证服务拒绝写入：请检查该槽位内核与容器状态后重试。',

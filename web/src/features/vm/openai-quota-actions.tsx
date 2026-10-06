@@ -122,9 +122,7 @@ export function OpenaiQuotaActions({
         />
         {queryQuota.isPending
           ? '查询中'
-          : compact
-            ? `查询${credits ? ` ${available}` : ''}`
-            : `查询${credits ? ` ${available}` : ''}`}
+          : `券查询${credits ? ` ${available}` : ''}`}
       </Button>
       <Button
         size='sm'

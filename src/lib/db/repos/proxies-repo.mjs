@@ -20,6 +20,7 @@ const COLUMNS = [
   'status',
   'enabled',
   'name',
+  'label',
   'owner_user_id',
   'bound_vm_id',
   'consecutive_failures',

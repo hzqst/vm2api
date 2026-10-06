@@ -29,7 +29,12 @@ import { accountTierKey, isNearLimit, normalizeTiers, resolveTierPolicy } from '
 import { resolvePolicyModelId } from '../protocol/model-policy.mjs'
 import { SessionLimitRegistry } from './session-limit.mjs'
 import { applyVmQuotaConfig, applyVmQuotaPolicy } from './vm-quota-override.mjs'
-import { isFablePlanDenied, isInventedFableWindow, isOfficialUsageRateLimited } from '../oauth/crs-usage-probe.mjs'
+import {
+  isFablePlanDenied,
+  isInventedFableWindow,
+  isOfficialUsageRateLimited,
+  usageErrorText,
+} from '../oauth/crs-usage-probe.mjs'
 import { normalizeUsage } from '../admin/pricing.mjs'
 import { isTestProbeSource } from './schedule-eligibility.mjs'
 
@@ -389,7 +394,8 @@ export class AccountQuota {
       at: probe.probed_at || new Date().toISOString(),
       ok: !!probe.ok,
       source: probe.source || 'vm-oauth-usage',
-      error: probe.error || probe.usage_error || (usageOk ? null : probe.fable?.error) || null,
+      error:
+        usageErrorText({ error: probe.error || probe.usage_error || (usageOk ? null : probe.fable?.error) }) || null,
       transport: fableTransport,
     }
     acc.unified.last_probe = acc.last_probe

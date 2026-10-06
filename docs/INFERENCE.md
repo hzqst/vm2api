@@ -30,7 +30,7 @@ client ──nginx──► Node :8787
 
 | 名字 | 是不是推理 |
 |---|---|
-| 官方 Claude Code **初装**（wipe → hello → /stats） | **不是**。换票后跑一次官方 CLI。推理不跑官方常驻 CLI。 |
+| 官方 Claude Code **初装**（wipe → hello → /stats） | **不是**。换票后用槽内 cli-node 跑一次（不再另装官方 CLI）。推理不跑初装的常驻 CLI。 |
 | kernel `HopClient` / `provider=anthropic_api` | **退役的 rust HTTP hop**。不要再当现网。 |
 | `worker/` 凭证客户端 | 换票 / ensure 仍可能用到，**不**再做 `/v1/messages` hop。 |
 

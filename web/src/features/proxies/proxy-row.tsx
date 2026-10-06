@@ -150,10 +150,19 @@ export function ProxyRow({
       />
 
       <div className='min-w-[210px] flex-[1.25] space-y-1'>
+        {proxy.label ? (
+          <p className='truncate text-[13px] font-medium' title={proxy.label}>
+            {proxy.label}
+          </p>
+        ) : null}
         <div className='flex items-center gap-1.5'>
           <span
             className={cn(
-              'field-host truncate text-[13px] font-medium',
+              'field-host truncate',
+              // 有代理名称时名称是主标题，地址退为次要信息。
+              proxy.label
+                ? 'text-xs text-muted-foreground'
+                : 'text-[13px] font-medium',
               local && 'font-sans'
             )}
             title={proxyHostText(proxy)}
@@ -302,7 +311,7 @@ export function ProxyRow({
                 </DropdownMenuItem>
                 <DropdownMenuItem onSelect={() => actions.onEdit(id)}>
                   <Pencil />
-                  编辑
+                  编辑 / 改名
                 </DropdownMenuItem>
               </>
             )}

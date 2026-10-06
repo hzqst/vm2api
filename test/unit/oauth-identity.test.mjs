@@ -20,7 +20,7 @@ test('flattenOauthIdentity reads oauth_account bootstrap shape', () => {
         organization_uuid: 'org-1',
       },
     }),
-    { email: 'user@example.com', account_uuid: 'acct-1', org_uuid: 'org-1' },
+    { email: 'user@example.com', account_uuid: 'acct-1', org_uuid: 'org-1', subscription_type: null },
   )
 })
 
@@ -30,7 +30,7 @@ test('flattenOauthIdentity reads token account/organization objects', () => {
       account: { uuid: 'acct-2', email_address: 'two@example.com' },
       organization: { uuid: 'org-2' },
     }),
-    { email: 'two@example.com', account_uuid: 'acct-2', org_uuid: 'org-2' },
+    { email: 'two@example.com', account_uuid: 'acct-2', org_uuid: 'org-2', subscription_type: null },
   )
 })
 
@@ -39,7 +39,17 @@ test('flattenOauthIdentity ignores empty strings', () => {
     email: null,
     account_uuid: null,
     org_uuid: null,
+    subscription_type: null,
   })
+})
+
+test('flattenOauthIdentity keeps the plan from the exchange profile and text', () => {
+  assert.equal(
+    flattenOauthIdentity({ organization: { organization_type: 'claude_max', uuid: 'org-m' } }).subscription_type,
+    'max',
+  )
+  assert.equal(flattenOauthIdentity({ account: { has_claude_pro: true, uuid: 'acct-p' } }).subscription_type, 'pro')
+  assert.equal(flattenOauthIdentity({ text: 'Plan: Claude Max 20x' }).subscription_type, 'max')
 })
 
 test('enrichOauthIdentity skips fetch when identity is already complete', async () => {

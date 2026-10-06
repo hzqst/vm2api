@@ -12,4 +12,16 @@ describe('sidebar permissions', () => {
 
     expect(urls).toEqual(['/overview', '/logs'])
   })
+
+  it('shows statistics next to usage, ahead of logs', () => {
+    const groups = navGroupsFor(['usage', 'statistics', 'logs'])
+    const items = groups.flatMap((group) => group.items)
+
+    expect(items.map((item) => item.url)).toEqual([
+      '/usage',
+      '/statistics',
+      '/logs',
+    ])
+    expect(items[1].title).toBe('统计')
+  })
 })

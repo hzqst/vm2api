@@ -4,7 +4,6 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { CAPABILITY_CASES, FORM_QUESTIONS } from '../../src/lib/admin/probe-test.mjs'
 import {
   DEFAULT_DISTILL_RULES,
   HARD_DISTILL_PATTERNS,
@@ -306,31 +305,6 @@ test('zero inject skips distill and is not a refusal-guard path', () => {
 test('disabled rules pass everything', () => {
   const hit = detectDistill({ inbound: inbound('<think>secret</think>') }, { enabled: false })
   assert.equal(hit.action, 'pass')
-})
-
-test('capability probes are not distill', () => {
-  for (const c of CAPABILITY_CASES) {
-    const hit = detectDistill({
-      inbound: inbound(c.user, {
-        max_tokens: c.max_tokens,
-        system: c.system,
-        thinking: { type: 'adaptive', display: 'omitted' },
-      }),
-    })
-    assert.equal(hit.action, 'pass', c.id)
-  }
-})
-
-test('form questions including 请分步解答 are not distill', () => {
-  for (const q of FORM_QUESTIONS) {
-    const hit = detectDistill({
-      inbound: inbound(`${REASON_ASK}\n\n${q.user}`, {
-        max_tokens: 8192,
-        thinking: { type: 'adaptive', display: 'omitted' },
-      }),
-    })
-    assert.equal(hit.action, 'pass', q.id)
-  }
 })
 
 test('default needles do not include 请分步解答', () => {

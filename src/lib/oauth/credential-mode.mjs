@@ -1,11 +1,13 @@
 /**
- * Slot credential kinds: full OAuth, Setup Token runtime mode,
- * and Anthropic Console API Key.
+ * Slot credential kinds: full OAuth, converted Setup Token (complete oat),
+ * official `claude setup-token` (inference-only), and Console API Key.
  */
 import { flattenOauthIdentity } from './oauth-identity.mjs'
+import { isCodexVm } from '../vm/vm-kind.mjs'
 
 export const CREDENTIAL_OAUTH = 'oauth'
 export const CREDENTIAL_SETUP_TOKEN = 'setup-token'
+export const CREDENTIAL_OFFICIAL_SETUP_TOKEN = 'official-setup-token'
 export const CREDENTIAL_APIKEY = 'apikey'
 
 export function normalizeCredentialMode(raw) {
@@ -13,7 +15,11 @@ export function normalizeCredentialMode(raw) {
     .trim()
     .toLowerCase()
     .replace(/_/g, '-')
-  if (s === 'setup-token' || s === 'inference') return CREDENTIAL_SETUP_TOKEN
+  if (s === 'official-setup-token' || s === 'office-setup-token' || s === 'claude-setup-token') {
+    return CREDENTIAL_OFFICIAL_SETUP_TOKEN
+  }
+  if (s === 'setup-token') return CREDENTIAL_SETUP_TOKEN
+  if (s === 'inference') return CREDENTIAL_OFFICIAL_SETUP_TOKEN
   if (s === 'apikey' || s === 'api-key' || s === 'console' || s === 'console-key') return CREDENTIAL_APIKEY
   return CREDENTIAL_OAUTH
 }
@@ -26,22 +32,30 @@ export function isSetupTokenMode(raw) {
   return normalizeCredentialMode(raw) === CREDENTIAL_SETUP_TOKEN
 }
 
+export function isOfficialSetupTokenMode(raw) {
+  return normalizeCredentialMode(raw) === CREDENTIAL_OFFICIAL_SETUP_TOKEN
+}
+
+export function isAnySetupTokenMode(raw) {
+  return isSetupTokenMode(raw) || isOfficialSetupTokenMode(raw)
+}
+
 export function canOfficialCc(raw) {
   return normalizeCredentialMode(raw) === CREDENTIAL_OAUTH
 }
 
-/** Official GET /api/oauth/usage|/profile. Setup-token oat is the same short-lived grant. */
+/** Official GET /api/oauth/usage|/profile. Converted setup-token keeps the full grant. */
 export function canOfficialUsage(raw) {
   const mode = normalizeCredentialMode(raw)
   return mode === CREDENTIAL_OAUTH || mode === CREDENTIAL_SETUP_TOKEN
 }
 
 export function canCountTokens(raw) {
-  return isSetupTokenMode(raw) || isApiKeyMode(raw)
+  return isAnySetupTokenMode(raw) || isApiKeyMode(raw)
 }
 
 export function canRefreshCredential(raw) {
-  return !isApiKeyMode(raw)
+  return !isApiKeyMode(raw) && !isOfficialSetupTokenMode(raw)
 }
 
 export function looksLikeConsoleApiKey(value) {
@@ -57,6 +71,27 @@ export function looksLikeOauthAccessToken(value) {
   return /^sk-ant-oat01-/i.test(String(value || '').trim())
 }
 
+function scopeText(oauth = {}) {
+  if (Array.isArray(oauth.scopes) && oauth.scopes.length) return oauth.scopes.filter(Boolean).join(' ')
+  return String(oauth.scope || '')
+}
+
+/** Year-long official CLI token: inference only, no refresh. */
+export function isOfficialSetupTokenGrant(oauth = {}) {
+  const labeled = normalizeCredentialMode(oauth.type || oauth.mode || oauth.credential_mode)
+  if (labeled === CREDENTIAL_OFFICIAL_SETUP_TOKEN) return true
+  const source = String(oauth.source || '')
+  const flavor = String(oauth.flavor || '').replace(/_/g, '-')
+  if (source === 'claude-setup-token' || flavor === 'claude-setup-token') return true
+  const refresh = String(oauth.refresh_token || oauth.refreshToken || '').trim()
+  if (refresh) return false
+  const scopes = scopeText(oauth)
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((item) => (item === 'inference' ? 'user:inference' : item))
+  return scopes.length > 0 && scopes.every((item) => item === 'user:inference')
+}
+
 export function credentialModeFromOauth(oauth = {}) {
   const typed = oauth.type || oauth.mode || oauth.credential_mode
   const labeled = typed ? normalizeCredentialMode(typed) : ''
@@ -64,8 +99,9 @@ export function credentialModeFromOauth(oauth = {}) {
   if (looksLikeConsoleApiKey(oauth.api_key || oauth.apiKey || oauth.access_token || oauth.accessToken)) {
     return CREDENTIAL_APIKEY
   }
+  if (isOfficialSetupTokenGrant(oauth)) return CREDENTIAL_OFFICIAL_SETUP_TOKEN
   if (labeled === CREDENTIAL_SETUP_TOKEN) return CREDENTIAL_SETUP_TOKEN
-  const scope = String(oauth.scope || (Array.isArray(oauth.scopes) ? oauth.scopes.join(' ') : ''))
+  const scope = scopeText(oauth)
   if (oauth.flavor === 'setup_token' || oauth.flavor === 'setup-token') return CREDENTIAL_SETUP_TOKEN
   if (/user:profile|user:sessions:claude_code/.test(scope)) return CREDENTIAL_OAUTH
   if (scope && /user:inference/.test(scope)) return CREDENTIAL_SETUP_TOKEN
@@ -74,6 +110,23 @@ export function credentialModeFromOauth(oauth = {}) {
 
 export function credentialModeOfVm(vm = {}) {
   return normalizeCredentialMode(vm.credential_mode || vm.claude?.mode || vm.claude_mode)
+}
+
+/** Reset credits only. Converted setup-token with user:profile is a full OAuth grant. */
+export function canClaudeResetCredits(vm = {}, { hasToken } = {}) {
+  if (isCodexVm(vm)) return false
+  const mode = credentialModeOfVm(vm)
+  if (isApiKeyMode(mode) || isOfficialSetupTokenMode(mode)) return false
+  const token =
+    hasToken != null
+      ? !!hasToken
+      : !!(vm.has_token || vm.claude?.has_access || vm.claude?.access_token || vm.claude?.refresh_token)
+  if (!token) return false
+  const scope = [vm.claude?.scope, Array.isArray(vm.claude?.scopes) ? vm.claude.scopes.join(' ') : '', vm.oauth_scope]
+    .filter(Boolean)
+    .join(' ')
+  if (/(^|\s)user:profile(\s|$)/.test(scope)) return true
+  return !isSetupTokenMode(mode)
 }
 
 function fail(code, message) {

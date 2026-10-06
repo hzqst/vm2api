@@ -10,6 +10,7 @@ import { cn } from '@/lib/utils'
 import { isCodexVm } from '@/lib/vm-kind'
 import { vmWeekOutcome, vmWindowCosts } from '@/lib/vm-usage'
 import { useNow } from '@/hooks/use-now'
+import { ClaudeResetActions } from '@/features/vm/claude-reset-actions'
 import { OpenaiQuotaActions } from '@/features/vm/openai-quota-actions'
 import { fableRow, riskFg, UsageMeter } from '@/features/vm/usage-meter'
 
@@ -87,7 +88,7 @@ export function VmUsageWindows({
   vm: Vm
   accounts?: UsageAccountRow[]
   quiet?: boolean
-  /** GPT 槽在窗口下方追加「查询 / 重置券」；Claude 槽没有这套额度，忽略。 */
+  /** GPT 槽在窗口下方追加「查询 / 重置券」；Claude 完整 OAuth 追加原生限额重置。 */
   quotaActions?: boolean
   className?: string
 }) {
@@ -145,6 +146,11 @@ export function VmUsageWindows({
       {quotaActions && codex ? (
         <div className='pt-0.5'>
           <OpenaiQuotaActions vm={vm} compact />
+        </div>
+      ) : null}
+      {quotaActions && !codex ? (
+        <div className='pt-0.5'>
+          <ClaudeResetActions vm={vm} compact now={now} />
         </div>
       ) : null}
     </div>

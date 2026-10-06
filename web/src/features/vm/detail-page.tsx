@@ -424,6 +424,7 @@ export function VmDetailPage() {
             refreshBlocked={refreshBlocked}
             savingTimezone={saveTimezone.isPending}
             onAction={(path, body) => act.mutate({ path, body })}
+            onRefresh={() => void refreshAll()}
             onTimezoneSave={(timezone) => saveTimezone.mutate({ timezone })}
             onTimezoneFollowProxy={() =>
               saveTimezone.mutate({ timezone_follow_proxy: true })

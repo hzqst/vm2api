@@ -12,6 +12,7 @@ import {
 } from '@/components/ui/dialog'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { StatusMark } from '@/components/status-mark'
+import { WsTerminal } from '@/components/ws-terminal'
 import { DockerTab } from '@/features/cluster/docker-tab'
 import {
   LINK_STATE_TEXT,
@@ -19,7 +20,6 @@ import {
   remoteLink,
 } from '@/features/cluster/model'
 import { CLUSTER_NODES_KEY } from '@/features/cluster/queries'
-import { SshTerminal } from '@/features/cluster/ssh-terminal'
 
 /** 弹出式节点面板：终端 / Docker / 连接。`node` 跟着节点列表轮询刷新。 */
 export function SshPanel({
@@ -71,7 +71,12 @@ function PanelBody({
           <TabsTrigger value='link'>连接</TabsTrigger>
         </TabsList>
         <TabsContent value='terminal' className='min-h-0 flex-1'>
-          {ready ? <SshTerminal nodeId={node.id} /> : null}
+          {ready ? (
+            <WsTerminal
+              ticketPath={`/api/panel/cluster/nodes/${node.id}/shell-ticket`}
+              socketPath={`/api/panel/cluster/nodes/${node.id}/shell`}
+            />
+          ) : null}
         </TabsContent>
         <TabsContent value='docker' className='min-h-0 flex-1 overflow-auto'>
           <DockerTab node={node} />

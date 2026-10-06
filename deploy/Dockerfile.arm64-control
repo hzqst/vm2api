@@ -1,0 +1,60 @@
+# ARM64 control plane with the existing linux amd64 slot payloads.
+# Runtime dependencies are pinned independently of the checkout VERSION.
+ARG NODE_IMAGE=node:22-bookworm-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c
+# The prebuilt Rust payloads require GLIBC_2.39 (Ubuntu 24.04).
+ARG AMD64_RUNTIME_IMAGE=ubuntu:24.04@sha256:f610ab94648195aa356059f5b41d6085c9d4d903c072430cdd1af7bdb646106b
+FROM --platform=linux/amd64 ${AMD64_RUNTIME_IMAGE} AS amd64-runtime
+
+FROM --platform=linux/arm64 golang:1.25-bookworm@sha256:3b4a11519ad929d1e1d261a12cff056f0c85b735253d7d861346b9c6f8b36437 AS helpers
+ENV CGO_ENABLED=0 GOOS=linux GOARCH=arm64
+WORKDIR /src/worker
+COPY worker/go.mod worker/go.sum ./
+RUN go mod download
+COPY worker/ ./
+RUN go build -buildvcs=false -trimpath -ldflags="-s -w" -o /out/kin-egress ./cmd/kin-egress \
+    && go build -buildvcs=false -trimpath -ldflags="-s -w" -o /out/kin-worker ./cmd/kin-worker
+
+FROM --platform=linux/arm64 docker:27-cli@sha256:851f91d241214e7c6db86513b270d58776379aacc5eb9c4a87e5b47115e3065c AS dockercli
+FROM --platform=linux/arm64 ${NODE_IMAGE}
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates iptables iproute2 python3 \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=dockercli /usr/local/bin/docker /usr/local/bin/docker
+WORKDIR /opt/vm2api
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --no-audit --no-fund
+COPY src ./src
+COPY scripts ./scripts
+COPY VERSION CHANGELOG.md ./
+COPY docker/kin-os ./docker/kin-os
+COPY web/dist ./web/dist
+COPY bin/kin-kernel bin/kin-codex-kernel bin/kin-oauth-auth /opt/vm2api/image-bin/
+COPY bin/kin-worker bin/kin-egress /opt/vm2api/cluster-bin-amd64/
+COPY share/wrap-cli /opt/vm2api/image-wrap-cli/
+# Only the remaining x86 executables need these libraries and loader under QEMU.
+COPY --from=amd64-runtime /usr/lib/x86_64-linux-gnu/ /usr/lib/x86_64-linux-gnu/
+COPY --from=amd64-runtime /usr/lib64/ /usr/lib64/
+RUN test -e /lib64 || ln -s usr/lib64 /lib64
+# The standard entrypoint refreshes bind-mounted helpers from image-bin on boot.
+COPY --from=helpers /out/kin-egress /out/kin-worker /opt/vm2api/image-bin/
+COPY scripts/docker-entrypoint.sh /usr/local/bin/vm2api-entrypoint
+RUN chmod 755 /usr/local/bin/vm2api-entrypoint /opt/vm2api/image-bin/* \
+    /opt/vm2api/image-wrap-cli/cli-node /opt/vm2api/image-wrap-cli/cc-node \
+    && rm -f /opt/vm2api/src/lib/oauth/auth.js \
+    && cp -a /opt/vm2api/src/config /opt/vm2api/image-config \
+    && mkdir -p /opt/vm2api/vms /opt/vm2api/data /opt/vm2api/bin /opt/vm2api/share
+ENV NODE_ENV=production \
+    HOST=127.0.0.1 \
+    PORT=8787 \
+    KIN_PROJECT_ROOT=/opt/vm2api \
+    KIN_DATA_DIR=/opt/vm2api/data \
+    KIN_KERNEL_BIN=/opt/vm2api/bin/kin-kernel \
+    KIN_EGRESS_BIN=/opt/vm2api/bin/kin-egress \
+    KIN_WORKER_BIN=/opt/vm2api/bin/kin-worker \
+    KIN_CODEX_KERNEL_BIN=/opt/vm2api/bin/kin-codex-kernel \
+    KIN_OAUTH_AUTH_BIN=/opt/vm2api/bin/kin-oauth-auth \
+    KIN_CLUSTER_WORKER_BIN=/opt/vm2api/cluster-bin-amd64/kin-worker \
+    KIN_CLUSTER_EGRESS_BIN=/opt/vm2api/cluster-bin-amd64/kin-egress \
+    DOCKER_DEFAULT_PLATFORM=linux/amd64
+EXPOSE 8787
+ENTRYPOINT ["/usr/local/bin/vm2api-entrypoint"]

@@ -1,7 +1,7 @@
 import {
-  Activity,
   Boxes,
   Cable,
+  ChartColumn,
   Database,
   Download,
   Gauge,
@@ -26,6 +26,7 @@ const ALL_GROUPS: NavGroup[] = [
       { title: '虚拟机', url: '/vm', icon: Server },
       { title: '导入', url: '/import', icon: Download },
       { title: '用量', url: '/usage', icon: Gauge },
+      { title: '统计', url: '/statistics', icon: ChartColumn },
     ],
   },
   {
@@ -35,7 +36,6 @@ const ALL_GROUPS: NavGroup[] = [
       { title: '协议', url: '/protocol', icon: Shield },
       { title: 'system提示词', url: '/system', icon: MessageSquareText },
       { title: '密钥', url: '/keys', icon: KeyRound },
-      { title: '压测', url: '/loadtest', icon: Activity },
     ],
   },
   {

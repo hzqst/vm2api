@@ -18,14 +18,10 @@ import {
 import { CONTEXT_MANAGEMENT_BETA } from '../../src/lib/protocol/anthropic-policy.mjs'
 import {
   CLAUDE_CLI_UA,
-  LOADTEST_UA,
   claudeCodeInboundBody,
   claudeCodeInboundHeaders,
-  isLoadtestUa,
 } from '../../src/lib/protocol/claude-code-inbound.mjs'
-import { buildProbeTurnRequest } from '../../src/lib/admin/probe-test.mjs'
 import { buildVmTestInbound } from '../../src/lib/admin/vm-test-chat.mjs'
-import { TEST_UA, buildLoadtestTurnRequest } from '../../src/lib/admin/concurrent-test.mjs'
 import { classifyClient } from '../../src/lib/protocol/client-fingerprint.mjs'
 
 function fixtureIdentity(homeDir) {
@@ -57,23 +53,6 @@ function seedStoredOfficial(homeDir) {
   })
 }
 
-test('probe inbound is official Claude Code, not a third-party UA', () => {
-  const { body, headers } = buildProbeTurnRequest({
-    model: 'claude-sonnet-5',
-    messages: [{ role: 'user', content: '86.4' }],
-    maxTokens: 4096,
-    sessionId: 'sess-probe-1',
-  })
-  assert.equal(headers['user-agent'], CLAUDE_CLI_UA)
-  assert.equal(isLoadtestUa(headers['user-agent']), false)
-  assert.equal(headers['anthropic-beta'], undefined)
-  assert.equal(headers['x-app'], 'cli')
-  assert.equal(body.system, CRS_OFFICIAL_SYSTEM)
-  assert.ok(body.metadata?.user_id)
-  assert.equal(isOfficialClaudeCodeTraffic(headers, body), true)
-  assert.equal(classifyClient(headers, body), 'claude_code_official')
-})
-
 test('vm connectivity inbound matches probe Claude Code shape', () => {
   const { inbound, headers } = buildVmTestInbound({
     model: 'claude-haiku-4-5',
@@ -101,22 +80,6 @@ test('spoofed CLI UA + user_id on test14 messages is third-party, not official C
   assert.equal(classifyClient(headers, body), 'third_party_sdk')
 })
 
-test('loadtest inbound is third-party and must stay that way', () => {
-  const { body, headers } = buildLoadtestTurnRequest({
-    model: 'claude-opus-5',
-    messages: [{ role: 'user', content: '研报 TSLA' }],
-    maxTokens: 32000,
-    sessionId: 'sess-lt-1',
-    stream: true,
-  })
-  assert.equal(headers['user-agent'], TEST_UA)
-  assert.equal(headers['user-agent'], LOADTEST_UA)
-  assert.equal(isLoadtestUa(headers['user-agent']), true)
-  assert.equal(isOfficialClaudeCodeTraffic(headers, body), false)
-  assert.notEqual(classifyClient(headers, body), 'claude_code_official')
-  assert.equal(body.system, undefined)
-})
-
 test('official UA without anthropic-beta does not overwrite stored CLI headers', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-cc-store-'))
   seedStoredOfficial(dir)
@@ -126,57 +89,6 @@ test('official UA without anthropic-beta does not overwrite stored CLI headers',
   const after = JSON.parse(fs.readFileSync(path.join(dir, '.claude', 'kin-cc-headers.json'), 'utf8'))
   assert.deepEqual(after.headers, before.headers)
   assert.match(String(after.headers['anthropic-beta'] || ''), /oauth-2025-04-20/)
-  fs.rmSync(dir, { recursive: true, force: true })
-})
-
-test('probe and /v1 official applyAttempt emit the same outbound body', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-out-'))
-  const identity = fixtureIdentity(dir)
-  const { body: inbound, headers } = buildProbeTurnRequest({
-    model: 'claude-sonnet-5',
-    messages: [{ role: 'user', content: '只写出 86.4' }],
-    maxTokens: 4096,
-    sessionId: 'sess-same',
-  })
-  const sanitized = sanitizeInboundBody(inbound, defaultSeedPolicy())
-  const v1Persona = applyCrsUnofficialPersona(sanitized, {
-    officialClient: false,
-    mode: 'rewrite',
-    sessionId: 'sess-same',
-  })
-  const probePersona = applyCrsUnofficialPersona(inbound, {
-    officialClient: false,
-    mode: 'rewrite',
-    sessionId: 'sess-same',
-  })
-  const v1 = prepareOutboundAttempt({
-    canonicalBody: v1Persona,
-    inbound,
-    identity,
-    unofficial: false,
-    officialClient: true,
-    sessionId: 'sess-same',
-    stream: true,
-  })
-  const probe = prepareOutboundAttempt({
-    canonicalBody: probePersona,
-    inbound,
-    identity,
-    unofficial: false,
-    officialClient: true,
-    sessionId: 'sess-same',
-    stream: true,
-  })
-  assert.deepEqual(probe.body, v1.body)
-  assert.equal(probe.body.system[1].text, CRS_OFFICIAL_SYSTEM)
-  assert.equal(probe.body.system.length, 4)
-  assert.equal(probe.body.thinking?.type, 'adaptive')
-  assert.equal(probe.body.stream, true)
-  const v1Headers = prepareOutboundHeaders(headers, dir, identity, inbound.model)
-  const probeHeaders = prepareOutboundHeaders(headers, dir, identity, inbound.model)
-  assert.deepEqual(probeHeaders, v1Headers)
-  assert.match(v1Headers['user-agent'], /^claude-cli\//)
-  assert.doesNotMatch(v1Headers['user-agent'], /kin-console/)
   fs.rmSync(dir, { recursive: true, force: true })
 })
 
@@ -228,100 +140,6 @@ test('vm-test-chat outbound equals /v1 official applyAttempt', () => {
   fs.rmSync(dir, { recursive: true, force: true })
 })
 
-test('loadtest third-party goes through sanitization; outbound UA is still Claude Code', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-lt-'))
-  seedStoredOfficial(dir)
-  const identity = fixtureIdentity(dir)
-  const { body: inbound, headers } = buildLoadtestTurnRequest({
-    model: 'claude-opus-5',
-    messages: [{ role: 'user', content: '写一份 TSLA 研报' }],
-    maxTokens: 32000,
-    sessionId: 'sess-lt',
-    stream: true,
-  })
-  const dirty = {
-    ...inbound,
-    settings: { theme: 'light' },
-    user: 'attacker',
-    metadata: { user_id: 'client-local', machine_id: 'host-a' },
-  }
-  const sanitized = sanitizeInboundBody(dirty, defaultSeedPolicy())
-  assert.equal(sanitized.settings, undefined)
-  assert.equal(sanitized.user, undefined)
-  assert.equal(sanitized.metadata, undefined)
-  const withPersona = applyCrsUnofficialPersona(sanitized, {
-    officialClient: false,
-    mode: 'rewrite',
-    headers,
-  })
-  assert.equal(withPersona.system[1].text, CRS_OFFICIAL_SYSTEM)
-  assert.equal(withPersona.system.length, 4)
-  const outbound = prepareOutboundAttempt({
-    canonicalBody: withPersona,
-    inbound: sanitized,
-    identity,
-    unofficial: true,
-    stream: true,
-  })
-  const outboundHeaders = prepareOutboundHeaders(headers, dir, identity, inbound.model)
-  assert.match(outboundHeaders['user-agent'], /^claude-cli\//)
-  assert.doesNotMatch(outboundHeaders['user-agent'], /kin-console-loadtest/)
-  assert.match(String(outboundHeaders['anthropic-beta'] || ''), /oauth-2025-04-20/)
-  assert.match(String(outboundHeaders['anthropic-beta'] || ''), /context-management-2025-06-27/)
-  assert.doesNotMatch(String(outboundHeaders['anthropic-beta'] || ''), /context-1m/)
-  assert.equal(outbound.body.max_tokens, 32000)
-  fs.rmSync(dir, { recursive: true, force: true })
-})
-
-test('same identity + same messages: probe official and loadtest unofficial differ only by sanitization path', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-diff-'))
-  seedStoredOfficial(dir)
-  const identity = fixtureIdentity(dir)
-  const messages = [{ role: 'user', content: '圆周长 14' }]
-  const probe = buildProbeTurnRequest({
-    model: 'claude-sonnet-5',
-    messages,
-    maxTokens: 4096,
-    sessionId: 's1',
-  })
-  const load = buildLoadtestTurnRequest({
-    model: 'claude-sonnet-5',
-    messages,
-    maxTokens: 4096,
-    sessionId: 's1',
-    stream: true,
-  })
-  const probeOut = prepareOutboundAttempt({
-    canonicalBody: probe.body,
-    inbound: probe.body,
-    identity,
-    unofficial: false,
-    stream: true,
-  })
-  const loadPersona = applyCrsUnofficialPersona(sanitizeInboundBody(load.body, defaultSeedPolicy()), {
-    officialClient: false,
-    mode: 'rewrite',
-    headers: load.headers,
-  })
-  const loadOut = prepareOutboundAttempt({
-    canonicalBody: loadPersona,
-    inbound: load.body,
-    identity,
-    unofficial: true,
-    stream: true,
-  })
-  const probeH = prepareOutboundHeaders(probe.headers, dir, identity, 'claude-sonnet-5')
-  const loadH = prepareOutboundHeaders(load.headers, dir, identity, 'claude-sonnet-5')
-  assert.equal(probeH['user-agent'], loadH['user-agent'])
-  assert.match(probeH['user-agent'], /^claude-cli\//)
-  assert.equal(probeOut.body.model, loadOut.body.model)
-  assert.ok(probeOut.body.system)
-  assert.equal(loadOut.body.system[1].text, CRS_OFFICIAL_SYSTEM)
-  assert.equal(loadOut.body.system.length, 4)
-  assert.equal(probeH['x-stainless-os'], loadH['x-stainless-os'])
-  fs.rmSync(dir, { recursive: true, force: true })
-})
-
 test('same slot different unofficial UAs share outbound headers except inbound-only noise', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-same-'))
   const identity = fixtureIdentity(dir)
@@ -332,7 +150,7 @@ test('same slot different unofficial UAs share outbound headers except inbound-o
     'claude-opus-5',
   )
   const b = resolveCrsHeaders(
-    { 'user-agent': LOADTEST_UA, 'anthropic-beta': 'oauth-2025-04-20,interleaved-thinking-2025-05-14' },
+    { 'user-agent': 'third-party/1.0', 'anthropic-beta': 'oauth-2025-04-20,interleaved-thinking-2025-05-14' },
     dir,
     identity,
     'claude-opus-5',
@@ -466,19 +284,20 @@ test('setup-token outbound is inference-only and drops Claude Code session heade
   fs.rmSync(dir, { recursive: true, force: true })
 })
 
-test('resolveCrsHeaders unofficial never leaks loadtest UA', () => {
+test('resolveCrsHeaders unofficial never leaks caller UA', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-ua-'))
   const identity = fixtureIdentity(dir)
+  const callerUa = 'third-party/1.0'
   const leaked = resolveCrsHeaders(
     {
-      'user-agent': LOADTEST_UA,
+      'user-agent': callerUa,
       'anthropic-version': '2023-06-01',
     },
     dir,
     identity,
     'claude-sonnet-5',
   )
-  assert.notEqual(leaked['user-agent'], LOADTEST_UA)
+  assert.notEqual(leaked['user-agent'], callerUa)
   assert.match(leaked['user-agent'], /^claude-cli\//)
   fs.rmSync(dir, { recursive: true, force: true })
 })

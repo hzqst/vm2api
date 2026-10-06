@@ -114,7 +114,7 @@ func TestAPIKeyNeverNeedsRefresh(t *testing.T) {
 }
 
 func TestSetupTokenWithoutRefreshNeverNeedsRefresh(t *testing.T) {
-	cred := Credential{Type: TypeSetupToken, AccessToken: "sk-ant-oat01-live"}
+	cred := Credential{Type: TypeOfficialSetupToken, AccessToken: "sk-ant-oat01-live"}
 	if cred.NeedsRefresh(time.Now(), time.Hour) {
 		t.Fatal("official setup-token without refresh must not refresh")
 	}
@@ -134,7 +134,7 @@ func TestSaveSetupTokenClearsRefresh(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	current.Type = TypeSetupToken
+	current.Type = TypeOfficialSetupToken
 	current.AccessToken = "sk-ant-oat01-setup"
 	current.RefreshToken = ""
 	current.ExpiresAt = time.Now().Add(365 * 24 * time.Hour).UnixMilli()
@@ -150,7 +150,7 @@ func TestSaveSetupTokenClearsRefresh(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.Type != TypeSetupToken || loaded.RefreshToken != "" {
+	if loaded.Type != TypeOfficialSetupToken || loaded.RefreshToken != "" {
 		t.Fatalf("loaded = %#v", loaded)
 	}
 	oauth := nestedMap(document, "claudeAiOauth")

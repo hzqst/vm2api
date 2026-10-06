@@ -284,6 +284,32 @@ test('later blocks of the first user message stay on one session slot', () => {
   assert.notEqual(a, r.extractPoolKey(req, other, { platform: 'anthropic' }))
 })
 
+test('a shared system-reminder opener does not merge different conversations', () => {
+  const r = new StickyRouter({ dataDir: tmpDir(), config: { sticky: { enabled: true } } })
+  const req = { apiKeyRecord: { id: 'key_f041' }, headers: {} }
+  const opener = (question, extra = []) => ({
+    messages: [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: '<system-reminder>Today: 2026-10-04; cwd: /work/demo</system-reminder>' },
+          { type: 'text', text: question },
+        ],
+      },
+      ...extra,
+    ],
+  })
+  const a = r.extractPoolKey(req, opener('会话 A 的问题'), { platform: 'anthropic' })
+  const b = r.extractPoolKey(req, opener('会话 B 的问题'), { platform: 'anthropic' })
+  assert.match(a, /^p:anthropic:kkey_f041:ch:/)
+  assert.notEqual(a, b)
+  const next = opener('会话 A 的问题', [
+    { role: 'assistant', content: 'ok' },
+    { role: 'user', content: 'continue' },
+  ])
+  assert.equal(r.extractPoolKey(req, next, { platform: 'anthropic' }), a)
+})
+
 test('extractKey mode=ip uses forwarded address', () => {
   const r = new StickyRouter({ dataDir: tmpDir(), config: { sticky: { enabled: true, mode: 'ip' } } })
   const key = r.extractKey({ headers: { 'x-forwarded-for': '203.0.113.9, 10.0.0.1' } }, {})

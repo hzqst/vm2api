@@ -70,6 +70,14 @@ describe('credEndpointOf', () => {
         })
       )
     ).toBe('console')
+    expect(
+      credEndpointOf(
+        claude({
+          credential_mode: 'official-setup-token',
+          auth_scheme: 'authorization_bearer',
+        })
+      )
+    ).toBe('console')
   })
 
   it('files x-api-key slots under API, by default for Console keys', () => {

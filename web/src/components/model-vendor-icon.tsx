@@ -1,78 +1,74 @@
-import type { ComponentType } from 'react'
+import { useState } from 'react'
 import {
-  Ai21,
-  Aws,
-  Baidu,
-  ByteDance,
-  Claude,
-  Cohere,
-  DeepSeek,
-  Google,
-  Grok,
-  Meta,
-  Microsoft,
-  Minimax,
-  Mistral,
-  Moonshot,
-  Nvidia,
-  OpenAI,
-  Perplexity,
-  Qwen,
-  Stepfun,
-  Tencent,
-  Yi,
-  Zhipu,
-} from '@lobehub/icons'
+  accentColorOf,
+  modelIconUrl,
+} from '@/lib/model-vendor/vendor-icon-files'
+import { getVendorEntry } from '@/lib/model-vendor/vendor-icons'
 import {
   inferVendorFromModelName,
   UNKNOWN_VENDOR,
 } from '@/lib/model-vendor/vendor-inference'
 import { cn } from '@/lib/utils'
 
-type IconProps = { className?: string; size?: number }
-
-const VENDOR_ICONS: Record<string, ComponentType<IconProps>> = {
-  anthropic: Claude.Color,
-  openai: OpenAI,
-  google: Google.Color,
-  meta: Meta.Color,
-  deepseek: DeepSeek.Color,
-  alibaba: Qwen.Color,
-  qwen: Qwen.Color,
-  mistral: Mistral.Color,
-  xai: Grok,
-  cohere: Cohere.Color,
-  ai21: Ai21.BrandColor,
-  moonshotai: Moonshot,
-  zhipuai: Zhipu.Color,
-  minimax: Minimax.Color,
-  perplexity: Perplexity.Color,
-  stepfun: Stepfun,
-  baidu: Baidu.Color,
-  tencent: Tencent.Color,
-  bytedance: ByteDance.Color,
-  nvidia: Nvidia.Color,
-  amazon: Aws.Color,
-  microsoft: Microsoft.Color,
-  '01-ai': Yi.Color,
-}
-
-function Monogram({ seed, className }: { seed: string; className?: string }) {
-  const letter = (/[a-z0-9]/i.exec(seed)?.[0] ?? '?').toUpperCase()
+function MonogramIcon({
+  seed,
+  className,
+}: {
+  seed: string
+  className: string
+}) {
+  const initial = (/[a-z0-9]/i.exec(seed)?.[0] ?? '?').toUpperCase()
+  const color = accentColorOf(seed)
   return (
     <span
-      aria-hidden
+      aria-hidden='true'
+      style={{
+        backgroundColor: `color-mix(in oklch, ${color} 15%, transparent)`,
+        color,
+      }}
       className={cn(
-        'inline-flex size-3.5 shrink-0 items-center justify-center rounded-sm bg-muted text-[9px] font-semibold text-muted-foreground',
+        'inline-flex items-center justify-center rounded-sm text-[0.55em] leading-none font-semibold select-none',
         className
       )}
     >
-      {letter}
+      {initial}
     </span>
   )
 }
 
-/** 模型名旁的厂商徽标。能识别的用品牌图标，其余用首字母。 */
+function StaticVendorIcon({
+  file,
+  mono,
+  fallbackSeed,
+  className,
+}: {
+  file: string
+  mono: boolean
+  fallbackSeed: string
+  className: string
+}) {
+  // 记录失败的具体文件而非布尔值：file 变化后自动重试新图标。
+  const [failedFile, setFailedFile] = useState<string | null>(null)
+  if (failedFile === file) {
+    return <MonogramIcon seed={fallbackSeed} className={className} />
+  }
+  return (
+    <img
+      src={modelIconUrl(file)}
+      alt=''
+      aria-hidden='true'
+      loading='lazy'
+      onError={() => setFailedFile(file)}
+      className={cn('select-none', mono && 'dark:invert', className)}
+    />
+  )
+}
+
+/**
+ * 模型厂商图标。
+ * 解析顺序：按模型名推断 vendor -> 本地打包的 @lobehub/icons 组件
+ * -> public/model-icons 静态 SVG -> 字母 monogram。
+ */
 export function ModelVendorIcon({
   modelId,
   className,
@@ -80,15 +76,25 @@ export function ModelVendorIcon({
   modelId: string
   className?: string
 }) {
+  const cls = cn('h-3.5 w-3.5 shrink-0', className)
   const vendor = inferVendorFromModelName(modelId)
-  const Icon = vendor === UNKNOWN_VENDOR ? undefined : VENDOR_ICONS[vendor]
-  if (!Icon) {
+  if (vendor === UNKNOWN_VENDOR) {
+    return <MonogramIcon seed={modelId} className={cls} />
+  }
+  const entry = getVendorEntry(vendor)
+  if (entry.icon) {
+    const Icon = entry.icon
+    return <Icon className={cls} />
+  }
+  if (entry.iconFile) {
     return (
-      <Monogram
-        seed={vendor === UNKNOWN_VENDOR ? modelId : vendor}
-        className={className}
+      <StaticVendorIcon
+        file={entry.iconFile.file}
+        mono={entry.iconFile.mono === true}
+        fallbackSeed={vendor}
+        className={cls}
       />
     )
   }
-  return <Icon className={cn('size-3.5 shrink-0', className)} size={14} />
+  return <MonogramIcon seed={vendor} className={cls} />
 }

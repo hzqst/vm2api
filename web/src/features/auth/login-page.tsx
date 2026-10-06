@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useNavigate, useSearch } from '@tanstack/react-router'
 import { toast } from 'sonner'
+import { Logo } from '@/assets/logo'
 import { useAuthStore } from '@/stores/auth-store'
 import { loginRequest } from '@/lib/api'
 import { apiBase, sameOriginPanel, setApiBase } from '@/lib/session'
@@ -49,10 +50,19 @@ export function LoginPage() {
 
   return (
     <div className='flex min-h-svh items-center justify-center bg-background p-6'>
-      <Card className='w-full max-w-sm'>
-        <CardHeader>
-          <CardTitle className='text-xl'>vm2api</CardTitle>
-          <p className='text-sm text-muted-foreground'>号池管理台</p>
+      <Card className='w-full max-w-sm border-border/80 shadow-2xl shadow-cyan-950/20'>
+        <CardHeader className='space-y-3 text-center'>
+          <div className='mx-auto flex size-14 items-center justify-center rounded-2xl border border-primary/30 bg-primary/10 shadow-lg shadow-cyan-500/15'>
+            <Logo className='size-8' />
+          </div>
+          <div>
+            <CardTitle className='text-2xl font-bold tracking-tight'>
+              vm2api
+            </CardTitle>
+            <p className='text-sm text-muted-foreground'>
+              虚拟化号池网关控制台
+            </p>
+          </div>
         </CardHeader>
         <CardContent>
           <form className='space-y-4' onSubmit={onSubmit}>

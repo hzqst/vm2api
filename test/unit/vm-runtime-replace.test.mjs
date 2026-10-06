@@ -11,6 +11,7 @@ import {
   readWorkerEgressMode,
   isSlotProxyDesynced,
   reloadSlotWorker,
+  slotKernelAlive,
 } from '../../src/lib/vm/vm-runtime.mjs'
 
 const running = { running: true, networkMode: 'host', image: 'kin-os/ubuntu:24.04' }
@@ -121,4 +122,15 @@ test('IPv6 address spelling does not desynchronize a slot, a changed endpoint do
   assert.equal(isSlotProxyDesynced(vm, root), false)
   fs.writeFileSync(config, JSON.stringify({ proxy_url: 'socks5h://user:p%40ss@[2001:db8::2]:1080' }))
   assert.equal(isSlotProxyDesynced(vm, root), true)
+})
+
+test('a running slot with a bound kernel.sock is live even though worker.sock never exists', (t) => {
+  const runDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-slot-alive-'))
+  t.after(() => fs.rmSync(runDir, { recursive: true, force: true }))
+  const paths = { socket: path.join(runDir, 'worker.sock'), kernelSocket: path.join(runDir, 'kernel.sock') }
+  assert.equal(slotKernelAlive({ running: true }, paths), false, 'no kernel socket: rebuild')
+  fs.writeFileSync(paths.kernelSocket, '')
+  assert.equal(slotKernelAlive({ running: true }, paths), true, 'reload must restart, not docker rm -f')
+  assert.equal(slotKernelAlive({ running: false }, paths), true)
+  assert.equal(slotKernelAlive(null, paths), true)
 })

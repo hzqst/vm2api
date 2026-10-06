@@ -70,6 +70,38 @@ function success(text = 'ok') {
   }
 }
 
+test('unsupported classifier runtime stops without counting execution or cooling accounts', async () => {
+  const scheduler = new Scheduler([candidate(1), candidate(2)])
+  const runner = new FailoverRunner({ scheduler })
+  let calls = 0
+  const result = await runner.run({
+    requestId: 'classifier-runtime',
+    model: 'claude-sonnet-4-6',
+    canonicalBody: { model: 'claude-sonnet-4-6' },
+    callAttempt: async () => {
+      calls++
+      return {
+        ok: false,
+        status: 400,
+        upstreamExecutions: 0,
+        terminalState: 'rejected',
+        body: {
+          error: {
+            type: 'invalid_request_error',
+            code: 'classifier_runtime_unsupported',
+            message: 'unsupported runtime',
+          },
+        },
+      }
+    },
+  })
+  assert.equal(calls, 1)
+  assert.equal(result.attemptCount, 0)
+  assert.equal(result.body.error.code, 'classifier_runtime_unsupported')
+  assert.deepEqual(scheduler.cooldowns, [])
+  assert.equal(scheduler.selectCalls, 1)
+})
+
 test('account1 quota exhausted rotates to account2 and commits final sticky', async () => {
   const scheduler = new Scheduler([candidate(1), candidate(2)])
   const attempts = new Attempts()
@@ -458,6 +490,57 @@ test('signature error is repaired once on the same account when enabled', async 
   assert.equal(result.ok, true)
   assert.equal(result.attemptCount, 2)
   assert.equal(calls, 2)
+})
+
+test('search history repair still runs when the rejected hop outlived the deadline', async () => {
+  const scheduler = new Scheduler([candidate(1)])
+  const runner = new FailoverRunner({ scheduler, config: { total_retry_deadline_ms: 20 } })
+  const bodies = []
+  const result = await runner.run({
+    requestId: 'req-search-slow-400',
+    canonicalBody: {
+      model: 'claude-opus-test',
+      messages: [
+        { role: 'user', content: 'find it' },
+        {
+          role: 'assistant',
+          content: [
+            { type: 'server_tool_use', id: 'srvtoolu_1', name: 'web_search', input: { query: 'mac mini' } },
+            {
+              type: 'web_search_tool_result',
+              tool_use_id: 'srvtoolu_1',
+              content: [{ type: 'web_search_result', title: 'T', url: 'https://a.example', encrypted_content: 'AAAA' }],
+            },
+            { type: 'text', text: 'found' },
+          ],
+        },
+        { role: 'user', content: 'go on' },
+      ],
+    },
+    model: 'claude-opus-test',
+    callAttempt: async ({ body }) => {
+      bodies.push(body)
+      if (bodies.length === 1) {
+        await new Promise((resolve) => setTimeout(resolve, 40))
+        return {
+          ok: false,
+          status: 400,
+          terminalState: 'rejected',
+          body: {
+            type: 'error',
+            error: {
+              type: 'invalid_request_error',
+              message: 'messages.1.content.0: Invalid `encrypted_content` in `search_result` block',
+            },
+          },
+        }
+      }
+      return success('repaired')
+    },
+  })
+  assert.equal(result.ok, true)
+  assert.equal(bodies.length, 2)
+  assert.equal(JSON.stringify(bodies[1]).includes('encrypted_content'), false)
 })
 
 test('signature 400 is not repaired when signature_repair is off', async () => {

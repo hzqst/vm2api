@@ -1,7 +1,7 @@
 import { Link } from '@tanstack/react-router'
 import type { Vm, VmProxySnap } from '@/types/panel-vm'
 import { cn } from '@/lib/utils'
-import { proxyHostLabel } from '@/lib/vm-status'
+import { proxyHostLabel, proxyNamedLabel } from '@/lib/vm-status'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import {
@@ -67,6 +67,11 @@ export function VmProxyTab(props: VmProxyTabProps) {
             <Field label='绑定 ID'>
               <span className='field-host text-xs'>{boundId || '—'}</span>
             </Field>
+            {proxy.label ? (
+              <Field label='代理名称'>
+                <span className='text-xs'>{proxy.label}</span>
+              </Field>
+            ) : null}
             <Field label='地址'>
               <span className='field-host text-xs'>
                 {proxyHostLabel(proxy)}
@@ -195,7 +200,7 @@ export function VmProxyTab(props: VmProxyTabProps) {
             <SelectContent>
               {free.map((p) => (
                 <SelectItem key={p.id} value={p.id || ''}>
-                  {proxyHostLabel(p)}
+                  {proxyNamedLabel(p)}
                 </SelectItem>
               ))}
             </SelectContent>

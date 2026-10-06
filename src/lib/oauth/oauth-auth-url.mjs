@@ -1,8 +1,9 @@
 /**
  * Browser OAuth-link import.
  * CAI (sub2api) and official Claude Code share PKCE + paste-code,
- * then exchange via the current VM's SOCKS5 egress.
- * Local/direct control-plane egress is not allowed for OAuth auth.
+ * then exchange via the current VM's SOCKS5 egress. A slot bound to local
+ * egress (`px-local`) arrives as `proxyUrl: ''`: its exit is the host default
+ * route, so the exchange goes direct. `null` still means unbound and is refused.
  */
 import crypto from 'node:crypto'
 import { exchangeTokenViaCookieAuth } from './cookie-auth.mjs'
@@ -82,6 +83,7 @@ function fail(code, message) {
 }
 
 function normalizeSocks(proxyUrl) {
+  if (proxyUrl === '') return ''
   const s = String(proxyUrl || '').trim()
   if (!s) return null
   return s.replace(/^socks5:\/\//i, 'socks5h://')
@@ -228,6 +230,7 @@ export async function exchangeAuthCode({ sessionId, code, proxyUrl, vmId, fetchI
       email_address: identity.email,
       account_uuid: identity.account_uuid,
       org_uuid: identity.org_uuid,
+      subscription_type: identity.subscription_type,
       source: session.source || 'oauth-auth-url',
       flavor: session.flavor || 'cai',
     },

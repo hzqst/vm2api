@@ -302,14 +302,32 @@ export function reloadSlotWorker(vm, projectRoot, { routing } = {}) {
   const name = containerName(vm.id)
   const existing = inspectContainer(name)
   if (!existing) return startVmRuntime(vm, projectRoot, { recreate: false, routing })
-  if (existing.running && !fs.existsSync(paths.socket)) {
+  if (!slotKernelAlive(existing, paths)) {
     return startVmRuntime(vm, projectRoot, { recreate: true, routing })
   }
   const cmd = existing.running ? ['docker', 'restart', name] : ['docker', 'start', name]
   const r = sh(cmd, { timeout: 60_000 })
   if (!r.ok) return { ok: false, error: r.stderr || `${cmd.join(' ')} failed` }
+  startTelemetrySidecar(name)
   runtimePatch(vm, inspectContainer(name), workerRuntimeExtra(worker))
   return { ok: true, action: existing.running ? 'reloaded' : 'started', runtime: vm.runtime }
+}
+
+/**
+ * A running slot is live when its PID1 kernel has bound run/kernel.sock.
+ * run/worker.sock is never bound by any shipped binary, so it cannot be the signal.
+ */
+export function slotKernelAlive(existing, paths) {
+  if (!existing?.running) return true
+  return fs.existsSync(paths.kernelSocket)
+}
+
+/** The telemetry sidecar is a docker exec child: every container (re)start loses it. */
+function startTelemetrySidecar(name) {
+  if (!fs.existsSync(WORKER_BIN)) return
+  sh(['docker', 'exec', '-d', name, '/usr/local/bin/kin-worker', 'telemetry', '--config', '/run/kin/worker.json'], {
+    timeout: 8_000,
+  })
 }
 
 function readProjectRouting(projectRoot) {
@@ -411,7 +429,7 @@ export function startVmRuntime(vm, projectRoot, { recreate = false, routing } = 
 
   let existing = inspectContainer(name)
   const paths = workerPaths(projectRoot, vm.id)
-  const replace = recreate || (existing?.running && !fs.existsSync(paths.socket))
+  const replace = recreate || !slotKernelAlive(existing, paths)
   // Node restart / 开机 must not bounce a live slot with a healthy worker.
   if (existing?.running && !replace) {
     runtimePatch(vm, existing, {
@@ -452,6 +470,7 @@ export function startVmRuntime(vm, projectRoot, { recreate = false, routing } = 
   if (existing) {
     const r = sh(['docker', 'start', name])
     if (!r.ok) return { ok: false, error: r.stderr || 'docker start failed' }
+    startTelemetrySidecar(name)
     runtimePatch(vm, inspectContainer(name), workerRuntimeExtra(worker))
     return { ok: true, action: 'started', runtime: vm.runtime }
   }
@@ -557,11 +576,7 @@ export function startVmRuntime(vm, projectRoot, { recreate = false, routing } = 
     container_id: r.stdout,
     ...workerRuntimeExtra(worker),
   })
-  if (fs.existsSync(WORKER_BIN)) {
-    sh(['docker', 'exec', '-d', name, '/usr/local/bin/kin-worker', 'telemetry', '--config', '/run/kin/worker.json'], {
-      timeout: 8_000,
-    })
-  }
+  startTelemetrySidecar(name)
   return { ok: true, action: 'created', runtime: vm.runtime }
 }
 

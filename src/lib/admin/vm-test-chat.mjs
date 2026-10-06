@@ -471,7 +471,7 @@ export function testChatCredentialMode(vm = {}) {
     flavor: vm.claude?.flavor,
     source: vm.claude?.source,
   })
-  if (inferred === 'setup-token' || inferred === 'apikey') return inferred
+  if (inferred === 'setup-token' || inferred === 'official-setup-token' || inferred === 'apikey') return inferred
   return credentialModeOfVm(vm)
 }
 
@@ -927,7 +927,13 @@ export async function runVmTestChat(opts = {}) {
     })
   }
   const unofficial =
-    !codex && (cliHop || opts.unofficial === true || credMode === 'setup-token' || credMode === 'apikey')
+    !codex &&
+    (cliHop ||
+      opts.unofficial === true ||
+      credMode === 'setup-token' ||
+      credMode === 'official-setup-token' ||
+      credMode === 'apikey')
+
   const cliLayout = !codex && cliHop ? resolveCliSystemLayout(vm, routing) : null
   push(
     'info',
@@ -1148,7 +1154,7 @@ export async function runVmTestChat(opts = {}) {
   const text = result?.text || extractText(result?.body)
   const usage = result?.usage || result?.body?.usage || null
   let errObj = result?.ok ? null : extractError(result, { wrapHop: !codex })
-  if (errObj && result?.status === 401 && credMode === 'setup-token') {
+  if (errObj && result?.status === 401 && (credMode === 'setup-token' || credMode === 'official-setup-token')) {
     errObj = {
       ...errObj,
       code: 'setup_token_invalid',

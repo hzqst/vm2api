@@ -89,7 +89,7 @@ export function GptPane({
         </SettingRow>
         <SettingRow
           label='Codex 目录客户端版本'
-          desc='auto 会从官方 @openai/codex 获取并缓存版本；失败时默认使用 0.158.0。需要固定版本时可直接填写。'
+          desc='auto 会从官方 @openai/codex 获取并缓存版本；失败时默认使用 0.160.0。需要固定版本时可直接填写。'
         >
           <Input
             className='w-32'

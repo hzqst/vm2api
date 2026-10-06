@@ -1,9 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { execFile } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { readGuestIdentity } from '../../src/lib/vm/guest-identity-reader.mjs'
+import { promisify } from 'node:util'
+import { READ_IDENTITY, readGuestIdentity } from '../../src/lib/vm/guest-identity-reader.mjs'
 import { collectSlotIdentity } from '../../src/lib/vm/guest-identity.mjs'
 
 const guestOutput = [
@@ -49,6 +51,19 @@ test('collects Docker guest identity without either worker or kernel socket', as
   assert.equal(saved.fingerprint.device_id, 'keep-device')
   assert.equal(saved.fingerprint.session_id, 'keep-session')
   assert.ok(saved.runtime.identity_collected_at)
+})
+
+test('falls back to uname -n when the guest has no hostname command', async () => {
+  // A shell function shadows PATH, standing in for kin-os-arch which lacks `hostname`.
+  const script = `hostname() { return 127; }\n${READ_IDENTITY}`
+  const result = await readGuestIdentity({ vmId: 'vm-03', vm: { runtime: { type: 'docker' } } }, '', {
+    run: (_command, args, opts) => {
+      assert.equal(args.at(-1), READ_IDENTITY)
+      return promisify(execFile)('sh', ['-c', script], opts)
+    },
+  })
+  assert.equal(result.ok, true)
+  assert.equal(result.body.identity.hostname, (await promisify(execFile)('uname', ['-n'])).stdout.trim())
 })
 
 test('rejects unsupported runtimes without reading host identity', async () => {

@@ -14,7 +14,7 @@ import { collectSlotIdentity } from '../vm/guest-identity.mjs'
 import { importWorkerCredential } from '../transport/go-worker-client.mjs'
 import { credentialModeFromOauth, canOfficialCc } from './credential-mode.mjs'
 import { resolveAuthScheme } from './auth-scheme.mjs'
-import { flattenOauthIdentity } from './oauth-identity.mjs'
+import { flattenOauthIdentity, normalizeSubscriptionType } from './oauth-identity.mjs'
 import { persistOauthToVm, writeWorkerCredentialFile } from './oauth-credentials.mjs'
 import {
   officialCcUidGid,
@@ -91,6 +91,9 @@ export function createImportCommit(ctx) {
       email: identity.email || existing.claude?.email || null,
       account_uuid: identity.account_uuid || existing.claude?.account_uuid || null,
       org_uuid: identity.org_uuid || existing.claude?.org_uuid || null,
+      subscription_type:
+        identity.subscription_type || normalizeSubscriptionType(existing?.claude?.account_tier) || 'pro',
+      account_tier: normalizeSubscriptionType(existing?.claude?.account_tier) || 'pro',
       scopes: Array.isArray(oauth.scopes)
         ? oauth.scopes
         : String(oauth.scope || '')

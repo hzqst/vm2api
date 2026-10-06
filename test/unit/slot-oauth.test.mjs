@@ -71,6 +71,32 @@ test('runSlotOauth builds the worker argv and sends count-tokens stdin', async (
   })
 })
 
+test('runSlotOauth sends reset-redeem stdin without wrapping it', async () => {
+  let seen = null
+  await runSlotOauth(exec, 'reset-redeem', {
+    body: {
+      organization_uuid: '11111111-1111-4111-8111-111111111111',
+      grant_id: 'grant_next',
+      request_id: 'a'.repeat(64),
+    },
+    runDocker: async (argv, options) => {
+      seen = { argv, options }
+      return {
+        code: 0,
+        stdout: '{"ok":true,"status":200,"body":{"result":"reset"},"headers":{}}\n',
+        stderr: '',
+        timed_out: false,
+      }
+    },
+  })
+  assert.equal(seen.argv[7], 'reset-redeem')
+  assert.deepEqual(JSON.parse(seen.options.stdin), {
+    organization_uuid: '11111111-1111-4111-8111-111111111111',
+    grant_id: 'grant_next',
+    request_id: 'a'.repeat(64),
+  })
+})
+
 test('runSlotOauth includes --force only when requested', async () => {
   const calls = []
   const runDocker = async (argv) => {

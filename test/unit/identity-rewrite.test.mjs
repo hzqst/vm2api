@@ -4,6 +4,7 @@ import {
   applyCrsIdentityReplace,
   buildStableSessionSeed,
   extractCallerSession,
+  extractFirstUserIdentity,
   normalizeSessionUserAgent,
   outboundSessionMode,
   rebuildOutboundSession,
@@ -239,20 +240,52 @@ test('missing caller session is stable across turns and not random', () => {
     clientIp: '203.0.113.9',
     userAgent: 'claude-cli/2.1.241 (external, sdk-cli)',
     apiKeyId: 'key-7',
-    firstUserText: 'first question',
+    firstUserIdentity: 'first question',
     epoch: 'pending',
   }
   const seed = buildStableSessionSeed('vm-01', sessionContextDiscriminator(base), 'first question')
   const round1 = resolveOutboundSessionId('', base)
-  const round2 = resolveOutboundSessionId('', { ...base, firstUserText: 'first question' })
+  const round2 = resolveOutboundSessionId('', { ...base, firstUserIdentity: 'first question' })
   assert.equal(round1, round2)
   assert.match(round1, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
   assert.equal(round1, rebuildOutboundSession({ identity: seed, epoch: 'pending' }))
   assert.notEqual(round1, uuidFromSeed(STABLE_SESSION_SEED + seed))
-  assert.notEqual(resolveOutboundSessionId('', { ...base, firstUserText: 'other opener' }), round1)
+  assert.notEqual(resolveOutboundSessionId('', { ...base, firstUserIdentity: 'other opener' }), round1)
   assert.notEqual(resolveOutboundSessionId('', { ...base, accountId: 'vm-02' }), round1)
   assert.equal(resolveOutboundSessionId('', { ...base, userAgent: 'claude-cli/2.1.999 (external, sdk-cli)' }), round1)
   assert.notEqual(resolveOutboundSessionId('', { ...base, epoch: 99 }), round1)
+})
+
+test('first user identity skips a verbatim system-reminder opener', () => {
+  const reminder = '<system-reminder>Today: 2026-10-04; current working directory: /work/demo</system-reminder>'
+  const opener = (question) => [
+    {
+      role: 'user',
+      content: [
+        { type: 'text', text: reminder },
+        { type: 'text', text: question },
+      ],
+    },
+  ]
+  assert.equal(extractFirstUserIdentity(opener('会话 A 的问题')), '会话 A 的问题')
+  const base = { officialClient: false, accountId: 'vm-01', clientDiscriminator: 'ip:ua:key', epoch: 'pending' }
+  const seed = (question) =>
+    resolveOutboundSessionId('', { ...base, firstUserIdentity: extractFirstUserIdentity(opener(question)) })
+  assert.notEqual(seed('会话 A 的问题'), seed('会话 B 的问题'))
+  // A message that is only reminders still has an identity; a plain first block is used as-is.
+  assert.equal(extractFirstUserIdentity([{ role: 'user', content: [{ type: 'text', text: reminder }] }]), reminder)
+  assert.equal(
+    extractFirstUserIdentity([
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: `${reminder}\n真正的问题` },
+          { type: 'text', text: 'later' },
+        ],
+      },
+    ]),
+    `${reminder}\n真正的问题`,
+  )
 })
 
 test('sticky outbound id is reused for the same VM and reminted after failover', () => {
@@ -262,7 +295,7 @@ test('sticky outbound id is reused for the same VM and reminted after failover',
     boundSessionId: '11111111-1111-4111-8111-111111111111',
     boundVmId: 'vm-01',
     vmId: 'vm-01',
-    firstUserText: 'trimmed current turn',
+    firstUserIdentity: 'trimmed current turn',
     clientDiscriminator: '203.0.113.9:claude-cli+sdk-cli:key-7',
     epoch: 10,
   }

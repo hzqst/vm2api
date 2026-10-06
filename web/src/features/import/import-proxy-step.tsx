@@ -21,7 +21,7 @@ import {
   proxyIsInvalid,
   proxyOptionLabel,
   proxyStatusLabel,
-  proxyHostText,
+  proxyLabel,
   readPositive,
   sortedProxiesByAvailability,
 } from '@/features/proxies/proxy-sort'
@@ -218,7 +218,7 @@ export function ImportProxyStep({ vmId }: { vmId: string }) {
           <StatusMark
             tone={{
               key: 'proxy',
-              text: `${proxyHostText(bound)} · ${proxyStatusLabel(bound)}${
+              text: `${proxyLabel(bound)} · ${proxyStatusLabel(bound)}${
                 bound.latency_ms != null ? ` ${bound.latency_ms}ms` : ''
               }`,
               cls: bound.blocked_reason

@@ -16,7 +16,7 @@ import {
   accountStatus,
   accountUsable,
   poolStatus,
-  proxyHostLabel,
+  proxyNamedLabel,
   restrictionCopy,
   restrictionUntilOf,
   scheduleStateLabel,
@@ -29,6 +29,7 @@ import {
 } from '@/lib/wrap-health'
 import { SlotIdentity } from '@/components/platform-chip'
 import { StatusMark } from '@/components/status-mark'
+import { ClaudeResetActions } from '@/features/vm/claude-reset-actions'
 import { CodexKernelHealthFields } from '@/features/vm/codex-kernel-health-card'
 import { ConcRpmEditor } from '@/features/vm/conc-rpm-editor'
 import { dataplaneLabel } from '@/features/vm/dataplane-contract'
@@ -314,6 +315,7 @@ export function VmStatusBoard(props: Props) {
                     hint={`${sess.active}/${sess.max}`}
                   />
                 ) : null}
+                <ClaudeResetActions vm={vm} now={now} />
               </>
             )}
           </div>
@@ -346,7 +348,9 @@ export function VmStatusBoard(props: Props) {
           </div>
           <div className='mt-3 divide-y'>
             <Field label='代理' compact>
-              <span className='font-mono text-xs'>{proxyHostLabel(proxy)}</span>
+              <span className='font-mono text-xs'>
+                {proxyNamedLabel(proxy)}
+              </span>
             </Field>
             <Field label='并发 / RPM' compact>
               <div className='flex items-center gap-1'>

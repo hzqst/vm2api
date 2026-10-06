@@ -13,11 +13,13 @@ import {
   OAUTH_FLAVORS,
 } from '../../src/lib/oauth/oauth-auth-url.mjs'
 
-test('generateAuthUrl requires a non-empty VM SOCKS5', () => {
+test('generateAuthUrl refuses an unbound VM but accepts local egress as direct', () => {
   resetAuthUrlSessions()
   assert.throws(() => generateAuthUrl({}), /vm_id required/)
   assert.throws(() => generateAuthUrl({ vmId: 'vm-01' }), /SOCKS5/)
-  assert.throws(() => generateAuthUrl({ vmId: 'vm-01', proxyUrl: '' }), /SOCKS5/)
+  assert.throws(() => generateAuthUrl({ vmId: 'vm-01', proxyUrl: null }), /SOCKS5/)
+  const out = generateAuthUrl({ vmId: 'vm-01', proxyUrl: '' })
+  assert.equal(peekAuthUrlSession(out.session_id).proxyUrl, '')
 })
 
 test('generateAuthUrl builds Claude authorize URL and stores PKCE', () => {

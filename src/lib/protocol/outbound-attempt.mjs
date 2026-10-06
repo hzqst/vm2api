@@ -48,7 +48,8 @@ import {
 } from './cache-ttl.mjs'
 import { apiKeyBetaHeader, setupTokenBetaHeader } from './claude-code-betas.mjs'
 import { applyModelRequestRules } from './model-policy.mjs'
-import { isApiKeyMode, isSetupTokenMode } from '../oauth/credential-mode.mjs'
+import { isApiKeyMode, isAnySetupTokenMode } from '../oauth/credential-mode.mjs'
+import { prepareClassifierBody } from './request-purpose.mjs'
 
 export const INFERENCE_UA = 'kin-inference/1.0'
 
@@ -170,8 +171,9 @@ function stabilizeMessageBudgets(body) {
  */
 export function prepareCliHopBody(
   canonicalBody,
-  { stream = true, repaired = false, cacheTtl = DEFAULT_CACHE_TTL } = {},
+  { stream = true, repaired = false, cacheTtl = DEFAULT_CACHE_TTL, requestContext = null } = {},
 ) {
+  if (requestContext?.purpose === 'auto_mode_classifier') return prepareClassifierBody(canonicalBody, { stream })
   let body = officialMessagesBody(canonicalBody, { stream })
   delete body.metadata
   const leftover = stripCliOwnedSystem(body.system)
@@ -206,6 +208,7 @@ export function pinHaikuCliThinking(body = {}) {
 }
 
 export function prepareOutboundAttempt({
+  requestContext = null,
   canonicalBody,
   inbound = {},
   identity,
@@ -231,10 +234,11 @@ export function prepareOutboundAttempt({
   userAgent = '',
   apiKeyId = '',
   firstUserText = '',
+  firstUserIdentity = '',
   authScheme,
   credentialMode,
 } = {}) {
-  const inferenceOnly = isSetupTokenMode(credentialMode) || isApiKeyMode(credentialMode)
+  const inferenceOnly = isAnySetupTokenMode(credentialMode) || isApiKeyMode(credentialMode)
   const keepCallerSession = officialClient === true || (officialClient == null && !unofficial)
   const sessionContext = {
     officialClient: keepCallerSession,
@@ -250,7 +254,7 @@ export function prepareOutboundAttempt({
     clientIp,
     userAgent: userAgent || reqHeaders?.['user-agent'] || '',
     apiKeyId,
-    firstUserText,
+    firstUserIdentity,
   }
   const sessionId =
     String(sessionIdOverride || '').trim() ||
@@ -267,13 +271,15 @@ export function prepareOutboundAttempt({
   )
   const callerSessionId = sessionIdFromOutboundBody(identified)
   if (identity && callerSessionId) identity.callerSessionId = callerSessionId
-  if (identity) {
+  if (identity && !requestContext) {
     identified = refreshOfficialSystemEnvironment(identified, identity, identified.model)
   }
   const stampOwnedBilling = String(sessionIdOverride || '').trim() && (mode !== 'passthrough' || !keepCallerSession)
   if (stampOwnedBilling) {
     identified = stampBillingPromptId(identified, sessionId, firstUserText)
   }
+  if (requestContext?.purpose === 'auto_mode_classifier')
+    return { body: prepareClassifierBody(identified, { stream }), toolNames: {} }
   // Official Claude Code places its own breakpoints; adding ours would shift the
   // prefix it already caches.
   let cleaned = prepareAnthropicRequest(identified, {
@@ -291,7 +297,7 @@ export function prepareOutboundAttempt({
 }
 
 export function prepareOutboundHeaders(reqHeaders, homeDir, identity, model, { credentialMode, want1m } = {}) {
-  if (isSetupTokenMode(credentialMode) || isApiKeyMode(credentialMode)) {
+  if (isAnySetupTokenMode(credentialMode) || isApiKeyMode(credentialMode)) {
     return {
       'user-agent': INFERENCE_UA,
       'anthropic-version': '2023-06-01',
@@ -329,6 +335,7 @@ export function prepareOutboundEnvelope({
   userAgent = '',
   apiKeyId = '',
   firstUserText = '',
+  firstUserIdentity = '',
   authScheme,
   credentialMode,
   want1m,
@@ -359,6 +366,7 @@ export function prepareOutboundEnvelope({
     userAgent,
     apiKeyId,
     firstUserText,
+    firstUserIdentity,
     authScheme,
     credentialMode,
   })
@@ -380,7 +388,7 @@ export function prepareOutboundEnvelope({
     delete headers.Authorization
   }
   if (stream) headers.accept = 'text/event-stream'
-  if (!isSetupTokenMode(credentialMode)) {
+  if (!isAnySetupTokenMode(credentialMode)) {
     const beta = ensureFastModeBeta(headers['anthropic-beta'] || '', prepared.body)
     if (beta) headers['anthropic-beta'] = beta
   }

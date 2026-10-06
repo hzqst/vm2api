@@ -37,6 +37,8 @@ FROM_SOURCE=0
 DEFAULT_ADMIN_USER="admin"
 DEFAULT_ADMIN_PASSWORD="123456"
 WROTE_DEFAULT_PASSWORD=0
+HOST_ARCH=""
+REQUESTED_ARCH=""
 
 info() { echo -e "${BLUE}[信息]${NC} $*"; }
 ok() { echo -e "${GREEN}[成功]${NC} $*"; }
@@ -67,7 +69,7 @@ usage() {
   uninstall            停控制面（默认保留 .env / vms / data）
 
 选项:
-  --version vX.Y.Z     指定 tag
+  --version vX.Y.Z     指定 tag（可带 -amd64 / -arm64 后缀，须与宿主架构一致）
   --dir PATH           安装目录（默认 ${INSTALL_DIR}）
   --yes                非交互
   --no-start           只拉代码，不 compose up
@@ -77,8 +79,26 @@ usage() {
 EOF
 }
 
-normalize_tag() {
+# 架构后缀只用于核对宿主，版本号本身不带后缀：v1.2.3-arm64 → v1.2.3。
+strip_arch_suffix() {
   local v="${1:-}"
+  case "$v" in
+    *-amd64|*-x86_64|*-arm64|*-aarch64) echo "${v%-*}" ;;
+    *) echo "$v" ;;
+  esac
+}
+
+suffix_arch() {
+  case "${1:-}" in
+    *-amd64|*-x86_64) echo amd64 ;;
+    *-arm64|*-aarch64) echo arm64 ;;
+    *) echo "" ;;
+  esac
+}
+
+normalize_tag() {
+  local v
+  v="$(strip_arch_suffix "${1:-}")"
   v="${v#v}"
   if [ -z "$v" ]; then
     echo ""
@@ -91,6 +111,39 @@ version_of_tag() {
   echo "${1#v}"
 }
 
+# uname / Docker / Node 的写法统一成 Docker 架构名；不支持时为空。
+arch_of() {
+  case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in
+    x86_64|amd64|x64) echo amd64 ;;
+    aarch64|arm64) echo arm64 ;;
+    *) echo "" ;;
+  esac
+}
+
+resolve_host_arch() {
+  local machine
+  machine="$(uname -m)"
+  HOST_ARCH="$(arch_of "$machine")"
+  if [ -z "$HOST_ARCH" ]; then
+    err "不支持的宿主架构 ${machine}；只支持 x86_64 (amd64) 与 aarch64 (arm64)"
+    exit 1
+  fi
+  if [ -n "$REQUESTED_ARCH" ] && [ "$REQUESTED_ARCH" != "$HOST_ARCH" ]; then
+    err "--version 后缀 -${REQUESTED_ARCH} 与宿主架构 ${HOST_ARCH} 不符"
+    exit 1
+  fi
+}
+
+# amd64 用多架构 tag（与旧安装一致）；arm64 固定单架构镜像，
+# 平台不匹配时报错，不会悄悄换成 amd64 控制面。
+image_tag_for() {
+  if [ "$HOST_ARCH" = arm64 ]; then
+    echo "${1}-arm64"
+  else
+    echo "$1"
+  fi
+}
+
 local_version() {
   if [ -f "${INSTALL_DIR}/VERSION" ]; then
     tr -d '[:space:]' <"${INSTALL_DIR}/VERSION"
@@ -99,11 +152,13 @@ local_version() {
   echo "not_installed"
 }
 
+# 宿主的 DOCKER_DEFAULT_PLATFORM 只该影响槽位；控制面镜像按宿主架构选择，
+# ARM64 上若带着 linux/amd64 去拉 -arm64 镜像会直接失败。槽位平台由控制面镜像自己设置。
 compose() {
   if docker compose version >/dev/null 2>&1; then
-    docker compose "$@"
+    env -u DOCKER_DEFAULT_PLATFORM docker compose "$@"
   elif command -v docker-compose >/dev/null 2>&1; then
-    docker-compose "$@"
+    env -u DOCKER_DEFAULT_PLATFORM docker-compose "$@"
   else
     err "需要 Docker Compose（docker compose 或 docker-compose）"
     exit 1
@@ -421,8 +476,48 @@ fetch_release_files() {
   fetch_file "$tag" CHANGELOG.md "${INSTALL_DIR}/CHANGELOG.md" 1
   fetch_file "$tag" deploy/install.sh "${INSTALL_DIR}/deploy/install.sh" 1
   chmod +x "${INSTALL_DIR}/deploy/install.sh" 2>/dev/null || true
+  if [ "$HOST_ARCH" = arm64 ]; then
+    fetch_file "$tag" deploy/prepare-arm64.py "${INSTALL_DIR}/deploy/prepare-arm64.py" 1
+    if [ ! -f "${INSTALL_DIR}/deploy/prepare-arm64.py" ]; then
+      err "${tag} 没有 ARM64 发布（缺 deploy/prepare-arm64.py）。请选择带 ARM64 镜像的版本。"
+      exit 1
+    fi
+  fi
   mkdir -p "${INSTALL_DIR}/vms" "${INSTALL_DIR}/data" "${INSTALL_DIR}/bin" \
     "${INSTALL_DIR}/share" "${INSTALL_DIR}/src/config"
+}
+
+# 安装目录写进 .env：面板一键更新的 helper 容器按它挂载宿主目录。
+# ARM64 源码安装再写 COMPOSE_FILE，让裸 docker compose（包括面板更新）也走
+# arm64 override，不会退回基础服务和 ./vms、./data。
+prepare_arch_env() {
+  local mode="$1"
+  env_set_if_empty VM2API_HOST_ROOT "${INSTALL_DIR}" || true
+  if [ "$HOST_ARCH" != arm64 ] || [ "$mode" != source ]; then
+    return 0
+  fi
+  if [ ! -f "${INSTALL_DIR}/docker-compose.arm64.yml" ]; then
+    err "该版本没有 ARM64 部署文件 docker-compose.arm64.yml"
+    exit 1
+  fi
+  env_set_if_empty COMPOSE_FILE "docker-compose.yml:docker-compose.arm64.yml" || true
+}
+
+# ARM64 槽位是 linux/amd64 镜像，宿主需要固定版本的 qemu-x86_64 binfmt handler。
+prepare_arm64_host() {
+  local script="${INSTALL_DIR}/deploy/prepare-arm64.py"
+  if [ "$HOST_ARCH" != arm64 ] || [ "$NO_START" = 1 ]; then
+    return 0
+  fi
+  if ! command -v python3 >/dev/null 2>&1; then
+    err "ARM64 需要 python3 来准备 QEMU：apt-get install -y python3"
+    exit 1
+  fi
+  info "ARM64：准备 x86_64 QEMU handler（槽位镜像为 linux/amd64）"
+  if ! python3 "$script" || ! python3 "$script" --check; then
+    err "QEMU 准备失败，按上方提示处理，详见 docs/ARM64.md"
+    exit 1
+  fi
 }
 
 checkout_tag() {
@@ -482,7 +577,11 @@ start_stack() {
   if [ "$mode" = image ]; then
     info "docker compose pull && up -d（拉预构建镜像，本机不构建）"
     if ! compose pull; then
-      err "拉取控制面镜像失败。检查网络与 registry 可达性，或用 --from-source 走本机构建。"
+      if [ "$HOST_ARCH" = arm64 ]; then
+        err "拉取 ARM64 控制面镜像失败：检查网络，并确认该版本已发布 $(env_get VM2API_IMAGE_TAG) 镜像。"
+      else
+        err "拉取控制面镜像失败。检查网络与 registry 可达性，或用 --from-source 走本机构建。"
+      fi
       exit 1
     fi
     if KIN_AUTO_SYNC_WRAP="$auto_sync_wrap" compose up -d; then
@@ -530,20 +629,25 @@ print_banner() {
 cmd_install() {
   need_root
   require_cmds
+  resolve_host_arch
   print_banner
-  local tag
+  local tag mode
   tag="${TARGET_VERSION:-$(latest_release_tag)}"
   tag="$(normalize_tag "$tag")"
-  info "目标版本 ${tag}"
+  info "目标版本 ${tag}（linux/${HOST_ARCH}）"
   if [ "$FROM_SOURCE" = 1 ] || [ -d "${INSTALL_DIR}/.git" ]; then
+    mode=source
     fresh_clone "$tag"
     ensure_git_safe
     ensure_env
   else
+    mode=image
     fetch_release_files "$tag"
     ensure_env
-    env_set VM2API_IMAGE_TAG "$tag"
+    env_set VM2API_IMAGE_TAG "$(image_tag_for "$tag")"
   fi
+  prepare_arch_env "$mode"
+  prepare_arm64_host
   start_stack
   ok "安装完成  ${INSTALL_DIR}  @ $(local_version)"
   if [ "$NO_START" = 0 ] && [ "$SYNC_WRAP" = 1 ]; then
@@ -557,28 +661,31 @@ cmd_install() {
 cmd_upgrade() {
   need_root
   require_cmds
+  resolve_host_arch
   print_banner
   if [ ! -f "${INSTALL_DIR}/docker-compose.yml" ]; then
     err "未安装。先: curl -sSL https://raw.githubusercontent.com/${GITHUB_REPO}/main/deploy/install.sh | sudo bash"
     exit 1
   fi
-  local current tag
+  local current tag mode
   current="$(local_version)"
   tag="${TARGET_VERSION:-$(latest_release_tag)}"
   tag="$(normalize_tag "$tag")"
-  info "当前 ${current}  →  目标 ${tag}"
+  info "当前 ${current}  →  目标 ${tag}（linux/${HOST_ARCH}）"
   if [ "v${current}" = "$tag" ]; then
     ok "已经是 ${tag}，仍会对齐镜像与部署文件"
   fi
-  if [ "$(install_mode)" = source ]; then
+  mode="$(install_mode)"
+  if [ "$mode" = source ]; then
     checkout_tag "$tag"
     ensure_git_safe
     ensure_env
   else
     fetch_release_files "$tag"
     ensure_env
-    env_set VM2API_IMAGE_TAG "$tag"
+    env_set VM2API_IMAGE_TAG "$(image_tag_for "$tag")"
   fi
+  prepare_arch_env "$mode"
   echo ""
   info "本版 changelog"
   print_changelog_slice "${INSTALL_DIR}/CHANGELOG.md" "$current" "$(version_of_tag "$tag")" || true
@@ -588,6 +695,7 @@ cmd_upgrade() {
     echo "$notes"
     echo ""
   fi
+  prepare_arm64_host
   start_stack
   if [ "$NO_START" = 0 ] && [ "$SYNC_WRAP" = 1 ]; then
     sync_wrap_cli || { err "槽内 wrap CLI / kernel 同步失败，升级未完成"; exit 1; }
@@ -644,6 +752,10 @@ cmd_status() {
   current="$(local_version)"
   echo "目录:    ${INSTALL_DIR}"
   echo "版本:    ${current}"
+  echo "架构:    $(arch_of "$(uname -m)" || true)  ($(uname -m))"
+  if [ -f "${INSTALL_DIR}/.env" ] && [ -n "$(env_get VM2API_IMAGE_TAG)" ]; then
+    echo "镜像:    $(env_get VM2API_IMAGE_TAG)"
+  fi
   if [ -d "${INSTALL_DIR}/.git" ]; then
     echo "git:     $(git -C "${INSTALL_DIR}" describe --tags --always 2>/dev/null || echo unknown)"
   fi
@@ -685,7 +797,16 @@ while [ $# -gt 0 ]; do
       shift
       ;;
     --version)
+      if [ $# -lt 2 ]; then
+        err "--version 需要参数，例如 v1.2.3 或 v1.2.3-arm64"
+        exit 1
+      fi
+      REQUESTED_ARCH="$(suffix_arch "$2")"
       TARGET_VERSION="$(normalize_tag "$2")"
+      if ! [[ "$TARGET_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        err "无效版本 $2：格式 vX.Y.Z，可带 -amd64 / -arm64 后缀"
+        exit 1
+      fi
       shift 2
       ;;
     --dir)

@@ -19,6 +19,7 @@ import { manualScheduleLevelOf, parseScheduleLevelInput } from '../pool/credenti
 import { vmQuotaOverrideOf } from '../pool/vm-quota-override.mjs'
 import { normalizeOwnerId, vmOriginOf } from '../admin/resource-owner.mjs'
 import { normalizeVmKind } from './vm-kind.mjs'
+import { canClaudeResetCredits } from '../oauth/credential-mode.mjs'
 import { validTimezone } from '../core/timezone.mjs'
 import {
   extraFromCodexHeaders,
@@ -82,6 +83,9 @@ export function summarizeVm(vm, projectRoot = null) {
       kind.kind === 'codex' ? vm.codex?.usage?.snapshot?.updated_at || null : vm.claude?.refreshed_at || null,
     oauth_source: kind.kind === 'codex' ? 'codex-credentials' : vm.claude?.source || null,
     credential_mode: kind.kind === 'codex' ? 'oauth' : vm.claude?.mode || 'oauth',
+    can_claude_reset: canClaudeResetCredits(vm, {
+      hasToken: kind.kind === 'codex' ? !!codex?.has_token : hasAccessPresence(vm.claude),
+    }),
     auth_scheme: kind.kind === 'codex' ? null : vm.claude?.auth_scheme || null,
     has_refresh: kind.kind === 'codex' ? !!codex?.has_refresh : hasRefreshPresence(vm.claude),
     refresh_error: kind.kind === 'codex' ? null : vm.claude?.refresh_error || null,
@@ -129,6 +133,7 @@ export function summarizeVm(vm, projectRoot = null) {
     codex_usage: codex?.usage || null,
     reset_credits: codex?.reset_credits || null,
     plan_type: codex?.plan_type || null,
+    claude_reset_credits: kind.kind === 'codex' ? null : vm.claude_reset_credits || null,
   }
 }
 

@@ -26,6 +26,7 @@ import {
 } from '../vm/slot-engine.mjs'
 import {
   ensureOfficialCredentialLink,
+  ensureSlotSubscriptionType,
   slotUidGidFromHomeDir,
   chownSlotRuntimeFile,
   replaceSlotOwnedFile,
@@ -33,8 +34,6 @@ import {
 import { slotHost } from '../vm/slot-host.mjs'
 
 const starts = new Map()
-// Hosts whose socket path is a relay (not the kernel's own file) cannot date the kernel by socket mtime.
-const kernelStartedAt = new Map()
 
 /** Bind the VM's docker daemon into an injectable runner. */
 function slotRunner(exec, run) {
@@ -260,6 +259,8 @@ async function killWrapDataplane(container, runDockerExec) {
   // Match /proc/pid/exe, not pkill -f. The docker exec shell's own argv
   // contains these paths, so pkill -f signals that shell and can return
   // before the running cli-node dies. The old inode then keeps serving.
+  // Under binfmt QEMU (ARM64 host, amd64 slot) exe is the emulator and the
+  // real program is argv[1] (P flag), so identify the process by that.
   await runDockerExec(
     [
       'exec',
@@ -269,6 +270,7 @@ async function killWrapDataplane(container, runDockerExec) {
       [
         'for d in /proc/[0-9]*; do',
         '  exe=$(readlink "$d/exe" 2>/dev/null || true)',
+        '  case "$exe" in */qemu-*) exe=$(tr "\\000" "\\n" < "$d/cmdline" 2>/dev/null | sed -n 2p) ;; esac',
         '  case "$exe" in',
         '    */.kin/cli-node*|*/.kin/kin-kernel*|*/.kin/glibc239/ld-linux*|/opt/kin/cli-node*|/opt/kin/kin-kernel*|/opt/kin/glibc239/ld-linux*)',
         '      kill -KILL "${d#/proc/}" 2>/dev/null || true',
@@ -298,29 +300,6 @@ export function wrapNewerThanKernel(exec) {
   try {
     if (!sock || !fs.existsSync(sock)) return false
     return wrapM > fs.statSync(sock).mtimeMs + 500
-  } catch {
-    return false
-  }
-}
-
-/** Host rotated credentials.json; running wrap still holds the revoked AT. */
-export function credentialsNewerThanKernel(exec) {
-  const home = String(exec?.homeDir || '').trim()
-  const sock = rustKernelPaths(exec).socketPath
-  if (!home || !sock) return false
-  if (!slotHost(exec?.vm).ownsSocketFiles) {
-    const started = kernelStartedAt.get(exec.vmId || exec.vm.id)
-    if (!started) return false
-    try {
-      return fs.statSync(path.join(home, '.claude', 'credentials.json')).mtimeMs > started + 500
-    } catch {
-      return false
-    }
-  }
-  const cred = path.join(home, '.claude', 'credentials.json')
-  try {
-    if (!fs.existsSync(sock) || !fs.existsSync(cred)) return false
-    return fs.statSync(cred).mtimeMs > fs.statSync(sock).mtimeMs + 500
   } catch {
     return false
   }
@@ -452,30 +431,26 @@ async function startRustKernel(exec, { timeoutMs, control, runDockerExec, force 
   if (exec?.homeDir) {
     const ids = slotUidGidFromHomeDir(exec.homeDir)
     ensureOfficialCredentialLink(exec.homeDir, ids || {})
+    try {
+      ensureSlotSubscriptionType(exec.homeDir, exec.vm?.claude?.account_tier || exec.vm?.account_tier)
+    } catch {}
   }
   const paths = rustKernelPaths(exec)
   if (!paths.socketPath) return { ok: false, reason: 'socket_missing' }
   const existing = await rustKernelHealth(exec, { timeoutMs: 800 })
   if (!startCurrent(control)) return { ok: false, reason: 'start_cancelled' }
   const staleWrap = wrapNewerThanKernel(exec)
-  const staleTicket = credentialsNewerThanKernel(exec)
   const slotMismatch =
     !!paths.configPath && Number(readExistingKernelConfig(paths.configPath).slots_per_worker) !== WRAP_SLOT_MAX
   const occupied = rustKernelBusy(existing) || wrapHopInflight(exec) > 0
   const host = slotHost(exec?.vm)
-  const slotId = exec?.vmId || exec?.vm?.id
-  // First sight of a live kernel on such a host (e.g. after a Node restart): later pulls compare against now.
-  const noteUp = () => {
-    if (!host.ownsSocketFiles && !kernelStartedAt.has(slotId)) kernelStartedAt.set(slotId, Date.now())
-  }
-  if (!force && occupied && !staleWrap && !staleTicket && !slotMismatch) {
+  // Credential rotation is read by the live kernel/CLI; it is not a lifecycle change.
+  if (!force && occupied && !staleWrap && !slotMismatch) {
     const reconcile = await reconcileCliHopRuntime(exec, { runDockerExec })
-    noteUp()
     return { ok: true, reason: 'busy', health: existing, reconcile }
   }
-  if (!force && rustKernelReachable(existing) && !staleWrap && !staleTicket && !slotMismatch) {
+  if (!force && rustKernelReachable(existing) && !staleWrap && !slotMismatch) {
     const reconcile = await reconcileCliHopRuntime(exec, { runDockerExec })
-    noteUp()
     return { ok: true, reason: 'already_up', health: existing, reconcile }
   }
   if (!paths.configPath || !fs.existsSync(paths.configPath)) return { ok: false, reason: 'config_missing' }
@@ -489,7 +464,7 @@ async function startRustKernel(exec, { timeoutMs, control, runDockerExec, force 
   if (!container) return { ok: false, reason: 'container_missing' }
   const wedged = rustKernelProcessUp(existing) && !rustKernelReachable(existing) && !occupied
   const pid1Kernel = await containerKernelIsPid1(container, runDockerExec)
-  const waitMs = force || staleWrap || staleTicket || slotMismatch ? 0 : bootWaitMs(timeoutMs, { pid1Kernel, wedged })
+  const waitMs = force || staleWrap || slotMismatch ? 0 : bootWaitMs(timeoutMs, { pid1Kernel, wedged })
   if (waitMs > 0) {
     const waited = await waitForHealth(exec, waitMs)
     if (waited?.ok) {
@@ -533,7 +508,6 @@ async function startRustKernel(exec, { timeoutMs, control, runDockerExec, force 
   if (!startCurrent(control)) return { ok: false, reason: 'start_cancelled' }
   const started = await waitForHealthOrExit(exec, { timeoutMs, container, runDockerExec, control })
   if (started?.ok) {
-    if (!host.ownsSocketFiles) kernelStartedAt.set(slotId, Date.now())
     started.reconcile = await reconcileCliHopRuntime(exec, { runDockerExec })
     if (pid1Kernel) {
       await runDockerExec(

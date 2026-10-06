@@ -2,8 +2,8 @@
  * Panel RBAC.
  *
  *   admin  — full console + user management
- *   super  — overview / cluster / usage / logs + VM page (schedule only)
- *   user   — tenant: vm / proxies / keys / billing / logs (owner-scoped)
+ *   super  — overview / cluster / usage / logs / statistics + VM page (schedule only)
+ *   user   — tenant: vm / proxies / keys / billing / logs / statistics (owner-scoped)
  */
 
 export const PANEL_VIEWS = [
@@ -14,12 +14,12 @@ export const PANEL_VIEWS = [
   'usage',
   'proxies',
   'models',
-  'loadtest',
   'protocol',
   'system',
   'keys',
   'api',
   'logs',
+  'statistics',
   'database',
   'settings',
   'users',
@@ -28,8 +28,8 @@ export const PANEL_VIEWS = [
 ]
 
 const ROLE_VIEWS = {
-  user: ['vm', 'proxies', 'keys', 'billing', 'logs'],
-  super: ['overview', 'cluster', 'usage', 'logs', 'vm'],
+  user: ['vm', 'proxies', 'keys', 'billing', 'logs', 'statistics'],
+  super: ['overview', 'cluster', 'usage', 'logs', 'statistics', 'vm'],
   admin: PANEL_VIEWS.slice(),
 }
 
@@ -88,6 +88,7 @@ export function panelIdentity(req) {
 const USER_EXACT_GET = new Set([
   '/api/panel/me',
   '/api/panel/vms',
+  '/api/panel/pool/stream',
   '/api/panel/proxies',
   '/api/panel/proxies/config',
   '/api/panel/api-keys',
@@ -120,6 +121,18 @@ function isRequestLogPath(path) {
     /^\/api\/panel\/request-logs\/[^/]+\/attempts$/.test(path)
   )
 }
+
+/** Scrolling log page + statistics: read-only, owner-scoped server-side for `user`. */
+const LOG_STATS_GET = new Set([
+  '/api/panel/usage-logs',
+  '/api/panel/usage-logs/summary',
+  '/api/panel/usage-logs/filter-options',
+  '/api/panel/usage-logs/session-suggestions',
+  '/api/panel/usage-logs/active-sessions',
+  '/api/panel/usage-logs/overview',
+  '/api/panel/statistics',
+  '/api/panel/statistics/leaderboard',
+])
 
 function isSuperVmRead(path) {
   if (path === '/api/panel/vms/fleet-status') return false
@@ -197,7 +210,7 @@ function userKeyPathAllowed(method, path) {
 function isUserAllowed(method, path) {
   const m = String(method || 'GET').toUpperCase()
   const p = String(path || '')
-  if (m === 'GET' && (USER_EXACT_GET.has(p) || isRequestLogPath(p))) return true
+  if (m === 'GET' && (USER_EXACT_GET.has(p) || isRequestLogPath(p) || LOG_STATS_GET.has(p))) return true
   if (m === 'POST' && USER_EXACT_POST.has(p)) return true
   if (p.startsWith('/api/panel/vms')) return userVmPathAllowed(m, p)
   if (p.startsWith('/api/panel/proxies')) return userProxyPathAllowed(m, p)
@@ -218,9 +231,11 @@ export function authorizePanelRoute(method, path, role) {
     (p === '/api/panel/dashboard' ||
       p === '/api/panel/usage' ||
       p === '/api/panel/vms' ||
+      p === '/api/panel/pool/stream' ||
       p === '/api/panel/cluster/nodes' ||
       p === '/api/panel/cluster/local' ||
-      isRequestLogPath(p))
+      isRequestLogPath(p) ||
+      LOG_STATS_GET.has(p))
   ) {
     return { ok: true, role: r }
   }

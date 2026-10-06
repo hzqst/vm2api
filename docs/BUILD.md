@@ -8,10 +8,9 @@ linux amd64 `bin/kin-{kernel,egress,worker,codex-kernel,oauth-auth}`、`share/wr
 |---|---|---|
 | 仓库根 `VERSION` | 人改 | 对外 semver，和 tag 对齐 |
 | git tag `v*` | 人打 | 触发 Release 工作流 |
-| `package.json` `"version"` | 人改 | 和 `VERSION` 相同 |
-| `VERSION.txt` artifact | `.github/workflows/version.yml` 在 main 推送后 | 当时 `GITHUB_SHA` 前 7 位，给人对照部署，**不会**写回 git |
+| Actions run 的 commit SHA | GitHub | 对照源码与构建；不再单独上传 `VERSION.txt` |
 
-发版当天三处一起改：`VERSION`、`package.json`、[CHANGELOG.md](../CHANGELOG.md)，再打 annotated tag。`Dockerfile` 把 `VERSION` 和 `CHANGELOG.md` 拷进控制面镜像，面板才能读当前版本。一键脚本 `deploy/install.sh` 按 GitHub Release tag 升级，不改这三个文件。
+`VERSION` 是唯一应用版本来源；`package.json` / lockfile 不再重复记录版本。发版当天改 `VERSION` 和 [CHANGELOG.md](../CHANGELOG.md)，再打 annotated tag。`Dockerfile` 把这两个文件拷进控制面镜像，面板才能读当前版本。一键脚本 `deploy/install.sh` 按 GitHub Release tag 升级，不改版本文件。
 
 ## 打一个 Release
 
@@ -32,6 +31,10 @@ git push origin v1.2.22
 | `kin-codex-kernel` | Codex 槽；仓内预编译 |
 | `kin-oauth-auth` | OAuth / Setup Token 换票服务二进制；源码不随部署上传 |
 没有 tag、只点 workflow_dispatch 时，产物进 artifact，不会建 Release。
+
+控制面镜像下载同一轮 `linux-amd64` artifact，把新编译的 `kin-worker` / `kin-egress` 放入镜像，不使用仓内旧 Go 副本。artifact 保留 7 天，正式 Release assets 不受此期限影响。
+
+槽位 OS 镜像由 `.github/workflows/guest-images.yml` 独立发布：main 上 `docker/kin-os/` 或该 workflow 有变化时触发，也可手动运行。四种系统并行构建，各用独立缓存；普通应用发版不再重复构建槽位 OS 镜像。
 
 装到机器上（Compose 部署可跳过，仓内 `bin/` 已有同名文件）：
 
@@ -85,7 +88,7 @@ npm run test:web          # 要先 pnpm -C web install
 node --check src/server.mjs
 ```
 
-CI（`.github/workflows/test.yml`）在 push / PR 上跑：Node unit、Go、预编译 kernel ELF 检查、web 测试和构建。
+CI（`.github/workflows/test.yml`）在 main push / PR 上运行，也可手动触发：Node 格式、源码及脚本语法与 unit；`worker/` 和 `api-kernel/` 的 gofmt、race test、vet 和命令编译；全部部署 ELF 的 linux amd64 检查与主 kernel / wrap 副本一致性；web 格式、测试、类型检查和构建。Node 22、Go 1.25、pnpm 10 与部署要求一致，依赖缓存分别以对应 lockfile / `go.sum` 为键。
 
 ## 升级一台已部署的机
 

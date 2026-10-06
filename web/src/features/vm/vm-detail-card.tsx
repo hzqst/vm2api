@@ -81,7 +81,8 @@ function CardBody({ vm, accounts }: { vm: Vm; accounts?: UsageAccountRow[] }) {
   const tier = claudeTier(vm)
   const blocked = refreshBlockedReason(vm)
   const restricted = restrictionTitle(vm)
-  const inflight = Number(vm.inflight) || Number(vm.session_active) || 0
+  const inflight = Number(vm.inflight) || 0
+  const queued = Number(vm.queue_depth) || 0
   return (
     <>
       <div className='flex flex-wrap items-center gap-1.5'>
@@ -94,6 +95,10 @@ function CardBody({ vm, accounts }: { vm: Vm; accounts?: UsageAccountRow[] }) {
         <span className='text-xs text-muted-foreground'>
           {vmRunning(vm) ? '运行' : '停止'}
           {inflight > 0 ? ` · 在飞 ${inflight}` : ''}
+          {vm.seats_max != null
+            ? ` · 席位 ${Number(vm.seats_used) || 0}/${vm.seats_max}`
+            : ''}
+          {queued > 0 ? ` · 排队 ${queued}` : ''}
         </span>
         <div className='ms-auto flex items-center gap-1.5 text-xs text-muted-foreground'>
           调度

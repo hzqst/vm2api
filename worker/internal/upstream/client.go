@@ -211,6 +211,14 @@ func (c *Client) Get(ctx context.Context, path string, headers map[string]string
 	return c.do(ctx, http.MethodGet, path, nil, headers, credentialValue)
 }
 
+func (c *Client) Post(ctx context.Context, path string, payload []byte, headers map[string]string) (*Response, error) {
+	credentialValue, err := c.ensureCredential(ctx, false)
+	if err != nil {
+		return nil, err
+	}
+	return c.do(ctx, http.MethodPost, path, payload, headers, credentialValue)
+}
+
 func (c *Client) ensureCredential(ctx context.Context, force bool) (credential.Credential, error) {
 	if c.Refresher != nil {
 		// Sole refresh manager. Do not add a parallel ticker or Node-side token grant.

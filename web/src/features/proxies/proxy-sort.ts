@@ -33,6 +33,12 @@ export function proxyHostText(prx: VmProxySnap): string {
   return prx.port == null ? `${endpoint}:?` : endpoint
 }
 
+/** 带代理名称的地址：`名称 · host:port`；没名称就退回纯地址。 */
+export function proxyLabel(prx: VmProxySnap): string {
+  const name = prx.label?.trim()
+  return name ? `${name} · ${proxyHostText(prx)}` : proxyHostText(prx)
+}
+
 /**
  * 网关 `bind()` 只拒绝「已禁用或 dead」；`fail` 仍可绑（连续失败未到阈值），
  * 所以这里不能直接用 `proxyIsInvalid()`。
@@ -88,7 +94,7 @@ export function proxyOptionLabel(
   const lat = prx.latency_ms != null ? `${prx.latency_ms}ms` : '—'
   const used = proxyBoundIds(prx).length
   const limit = proxyBindLimit(prx, poolBindLimit)
-  return `${proxyHostText(prx)} · ${proxyStatusLabel(prx)} ${lat} · ${used}/${limit}`
+  return `${proxyLabel(prx)} · ${proxyStatusLabel(prx)} ${lat} · ${used}/${limit}`
 }
 
 /**
@@ -226,7 +232,7 @@ export function proxyInFilter(
 }
 
 /**
- * 搜索命中：地址、绑定槽位名、出口地理。账密不在列表响应里，天然搜不到。
+ * 搜索命中：地址、代理名称、绑定槽位名、出口地理。账密不在列表响应里，天然搜不到。
  * `query` 需已 trim + 小写。
  */
 export function proxyMatchesQuery(
@@ -237,6 +243,7 @@ export function proxyMatchesQuery(
   if (!query) return true
   const hay = [
     proxyHostText(prx),
+    prx.label,
     ...proxyBoundIds(prx).flatMap((id) => [id, vmName(id)]),
     prx.geo?.country,
     prx.geo?.country_code,

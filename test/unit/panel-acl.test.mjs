@@ -14,8 +14,10 @@ const serverSrc = [
   fs.readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../src/server.mjs'), 'utf8'),
 ].join('\n')
 
-test('user sees vm / proxies / keys / billing / logs', () => {
-  assert.deepEqual(viewsForRole('user'), ['vm', 'proxies', 'keys', 'billing', 'logs'])
+test('user sees vm / proxies / keys / billing / logs / statistics', () => {
+  assert.deepEqual(viewsForRole('user'), ['vm', 'proxies', 'keys', 'billing', 'logs', 'statistics'])
+  assert.deepEqual(viewsForRole('super'), ['overview', 'cluster', 'usage', 'logs', 'statistics', 'vm'])
+  assert.equal(canViewPage('admin', 'statistics'), true)
   assert.equal(canViewPage('user', 'vm'), true)
   assert.equal(canViewPage('user', 'overview'), false)
   assert.equal(canViewPage('super', 'vm'), true)
@@ -48,6 +50,26 @@ test('user can manage owned vm/proxy/key surfaces and nothing else', () => {
   assert.equal(authorizePanelRoute('GET', '/api/panel/database/metrics', 'user').ok, false)
   assert.equal(authorizePanelRoute('GET', '/api/panel/version', 'user').ok, false)
   assert.equal(authorizePanelRoute('POST', '/api/panel/update', 'user').ok, false)
+})
+
+test('usage-logs and statistics are read-only for user and super', () => {
+  const paths = [
+    '/api/panel/usage-logs',
+    '/api/panel/usage-logs/summary',
+    '/api/panel/usage-logs/filter-options',
+    '/api/panel/usage-logs/session-suggestions',
+    '/api/panel/usage-logs/active-sessions',
+    '/api/panel/usage-logs/overview',
+    '/api/panel/statistics',
+    '/api/panel/statistics/leaderboard',
+  ]
+  for (const role of ['user', 'super']) {
+    for (const p of paths) {
+      assert.equal(authorizePanelRoute('GET', p, role).ok, true, `${role} GET ${p}`)
+      assert.equal(authorizePanelRoute('POST', p, role).ok, false, `${role} POST ${p}`)
+    }
+    assert.equal(authorizePanelRoute('GET', '/api/panel/usage-logs/other', role).ok, false)
+  }
 })
 
 test('super can schedule VMs but cannot touch credentials or delete', () => {

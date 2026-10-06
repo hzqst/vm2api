@@ -15,7 +15,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from '@/components/ui/popover'
-import { proxyHostText } from './proxy-sort'
+import { proxyLabel } from './proxy-sort'
 
 /**
  * 给一条代理挑槽位。选中即绑定 —— 挑选本身就是明确动作，不再要求二次点「绑定」。
@@ -111,7 +111,7 @@ export function ProxyBindPicker({
                     >
                       <span className='truncate'>{v.name || v.id}</span>
                       <span className='field-host ms-auto max-w-[45%] shrink-0 truncate text-[11px] text-muted-foreground'>
-                        {from ? proxyHostText(from) : ''}
+                        {from ? proxyLabel(from) : ''}
                       </span>
                     </CommandItem>
                   )

@@ -15,7 +15,7 @@ import {
   proxyBindable,
   proxyBoundIds,
   proxyHealthKey,
-  proxyHostText,
+  proxyLabel,
   proxyInFilter,
 } from './proxy-sort'
 import { PROXY_HEALTH_SOLID } from './proxy-tone'
@@ -301,7 +301,7 @@ function SeatReadout({
             style={{ backgroundColor: PROXY_HEALTH_SOLID[proxyHealthKey(p)] }}
           />
           <span className='field-host truncate text-foreground'>
-            {proxyHostText(p)}
+            {proxyLabel(p)}
           </span>
           <span className='shrink-0 tabular-nums'>
             {proxyBoundIds(p).length}/{proxyBindLimit(p, poolLimit)}

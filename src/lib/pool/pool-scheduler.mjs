@@ -1,3 +1,4 @@
+import { EventEmitter } from 'node:events'
 import { getVm, listVms, setVmSchedulable } from '../vm/vm-registry.mjs'
 import { vmCliHomePath, vmJsonPath } from '../vm/execution-context.mjs'
 import {
@@ -208,7 +209,7 @@ function makeAbortError(message = 'Selection cancelled') {
   return Object.assign(new Error(message), { code: 'selection_cancelled' })
 }
 
-export class PoolScheduler {
+export class PoolScheduler extends EventEmitter {
   constructor({
     projectRoot,
     stickyRouter = null,
@@ -217,6 +218,9 @@ export class PoolScheduler {
     workerHealth = null,
     config = {},
   } = {}) {
+    super()
+    // One 'change' listener per open panel seat stream.
+    this.setMaxListeners(100)
     this.projectRoot = projectRoot
     this.stickyRouter = stickyRouter
     this.accountQuota = accountQuota
@@ -411,6 +415,7 @@ export class PoolScheduler {
           signal,
           deadline: sliceDeadline,
           accountId: waitPlan.accountId,
+          vmId: waitPlan.vmId,
           sticky: waitPlan.sticky,
           stickyKey,
         })
@@ -474,6 +479,7 @@ export class PoolScheduler {
         windowKey: candidateWindow,
         borrow: !!conversationWindow && !claimWindow,
         skipSessionSlot,
+        sessionKey,
       })
       if (!eligibility.ok) continue
       const maxConcurrency = this.effectiveMaxConcurrency(
@@ -502,6 +508,7 @@ export class PoolScheduler {
         slotHeldBusy: skipSessionSlot
           ? false
           : this.slotInflight(summary.id, this.assignedSlot(summary.id, sessionKey)),
+        slotOwned: skipSessionSlot ? false : this.ownsBusySlot(summary.id, sessionKey),
         usedSlots: this.usedSlotCount(summary.id),
         loadRatio: (inflight + this.waiterCount(accountId)) / maxConcurrency,
         lastUsedAt: this.lastUsed.get(accountId) || state?.last_used_at || 0,
@@ -527,6 +534,7 @@ export class PoolScheduler {
     windowKey = null,
     borrow = false,
     skipSessionSlot = false,
+    sessionKey = null,
   }) {
     // sub2api IsSchedulable: rate_limit_reset_at / overload_until gate before any
     // passive Extra reading or health hop. Pins are diagnostics and still reach the slot.
@@ -706,7 +714,9 @@ export class PoolScheduler {
     }
 
     if (circuitProbeUntil) markWait('circuit_probe', circuitProbeUntil)
-    if (!skipSessionSlot && this.usedSlotCount(vm.id) >= sessionSlots) markWait('session_slots_full')
+    if (!skipSessionSlot && this.usedSlotCount(vm.id) >= sessionSlots && !this.ownsBusySlot(vm.id, sessionKey)) {
+      markWait('session_slots_full')
+    }
     if (inflight >= maxConcurrency) markWait('concurrency_limit')
     const fableCap = Number(this.config.fable_max_per_account)
     if (isFableModel(modelKey) && Number.isFinite(fableCap) && fableCap > 0) {
@@ -1161,44 +1171,62 @@ export class PoolScheduler {
     const inflight = this.vmSlots.get(String(vmId || ''))?.inflight
     if (!inflight) return false
     for (const held of inflight.values()) {
-      if (held === index) return true
+      if (held.index === index) return true
     }
     return false
   }
 
+  /** Seats, not requests: concurrent holds of one session share its index. */
   usedSlotCount(vmId) {
-    return this.vmSlots.get(String(vmId || ''))?.inflight?.size || 0
+    const inflight = this.vmSlots.get(String(vmId || ''))?.inflight
+    if (!inflight?.size) return 0
+    const seats = new Set()
+    for (const held of inflight.values()) seats.add(held.index)
+    return seats.size
+  }
+
+  /** This session's preferred seat is busy with its own in-flight request. */
+  ownsBusySlot(vmId, sessionKey) {
+    const key = String(sessionKey || '')
+    if (!key) return false
+    const book = this.vmSlots.get(String(vmId || ''))
+    const preferred = book?.preferred?.get(key)
+    if (!Number.isInteger(preferred)) return false
+    for (const held of book.inflight.values()) {
+      if (held.index === preferred && held.key === key) return true
+    }
+    return false
   }
 
   /**
    * VM is the callable atom. session_slots are seats inside that VM: a Node
-   * accounting of concurrent hops, not a kernel native slot id. A session
-   * keeps its seat index as the next decision, and that seat still counts
-   * as busy while a request holds it.
+   * accounting of concurrent sessions, not a kernel native slot id. A session
+   * keeps its seat index as the next decision; further concurrent requests of
+   * the same session ride that seat without taking another. Per-request
+   * concurrency is bounded by maxConcurrency in reserve(), not here.
    */
   acquireSlot(vmId, sessionKey, cap) {
     const limit = Number(cap) || 0
     if (limit <= 0) return null
     const book = this._slotBook(vmId)
-    if (book.inflight.size >= limit) return null
     const key = String(sessionKey || '')
     const preferred = key ? book.preferred.get(key) : null
-    const busy = new Set(book.inflight.values())
-    const ownsBusySeat =
-      Number.isInteger(preferred) &&
-      busy.has(preferred) &&
-      [...book.inflight.keys()].some((hold) => String(hold).startsWith(`live:${key}:`))
+    const busy = new Set()
+    for (const held of book.inflight.values()) busy.add(held.index)
     let index
-    if (Number.isInteger(preferred) && (!busy.has(preferred) || ownsBusySeat)) {
+    if (Number.isInteger(preferred) && (!busy.has(preferred) || this.ownsBusySlot(vmId, key))) {
+      if (!busy.has(preferred) && busy.size >= limit) return null
       index = preferred
     } else {
+      if (busy.size >= limit) return null
       index = 0
       while (index < limit && busy.has(index)) index += 1
       if (index >= limit) return null
       if (key) book.preferred.set(key, index)
     }
     const holdKey = `live:${key || 'anon'}:${index}:${Date.now()}:${Math.random().toString(16).slice(2)}`
-    book.inflight.set(holdKey, index)
+    book.inflight.set(holdKey, { index, key })
+    this.emit('change')
     return { index, holdKey, ephemeral: true, created: index !== preferred }
   }
 
@@ -1246,8 +1274,9 @@ export class PoolScheduler {
     const id = String(vmId || '')
     const book = this.vmSlots.get(id)
     if (!book || !holdKey) return
-    book.inflight.delete(String(holdKey))
+    const removed = book.inflight.delete(String(holdKey))
     if (!book.inflight.size && !book.preferred.size) this.vmSlots.delete(id)
+    if (removed) this.emit('change')
   }
 
   markSuccess(candidate, { workerStatus = null, countUsage = true } = {}) {
@@ -1345,7 +1374,7 @@ export class PoolScheduler {
     const seats = Number(candidate.sessionSlots) || 0
     const conc = Number(candidate.maxConcurrency) || 0
     const usedSlots = Number(candidate.usedSlots) || 0
-    if (!candidate.skipSessionSlot && seats > 0 && usedSlots >= seats) return false
+    if (!candidate.skipSessionSlot && seats > 0 && usedSlots >= seats && !candidate.slotOwned) return false
     if (conc > 0 && inflight >= conc) return false
     if (!candidate.busy) return true
     return candidate.waitReason === 'slot_busy'
@@ -1410,7 +1439,7 @@ export class PoolScheduler {
     return null
   }
 
-  waitForCapacity({ signal, deadline, stickyKey, accountId = null, sticky = false } = {}) {
+  waitForCapacity({ signal, deadline, stickyKey, accountId = null, vmId = null, sticky = false } = {}) {
     const bucketId = String(accountId || stickyKey || '_pool')
     if (this.waiterCount(bucketId) >= this.maxWaiters()) {
       throw Object.assign(new Error('Account pool wait queue is full'), {
@@ -1435,15 +1464,21 @@ export class PoolScheduler {
         cleanup()
         reject(makeAbortError())
       }
+      let left = false
       const cleanup = () => {
         clearTimeout(timer)
         signal?.removeEventListener?.('abort', onAbort)
         const live = this.waiters.get(bucketId)
         live?.delete(id)
         if (live && live.size === 0) this.waiters.delete(bucketId)
+        // notifyCapacity() detaches entries before waking them; count the exit once.
+        if (left) return
+        left = true
+        this.emit('change')
       }
       bucket.set(id, {
         sticky: !!sticky,
+        vmId: vmId ? String(vmId) : null,
         wake: () => {
           cleanup()
           const jitter = stickyKey ? Math.floor(Math.random() * 20) : 0
@@ -1451,6 +1486,7 @@ export class PoolScheduler {
           else finish(true)
         },
       })
+      this.emit('change')
       if (signal?.aborted) onAbort()
       else signal?.addEventListener?.('abort', onAbort, { once: true })
     })
@@ -1619,6 +1655,25 @@ export class PoolScheduler {
       inflight_family: family,
       waiters: this.waiterSnapshot(),
       health_cache: Object.fromEntries([...this.healthCache].map(([id, entry]) => [id, entry.value])),
+      seats: this.seatSnapshot(),
     }
+  }
+
+  /** Live seat books and queued waiters per VM, for panel rows and the seat stream. */
+  seatSnapshot() {
+    const seats = {}
+    const row = (vmId) => (seats[vmId] ||= { seats_used: 0, holds: 0, queue_depth: 0 })
+    for (const [vmId, book] of this.vmSlots) {
+      if (!book.inflight.size) continue
+      const entry = row(vmId)
+      entry.seats_used = this.usedSlotCount(vmId)
+      entry.holds = book.inflight.size
+    }
+    for (const bucket of this.waiters.values()) {
+      for (const entry of bucket.values()) {
+        if (entry?.vmId) row(entry.vmId).queue_depth += 1
+      }
+    }
+    return seats
   }
 }

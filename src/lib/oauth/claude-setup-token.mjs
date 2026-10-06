@@ -1,6 +1,6 @@
 /**
- * Official `claude setup-token` on a slot: start Claude Code, extract the
- * CAI authorize URL, feed the pasted code, persist the 1-year oat (no refresh).
+ * `claude setup-token` on a slot via its cli-node: start Claude Code, extract
+ * the CAI authorize URL, feed the pasted code, persist the 1-year oat (no refresh).
  */
 import { spawn, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -9,7 +9,8 @@ import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { containerName } from '../vm/vm-runtime.mjs'
 import { AUTH_SCHEME_BEARER } from './auth-scheme.mjs'
-import { officialCcUidGid, officialCcHome, officialCcBin } from './official-cc-bootstrap.mjs'
+import { officialCcUidGid, officialCcHome, officialCcHostCli } from './official-cc-bootstrap.mjs'
+import { CONTAINER_CLI_NODE_BIN } from '../vm/slot-engine.mjs'
 
 export const SETUP_TOKEN_SESSION_TTL_MS = 30 * 60 * 1000
 export const SETUP_TOKEN_SOURCE = 'claude-setup-token'
@@ -96,8 +97,8 @@ export function officialSetupTokenToOauth(token, extra = {}) {
     throw fail('setup_token_invalid', '需要官方 claude setup-token 打印的一年期 sk-ant-oat01-…')
   }
   return {
-    type: 'setup-token',
-    mode: 'setup-token',
+    type: 'official-setup-token',
+    mode: 'official-setup-token',
     access_token: access,
     refresh_token: '',
     expires_at: Date.now() + 365 * 24 * 60 * 60 * 1000,
@@ -186,7 +187,7 @@ export async function stopClaudeSetupTokenSession(projectRoot, vmId) {
         containerName(vmId),
         'sh',
         '-lc',
-        "pkill -f '/home/kincli/.local/bin/claude setup-token' >/dev/null 2>&1 || true",
+        `pkill -f '${CONTAINER_CLI_NODE_BIN} setup-token' >/dev/null 2>&1 || true`,
       ],
       {
         stdio: 'ignore',
@@ -229,12 +230,9 @@ async function waitFor(fn, timeoutMs, intervalMs = 200) {
 }
 
 function ensureCli(projectRoot, vmId) {
-  const home = officialCcHome(projectRoot, vmId)
-  const bin = officialCcBin(home)
-  if (!fs.existsSync(bin)) {
-    throw fail('official_cli_missing', '当前槽没有官方 Claude Code，请先完成官方初装')
+  if (!fs.existsSync(officialCcHostCli(officialCcHome(projectRoot, vmId)))) {
+    throw fail('cli_node_missing', '当前槽没有 cli-node，请先同步 wrap-cli')
   }
-  return { home, bin }
 }
 
 export async function startClaudeSetupTokenSession({ vm, projectRoot, force = false } = {}) {
@@ -282,6 +280,7 @@ export async function startClaudeSetupTokenSession({ vm, projectRoot, force = fa
       KIN_CONTAINER: containerName(vmId),
       KIN_UID: String(ids.uid),
       KIN_GID: String(ids.gid),
+      KIN_CLI_BIN: CONTAINER_CLI_NODE_BIN,
       KIN_SESSION_DIR: dir,
       KIN_SESSION_ID: sessionId,
       KIN_VM_ID: vmId,

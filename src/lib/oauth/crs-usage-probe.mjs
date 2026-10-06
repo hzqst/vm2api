@@ -240,8 +240,8 @@ export function shouldProbeFable({ fable = {}, quota = {}, storedTier = null, no
 
 export function usageErrorText(probe = {}) {
   const raw = probe.usage_error || probe.error || probe.message || ''
-  if (raw && typeof raw === 'object') return String(raw.message || raw.type || raw.code || '')
-  return String(raw || '')
+  const candidates = raw && typeof raw === 'object' ? [raw.message, raw.type, raw.code] : [raw]
+  return candidates.find((value) => typeof value === 'string' && value.trim()) || ''
 }
 
 export function parseUsageRetryAfterMs(headers = {}, body = {}) {

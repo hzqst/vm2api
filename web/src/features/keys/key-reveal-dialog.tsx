@@ -1,4 +1,6 @@
+import { useRef } from 'react'
 import { toast } from 'sonner'
+import { copyText } from '@/lib/clipboard'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -23,16 +25,27 @@ export function KeyRevealDialog({
   onClose: () => void
 }) {
   const plain = value?.key || ''
+  const fieldRef = useRef<HTMLTextAreaElement>(null)
 
-  function copy() {
+  function selectKey() {
+    fieldRef.current?.focus()
+    fieldRef.current?.select()
+  }
+
+  async function copy() {
     if (!plain) {
       toast.error('没有可复制的密钥')
       return
     }
-    void navigator.clipboard
-      .writeText(plain)
-      .then(() => toast.success('已复制明文密钥，请妥善保存'))
-      .catch(() => toast.error('复制失败'))
+    if (await copyText(plain)) {
+      toast.success('已复制明文密钥，请妥善保存')
+      return
+    }
+    // Last resort works everywhere: leave the key selected for Ctrl/⌘+C.
+    selectKey()
+    toast.error(
+      '浏览器拒绝写入剪贴板，已选中密钥，请按 Ctrl+C（Mac 为 ⌘+C）复制'
+    )
   }
 
   return (
@@ -51,13 +64,16 @@ export function KeyRevealDialog({
             '明文仅在此弹层展示'
           )}
         </p>
-        <button
-          type='button'
-          className='w-full cursor-pointer rounded-md border bg-muted/40 p-3 text-left font-mono text-sm break-all'
-          onClick={copy}
-        >
-          {plain}
-        </button>
+        <textarea
+          ref={fieldRef}
+          readOnly
+          rows={2}
+          aria-label='明文密钥'
+          spellCheck={false}
+          value={plain}
+          onFocus={(e) => e.currentTarget.select()}
+          className='w-full resize-none rounded-md border bg-muted/40 p-3 font-mono text-sm break-all outline-none focus-visible:ring-2 focus-visible:ring-ring'
+        />
         <p className='text-sm text-destructive'>
           关闭后列表仍只显示脱敏片段。可还原的密钥之后还能再点「查看」或「复制」。
         </p>
@@ -65,7 +81,7 @@ export function KeyRevealDialog({
           <Button variant='outline' onClick={onClose}>
             关闭
           </Button>
-          <Button onClick={copy}>复制</Button>
+          <Button onClick={() => void copy()}>复制</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

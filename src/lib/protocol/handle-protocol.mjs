@@ -43,7 +43,9 @@ import {
   healthUnavailableError,
 } from '../admin/health-probe.mjs'
 import { resolveInferenceBackend, runApiInference } from '../pool/api-protocol.mjs'
+import { classifyClaudeRequestPurpose, prepareClassifierBody, classifierRequestSummary } from './request-purpose.mjs'
 import { summarizeBody, redactHeaders, presentedApiKeyForLog } from '../admin/request-log.mjs'
+import { reasoningEffortOf, sessionIdForLog } from './log-fields.mjs'
 import { ownerScopeFromRequest } from '../admin/resource-owner.mjs'
 import {
   resolveInferenceEngine,
@@ -74,9 +76,11 @@ import { touchTelemetrySession } from '../vm/worker-telemetry.mjs'
 import {
   applyCrsIdentityReplace,
   extractCallerSession,
+  extractFirstUserIdentity,
   outboundSessionMode,
   resolveInboundIdentity,
   resolveOutboundSessionId,
+  sessionIdFromOutboundBody,
   sessionContextDiscriminator,
 } from '../identity/identity-rewrite.mjs'
 import {
@@ -193,6 +197,16 @@ export function createHandleProtocol(deps) {
     const summary = formatPoolSelectionSummary(details)
     logBag.error_code = originalCode || mapped.body?.error?.code
     logBag.error_message = summary || originalMessage || mapped.body?.error?.message || null
+    if (logBag.classifier) {
+      logBag.classifier.error = {
+        status: result?.status || null,
+        type: result?.body?.error?.type || null,
+        code: originalCode,
+        upstream_code: result?.body?.error?.upstream_code || null,
+        request_id: result?.body?.error?.request_id || result?.headers?.['request-id'] || null,
+        retry_after: result?.body?.error?.retry_after || result?.headers?.['retry-after'] || null,
+      }
+    }
     // Only a known wake time (cooldown / RPM / window reset) earns a Retry-After.
     if (mapped.body?.error?.code === 'pool_overloaded' && Number(result?.retryAfterSec) > 0) {
       mapped.retryAfterSec = Number(result.retryAfterSec)
@@ -310,6 +324,7 @@ export function createHandleProtocol(deps) {
     want1m = false,
     preserveCacheBreakpoints = false,
     cliHop = false,
+    requestContext = null,
     routing = {},
     noGoFallback = false,
   }) {
@@ -327,6 +342,7 @@ export function createHandleProtocol(deps) {
       routing,
       preserveCacheBreakpoints,
       cliHop,
+      requestContext,
       slotWaitMs: candidate.slotWaitMs,
       noGoFallback,
       ensureCredential: (exec) => ensureWorkerCredential(exec),
@@ -345,6 +361,8 @@ export function createHandleProtocol(deps) {
   async function handleProtocol(req, res, protocol, pathName) {
     const logCtx = requestLog.start(req, { protocol, pathName })
     res._kinRequestId = logCtx.request_id
+    // Registers its own 'finish' listener first so status/headers are final when finish() runs.
+    requestLog.tapResponse?.(logCtx, res)
     const logBag = {
       protocol,
       model: null,
@@ -372,6 +390,9 @@ export function createHandleProtocol(deps) {
       upstream_model: null,
       first_token_ms: null,
       stop_reason: null,
+      session_id: null,
+      reasoning_effort: null,
+      outbound_session_id: null,
     }
     res.on('finish', () => {
       try {
@@ -419,6 +440,8 @@ export function createHandleProtocol(deps) {
     logBag.requested_model = inbound?.model || null
     logBag.stream = isClientStream(inbound, req.headers)
     logBag.has_tools = Array.isArray(inbound?.tools) && inbound.tools.length > 0
+    logBag.session_id = sessionIdForLog(extractCallerSession({ inbound, headers: req.headers }))
+    logBag.reasoning_effort = reasoningEffortOf(inbound)
 
     const fp = fingerprintRequest(req, inbound)
     const healthDecision = getHealthMonitor()?.decide?.(req.headers, inbound, protocol)
@@ -578,6 +601,7 @@ export function createHandleProtocol(deps) {
               },
             },
             projectRoot: cfg.paths.project,
+            captureOutbound: logCtx.capture_outbound === true,
             ...codexSticky,
             ...codexLimits,
           })
@@ -594,6 +618,7 @@ export function createHandleProtocol(deps) {
           writeSSEHeaders,
           routing,
           projectRoot: cfg.paths.project,
+          captureOutbound: logCtx.capture_outbound === true,
           ...codexSticky,
           ...codexLimits,
         })
@@ -643,7 +668,23 @@ export function createHandleProtocol(deps) {
     else stats.convert++
 
     ctx = applyIntercept(cfg.intercept.rules, 'before_upstream', { ...ctx, body: converted.claude })
-    ctx.body = applyMinMaxTokens(ctx.body, getRouting()?.compatibility?.min_max_tokens)
+    const officialTraffic =
+      isOfficialClaudeCodeTraffic(req.headers, inbound) ||
+      (detectProxiedOfficialCcFromRoutingFile(routingConfigPath) && isProxiedOfficialClaudeCode(inbound, req.headers))
+    const requestContext = classifyClaudeRequestPurpose(inbound, { officialTraffic })
+    if (requestContext) {
+      logBag.classifier = classifierRequestSummary(inbound, ctx.body, requestContext)
+      try {
+        ctx.body = prepareClassifierBody(ctx.body)
+        logBag.classifier = classifierRequestSummary(inbound, ctx.body, requestContext)
+      } catch (error) {
+        if (!error.body?.error) throw error
+        stats.errors++
+        logBag.error_code = error.body.error.code
+        logBag.error_message = error.body.error.message
+        return json(res, error.status, error.body)
+      }
+    } else ctx.body = applyMinMaxTokens(ctx.body, getRouting()?.compatibility?.min_max_tokens)
 
     if (applyDistillGuard({ req, inbound, body: ctx.body, fp, logBag, requestId: logCtx.request_id, res })) {
       return
@@ -652,11 +693,11 @@ export function createHandleProtocol(deps) {
       return
     }
     const officialClient = isOfficialClaudeClient(fp.client_class)
-    const officialTraffic =
-      isOfficialClaudeCodeTraffic(req.headers, inbound) ||
-      (detectProxiedOfficialCcFromRoutingFile(routingConfigPath) && isProxiedOfficialClaudeCode(inbound, req.headers))
     const callerSession = extractCallerSession({ inbound, body: ctx.body, headers: req.headers })
     const firstUserText = extractFirstUserText(ctx.body?.messages) || extractFirstUserText(inbound?.messages)
+    // Seed identity skips a leading <system-reminder>; firstUserText stays billing-only.
+    const firstUserIdentity =
+      extractFirstUserIdentity(ctx.body?.messages) || extractFirstUserIdentity(inbound?.messages)
     const clientDiscriminator = sessionContextDiscriminator({
       clientIp: clientIp(req),
       userAgent: req.headers['user-agent'] || '',
@@ -666,7 +707,7 @@ export function createHandleProtocol(deps) {
     const sessionContext = {
       officialClient: officialTraffic,
       clientDiscriminator,
-      firstUserText,
+      firstUserIdentity,
       mode: sessionMode,
       routing: getRouting(),
     }
@@ -741,7 +782,7 @@ export function createHandleProtocol(deps) {
     const openaiCompat = String(protocol || '').startsWith('openai.')
     syncClaudeKernelConfigsFromFile(cfg.paths?.project, routingConfigPath)
     const personaMode = personaModeFromRoutingFile(routingConfigPath)
-    if (!officialClient && !officialTraffic) {
+    if (!requestContext && !officialClient && !officialTraffic) {
       ctx.body = ensureClaudeWebSearch(ctx.body, {
         enabled: shouldInjectClaudeWebSearch({
           officialClient: officialTraffic,
@@ -752,20 +793,23 @@ export function createHandleProtocol(deps) {
       })
     }
     const personaIn = ctx.body
-    ctx.body = applyCrsUnofficialPersona(ctx.body, {
-      officialClient: officialTraffic,
-      routingFile: routingConfigPath,
-      headers: req.headers,
-      sessionId: outboundSessionId,
-      model: ctx.body?.model,
-      cliVersion: OFFICIAL_CLI_VERSION,
-    })
-    let personaHideTokens = personaHideForUnofficial(personaIn, ctx.body, {
-      officialClient: officialTraffic,
-      mode: personaMode,
-      hides: personaHidesUsageFromRoutingFile(routingConfigPath),
-      standing: standingUsageFromRoutingFile(routingConfigPath),
-    })
+    if (!requestContext)
+      ctx.body = applyCrsUnofficialPersona(ctx.body, {
+        officialClient: officialTraffic,
+        routingFile: routingConfigPath,
+        headers: req.headers,
+        sessionId: outboundSessionId,
+        model: ctx.body?.model,
+        cliVersion: OFFICIAL_CLI_VERSION,
+      })
+    let personaHideTokens = requestContext
+      ? 0
+      : personaHideForUnofficial(personaIn, ctx.body, {
+          officialClient: officialTraffic,
+          mode: personaMode,
+          hides: personaHidesUsageFromRoutingFile(routingConfigPath),
+          standing: standingUsageFromRoutingFile(routingConfigPath),
+        })
 
     if (inferenceBackend === 'api') {
       const managedKey = req.apiKeyRecord || null
@@ -812,6 +856,7 @@ export function createHandleProtocol(deps) {
           timeoutMs: cfg.limits.upstream_timeout_ms,
           personaHideTokens,
           cacheTtl,
+          requestContext,
           converters: {
             createClaudeMessageAssembler,
             applyClaudeSSELineToMessage,
@@ -833,6 +878,8 @@ export function createHandleProtocol(deps) {
           } catch {}
         }
       }
+      // The api backend forwards the converted body untouched: its session is the outbound one.
+      logBag.outbound_session_id = sessionIdForLog(sessionIdFromOutboundBody(ctx.body) || logBag.session_id)
       logBag.account_id = result?.accountId || null
       logBag.final_account_id = result?.accountId || null
       logBag.upstream_status = result?.status ?? null
@@ -971,7 +1018,7 @@ export function createHandleProtocol(deps) {
             const repaired = extra.repaired === true
             const resolvedPersona = resolveSlotPersonaPreset(selected.vm, routingNow)
             const cliAppliesNodePersona =
-              !officialTraffic && resolvedPersona !== 'zero' && resolvedPersona !== 'official_full'
+              !requestContext && !officialTraffic && resolvedPersona !== 'zero' && resolvedPersona !== 'official_full'
             if (cliAppliesNodePersona) {
               hopBody = applyCrsUnofficialPersona(structuredClone(personaIn), {
                 officialClient: false,
@@ -995,6 +1042,7 @@ export function createHandleProtocol(deps) {
               stream: upstreamStream,
               repaired,
               cacheTtl: requestedCacheTtl,
+              requestContext,
             })
             hopBody = await materializeRemoteImageSources(hopBody)
             if (identity) {
@@ -1011,12 +1059,13 @@ export function createHandleProtocol(deps) {
             }
             preserveCacheBreakpoints = true
             cacheTtl = requestedCacheTtl
-            if (getRouting()?.logging?.mode === 'debug') logBag.outbound_body = hopBody
+            if (logCtx.capture_outbound) logBag.outbound_body = hopBody
 
             // 0注入 hides CLI billing + env and the standing Node left in the leftover.
             // 官方提示词 must show real usage.
-            const cliHide =
-              resolvedPersona === 'official'
+            const cliHide = requestContext
+              ? 0
+              : resolvedPersona === 'official'
                 ? 0
                 : personaHideForCliZero(personaIn, hopBody, {
                     officialClient: officialTraffic,
@@ -1042,11 +1091,12 @@ export function createHandleProtocol(deps) {
               requestId: logCtx.request_id,
             })
             noteCachePrefix(selected, attemptSessionId, hopBody)
-            return { body: hopBody, meta: { toolNames: {}, sessionId: attemptSessionId, cliHop: true } }
+            logBag.outbound_session_id = sessionIdForLog(sessionIdFromOutboundBody(hopBody) || attemptSessionId)
+            return { body: hopBody, meta: { toolNames: {}, sessionId: attemptSessionId, cliHop: true, requestContext } }
           }
 
           cacheTtl = requestedCacheTtl
-          if (!officialTraffic && modeOverride) {
+          if (!requestContext && !officialTraffic && modeOverride) {
             const rewritten = applyCrsUnofficialPersona(structuredClone(personaIn), {
               officialClient: officialTraffic,
               routingFile: routingConfigPath,
@@ -1070,6 +1120,7 @@ export function createHandleProtocol(deps) {
           logBag.official_cc_inference = 'http'
           logBag.provider = 'anthropic_api'
           const prepared = prepareOutboundEnvelope({
+            requestContext,
             canonicalBody: hopBody,
             inbound,
             identity,
@@ -1085,6 +1136,7 @@ export function createHandleProtocol(deps) {
             mode: sessionMode,
             clientDiscriminator,
             firstUserText,
+            firstUserIdentity,
             apiKeyId: req.apiKeyRecord?.id ?? '',
             stream: upstreamStream,
             cacheControlLimit: Number(getRouting()?.compatibility?.cache_control_limit) || 4,
@@ -1097,7 +1149,7 @@ export function createHandleProtocol(deps) {
             authScheme: isApiKeyMode(credMode) ? 'apikey' : 'oauth',
             want1m,
           })
-          if (getRouting()?.logging?.mode === 'debug') logBag.outbound_body = prepared.body
+          if (logCtx.capture_outbound) logBag.outbound_body = prepared.body
           logBag.outbound_headers = redactHeaders(prepared.headers || {})
           logBag.outbound_summary = summarizeBody(prepared.body)
           logBag.cache_continuity = describeCacheContinuity({
@@ -1111,6 +1163,7 @@ export function createHandleProtocol(deps) {
             requestId: logCtx.request_id,
           })
           noteCachePrefix(selected, attemptSessionId, prepared.body)
+          logBag.outbound_session_id = sessionIdForLog(sessionIdFromOutboundBody(prepared.body) || attemptSessionId)
           return { body: prepared.body, meta: { toolNames: prepared.toolNames, sessionId: attemptSessionId } }
         },
         callAttempt: async ({ candidate, body, attemptMeta, deliveryMode: attemptDelivery, signal, onCommit }) => {
@@ -1127,6 +1180,7 @@ export function createHandleProtocol(deps) {
               cacheTtl,
               preserveCacheBreakpoints,
               cliHop: attemptMeta?.cliHop === true,
+              requestContext: attemptMeta?.requestContext || requestContext,
               want1m,
               routing: getRouting(),
               noGoFallback: !!pinVmId,
@@ -1157,6 +1211,7 @@ export function createHandleProtocol(deps) {
               cacheTtl,
               preserveCacheBreakpoints,
               cliHop: attemptMeta?.cliHop === true,
+              requestContext: attemptMeta?.requestContext || requestContext,
               body,
               reqHeaders: req.headers,
               timeoutMs: cfg.limits.upstream_timeout_ms,

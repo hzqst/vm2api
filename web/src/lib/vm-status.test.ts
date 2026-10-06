@@ -10,6 +10,7 @@ import {
   fleetGroup,
   isRestrictedSchedule,
   poolStatus,
+  proxyNamedLabel,
   restrictionCopy,
   scheduleStateLabel,
   vmCircuit,
@@ -509,5 +510,20 @@ describe('GPT plan label follows OpenAI plan_type', () => {
     )
     expect(tone.key).toBe('codex')
     expect(tone.label).toBe('Business')
+  })
+})
+
+describe('proxyNamedLabel', () => {
+  it('shows the slot proxy name in front of the endpoint', () => {
+    expect(
+      proxyNamedLabel({ host: '127.0.0.1', port: 20881, label: '台湾彰化' })
+    ).toBe('台湾彰化 · 127.0.0.1:20881')
+  })
+
+  it('keeps the bare endpoint for unnamed or missing proxies', () => {
+    expect(proxyNamedLabel({ host: '127.0.0.1', port: 20881 })).toBe(
+      '127.0.0.1:20881'
+    )
+    expect(proxyNamedLabel(undefined)).toBe('—')
   })
 })

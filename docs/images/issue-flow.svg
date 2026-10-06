@@ -1,0 +1,174 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="900" viewBox="0 0 1280 900" role="img" aria-labelledby="t d">
+  <title id="t">vm2api Issue 提交路线图</title>
+  <desc id="d">自查、版本、复现路线、环境、日志、源码定位（可选）、脱敏、提交，随后维护者分诊、修复并发布 Release。</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1020"/>
+      <stop offset="1" stop-color="#121c38"/>
+    </linearGradient>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#cbd5e1"/>
+    </marker>
+    <marker id="arrow-amber" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#fbbf24"/>
+    </marker>
+    <style>
+      text { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans SC", sans-serif; fill: #e2e8f0; }
+      .h1 { font-size: 30px; font-weight: 700; fill: #f8fafc; }
+      .sub { font-size: 14px; fill: #94a3b8; }
+      .ct { font-size: 19px; font-weight: 700; fill: #f8fafc; }
+      .en { font-size: 12px; fill: #94a3b8; letter-spacing: .5px; }
+      .b { font-size: 13px; fill: #cbd5e1; }
+      .m { font-family: "JetBrains Mono", "Cascadia Code", Consolas, Menlo, monospace; font-size: 12px; fill: #7dd3fc; }
+      .num { font-size: 16px; font-weight: 700; fill: #0b1020; }
+      .card { fill: #151f3d; stroke-width: 2; }
+      .flow { stroke: #cbd5e1; stroke-width: 2; fill: none; }
+      .loop { stroke: #fbbf24; stroke-width: 2; stroke-dasharray: 6 5; fill: none; }
+      .note { font-size: 12px; fill: #fbbf24; }
+      .div { stroke: #26324f; stroke-width: 1; }
+    </style>
+  </defs>
+
+  <rect width="1280" height="900" rx="20" fill="url(#bg)"/>
+
+  <!-- header -->
+  <text class="h1" x="40" y="68">vm2api Issue 提交路线图</text>
+  <text class="sub" x="40" y="98">Issue Reporting Roadmap · 按顺序收集，信息齐全即可直接复现定位</text>
+  <g transform="translate(990 60)">
+    <rect x="0" y="-12" width="34" height="16" rx="4" fill="none" stroke="#38bdf8" stroke-width="2"/>
+    <text class="b" x="42" y="1">必填</text>
+    <rect x="100" y="-12" width="34" height="16" rx="4" fill="none" stroke="#94a3b8" stroke-width="2" stroke-dasharray="5 4"/>
+    <text class="b" x="142" y="1">可选</text>
+    <line class="loop" x1="196" y1="-4" x2="236" y2="-4"/>
+    <text class="b" x="242" y="1">回问</text>
+  </g>
+
+  <!-- row 1: 0 → 3 -->
+  <g transform="translate(40 130)">
+    <rect class="card" width="270" height="210" rx="14" stroke="#94a3b8"/>
+    <circle cx="32" cy="36" r="17" fill="#94a3b8"/><text class="num" x="32" y="42" text-anchor="middle">0</text>
+    <text class="ct" x="60" y="40">提交前自查</text>
+    <text class="en" x="60" y="60">PRE-CHECK</text>
+    <line class="div" x1="18" y1="80" x2="252" y2="80"/>
+    <text class="b" x="20" y="106">• 升级到最新 Release</text>
+    <text class="b" x="20" y="130">• 搜索已有 Issue，避免重复</text>
+    <text class="b" x="20" y="154">• 对照 CHANGELOG 行为变更</text>
+    <text class="b" x="20" y="178">• 一个 Issue 只写一个问题</text>
+  </g>
+  <g transform="translate(350 130)">
+    <rect class="card" width="270" height="210" rx="14" stroke="#38bdf8"/>
+    <circle cx="32" cy="36" r="17" fill="#38bdf8"/><text class="num" x="32" y="42" text-anchor="middle">1</text>
+    <text class="ct" x="60" y="40">使用的版本</text>
+    <text class="en" x="60" y="60">VERSION</text>
+    <line class="div" x1="18" y1="80" x2="252" y2="80"/>
+    <text x="20" y="106"><tspan class="b">• </tspan><tspan class="m">cat /opt/vm2api/VERSION</tspan></text>
+    <text x="20" y="130"><tspan class="b">• 镜像 </tspan><tspan class="m">docker inspect vm2api</tspan></text>
+    <text x="20" y="154"><tspan class="b">• </tspan><tspan class="m">install.sh status</tspan></text>
+    <text class="b" x="20" y="178">• 部署方式 · 升级前 → 升级后</text>
+  </g>
+  <g transform="translate(660 130)">
+    <rect class="card" width="270" height="210" rx="14" stroke="#a78bfa"/>
+    <circle cx="32" cy="36" r="17" fill="#a78bfa"/><text class="num" x="32" y="42" text-anchor="middle">2</text>
+    <text class="ct" x="60" y="40">可复现路线</text>
+    <text class="en" x="60" y="60">REPRODUCE</text>
+    <line class="div" x1="18" y1="80" x2="252" y2="80"/>
+    <text class="b" x="20" y="106">• 前置状态 + 最小操作步骤</text>
+    <text x="20" y="130"><tspan class="b">• 最小 curl，带 </tspan><tspan class="m">-D -</tspan></text>
+    <text class="b" x="20" y="154">• 期望 vs 实际 · 错误 code</text>
+    <text class="b" x="20" y="178">• 必现 / 偶发比例 / 仅一次</text>
+  </g>
+  <g transform="translate(970 130)">
+    <rect class="card" width="270" height="210" rx="14" stroke="#34d399"/>
+    <circle cx="32" cy="36" r="17" fill="#34d399"/><text class="num" x="32" y="42" text-anchor="middle">3</text>
+    <text class="ct" x="60" y="40">使用的环境</text>
+    <text class="en" x="60" y="60">VPS · PROXY · ACCOUNT</text>
+    <line class="div" x1="18" y1="80" x2="252" y2="80"/>
+    <text class="b" x="20" y="106">• VPS 厂商 · 规格 · 系统</text>
+    <text x="20" y="130"><tspan class="b">• 虚拟化 · </tspan><tspan class="m">/dev/kvm</tspan><tspan class="b"> · Docker</tspan></text>
+    <text class="b" x="20" y="154">• 代理类型 · 地区 · 是否共享</text>
+    <text class="b" x="20" y="178">• 账号类型 · 凭证 · 客户端</text>
+  </g>
+
+  <line class="flow" x1="314" y1="235" x2="344" y2="235" marker-end="url(#arrow)"/>
+  <line class="flow" x1="624" y1="235" x2="654" y2="235" marker-end="url(#arrow)"/>
+  <line class="flow" x1="934" y1="235" x2="964" y2="235" marker-end="url(#arrow)"/>
+  <line class="flow" x1="1105" y1="344" x2="1105" y2="414" marker-end="url(#arrow)"/>
+
+  <!-- row 2: 4 → 7 (right to left) -->
+  <g transform="translate(970 420)">
+    <rect class="card" width="270" height="210" rx="14" stroke="#fbbf24"/>
+    <circle cx="32" cy="36" r="17" fill="#fbbf24"/><text class="num" x="32" y="42" text-anchor="middle">4</text>
+    <text class="ct" x="60" y="40">VM / 请求日志</text>
+    <text class="en" x="60" y="60">LOGS</text>
+    <line class="div" x1="18" y1="80" x2="252" y2="80"/>
+    <text x="20" y="106"><tspan class="b">• 控制面 </tspan><tspan class="m">docker logs vm2api</tspan></text>
+    <text x="20" y="130"><tspan class="b">• 槽位 </tspan><tspan class="m">docker logs kin-NN</tspan></text>
+    <text x="20" y="154"><tspan class="b">• 请求 </tspan><tspan class="m">x-request-id</tspan><tspan class="b"> → attempts</tspan></text>
+    <text class="b" x="20" y="178">• 创建报错原文 · 时间对齐</text>
+  </g>
+  <g transform="translate(660 420)">
+    <rect class="card" width="270" height="210" rx="14" stroke="#94a3b8" stroke-dasharray="7 5"/>
+    <circle cx="32" cy="36" r="17" fill="#94a3b8"/><text class="num" x="32" y="42" text-anchor="middle">5</text>
+    <text class="ct" x="60" y="40">源码定位</text>
+    <text class="en" x="60" y="60">SOURCE · 可选</text>
+    <line class="div" x1="18" y1="80" x2="252" y2="80"/>
+    <text class="b" x="20" y="106">• 带 commit 的 permalink</text>
+    <text class="b" x="20" y="130">• 可疑逻辑与判断依据</text>
+    <text class="b" x="20" y="154">• 已验证的最小修改</text>
+    <text class="b" x="20" y="178">• 想修复：先说思路再提 PR</text>
+  </g>
+  <g transform="translate(350 420)">
+    <rect class="card" width="270" height="210" rx="14" stroke="#f87171"/>
+    <circle cx="32" cy="36" r="17" fill="#f87171"/><text class="num" x="32" y="42" text-anchor="middle">6</text>
+    <text class="ct" x="60" y="40">脱敏</text>
+    <text class="en" x="60" y="60">REDACT · 必做</text>
+    <line class="div" x1="18" y1="80" x2="252" y2="80"/>
+    <text class="b" x="20" y="106">• API Key · OAuth · sessionKey</text>
+    <text class="b" x="20" y="130">• 代理账号密码 · 公网 IP · 邮箱</text>
+    <text x="20" y="154"><tspan class="b">• 不传 </tspan><tspan class="m">.env</tspan><tspan class="b"> / </tspan><tspan class="m">vms/*.json</tspan><tspan class="b"> / DB</tspan></text>
+    <text class="b" x="20" y="178">• 泄露即作废重建凭证</text>
+  </g>
+  <g transform="translate(40 420)">
+    <rect class="card" width="270" height="210" rx="14" stroke="#22d3ee"/>
+    <circle cx="32" cy="36" r="17" fill="#22d3ee"/><text class="num" x="32" y="42" text-anchor="middle">7</text>
+    <text class="ct" x="60" y="40">提交 Issue</text>
+    <text class="en" x="60" y="60">SUBMIT</text>
+    <line class="div" x1="18" y1="80" x2="252" y2="80"/>
+    <text class="b" x="20" y="106">• New issue → Bug 报告表单</text>
+    <text class="b" x="20" y="130">• 标题：[Bug] 现象 (版本)</text>
+    <text class="b" x="20" y="154">• 长日志作为附件上传</text>
+    <text class="b" x="20" y="178">• 补充信息回到同一 Issue</text>
+  </g>
+
+  <line class="flow" x1="966" y1="525" x2="936" y2="525" marker-end="url(#arrow)"/>
+  <line class="flow" x1="656" y1="525" x2="626" y2="525" marker-end="url(#arrow)"/>
+  <line class="flow" x1="346" y1="525" x2="316" y2="525" marker-end="url(#arrow)"/>
+  <line class="flow" x1="120" y1="634" x2="120" y2="694" marker-end="url(#arrow)"/>
+
+  <!-- maintainer loop -->
+  <line class="loop" x1="250" y1="700" x2="250" y2="638" marker-end="url(#arrow-amber)"/>
+  <text class="note" x="262" y="672">信息不足 → 回问，在同一 Issue 补充</text>
+
+  <g transform="translate(40 700)">
+    <rect width="330" height="100" rx="14" fill="#14223f" stroke="#60a5fa" stroke-width="2"/>
+    <text class="ct" x="24" y="40">维护者分诊</text>
+    <text class="en" x="140" y="40">TRIAGE</text>
+    <text class="b" x="24" y="72">确认复现 · 打标签 · 必要时回问</text>
+  </g>
+  <g transform="translate(475 700)">
+    <rect width="330" height="100" rx="14" fill="#1b1f44" stroke="#a78bfa" stroke-width="2"/>
+    <text class="ct" x="24" y="40">定位修复</text>
+    <text class="en" x="120" y="40">FIX</text>
+    <text class="b" x="24" y="72">PR 关联 Issue · 补回归测试</text>
+  </g>
+  <g transform="translate(910 700)">
+    <rect width="330" height="100" rx="14" fill="#123130" stroke="#34d399" stroke-width="2"/>
+    <text class="ct" x="24" y="40">发布 Release</text>
+    <text class="en" x="160" y="40">SHIP</text>
+    <text class="b" x="24" y="72">CHANGELOG 注明 · 升级验证后关闭</text>
+  </g>
+  <line class="flow" x1="374" y1="750" x2="469" y2="750" marker-end="url(#arrow)"/>
+  <line class="flow" x1="809" y1="750" x2="904" y2="750" marker-end="url(#arrow)"/>
+
+  <text class="sub" x="640" y="856" text-anchor="middle">完整说明见仓库根目录 ISSUE_GUIDE.md · Issue 公开可见，贴出任何内容前务必脱敏</text>
+</svg>

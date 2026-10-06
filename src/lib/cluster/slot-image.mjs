@@ -75,10 +75,14 @@ export function slotPayload(projectRoot) {
       if (fs.statSync(src).isFile()) files.push({ name: `opt/kin/${WRAP_GLIBC_DIR}/${name}`, src, mode: 0o755 })
     }
   }
-  const worker = binOr('KIN_WORKER_BIN', path.join(projectRoot, 'bin', 'kin-worker'))
+  // Remote nodes require amd64 payloads, even when this control plane runs ARM64.
+  const worker = binOr('KIN_CLUSTER_WORKER_BIN', binOr('KIN_WORKER_BIN', path.join(projectRoot, 'bin', 'kin-worker')))
   requireElf(worker, 'kin-worker')
   files.push({ name: 'usr/local/bin/kin-worker', src: worker, mode: 0o755 })
-  const egress = fs.existsSync(EGRESS_BIN) ? EGRESS_BIN : path.join(projectRoot, 'bin', 'kin-egress')
+  const egress = binOr(
+    'KIN_CLUSTER_EGRESS_BIN',
+    fs.existsSync(EGRESS_BIN) ? EGRESS_BIN : path.join(projectRoot, 'bin', 'kin-egress'),
+  )
   requireElf(egress, 'kin-egress')
   files.push({ name: 'usr/local/bin/kin-egress', src: egress, mode: 0o755 })
   const codex = codexKernelBinPath() || path.join(projectRoot, 'bin', 'kin-codex-kernel')

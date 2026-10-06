@@ -169,6 +169,86 @@ func TestUnknownOperationReturnsTwo(t *testing.T) {
 	}
 }
 
+func TestResetStatusRequestsCedarEmber(t *testing.T) {
+	var gotPath, gotBeta, gotApp, gotUA string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		gotPath = request.URL.RequestURI()
+		gotBeta = request.Header.Get("anthropic-beta")
+		gotApp = request.Header.Get("x-app")
+		gotUA = request.Header.Get("User-Agent")
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"cedar_ember":{"eligible":false,"grants":[]}}`))
+	}))
+	defer server.Close()
+	configPath, credPath := testConfig(t, server.URL, server.URL+"/oauth/token", map[string]string{"User-Agent": "claude-code/2.1.284"})
+	saveCredential(t, credPath, credential.Credential{AccessToken: "access-live", ExpiresAt: time.Now().Add(time.Hour).UnixMilli()})
+	var output bytes.Buffer
+	if code := Run([]string{"reset-status", "--config", configPath}, strings.NewReader(""), &output); code != 0 {
+		t.Fatalf("exit code = %d, output = %s", code, output.String())
+	}
+	if gotPath != "/api/oauth/usage?cedar_ember=1&skip_spend=1" || gotBeta != "oauth-2025-04-20" || gotApp != "cli" {
+		t.Fatalf("path=%q beta=%q app=%q", gotPath, gotBeta, gotApp)
+	}
+	if gotUA != "claude-cli/2.1.284 (external, cli)" {
+		t.Fatalf("user-agent=%q", gotUA)
+	}
+}
+
+func TestResetRedeemPostsSelectedGrant(t *testing.T) {
+	const org = "11111111-1111-4111-8111-111111111111"
+	var gotPath, gotMethod string
+	var gotBody map[string]string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		gotPath = request.URL.Path
+		gotMethod = request.Method
+		defer request.Body.Close()
+		if err := json.NewDecoder(request.Body).Decode(&gotBody); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"result":"reset","cleared":["five_hour"]}`))
+	}))
+	defer server.Close()
+	configPath, credPath := testConfig(t, server.URL, server.URL+"/oauth/token", nil)
+	saveCredential(t, credPath, credential.Credential{AccessToken: "access-live", ExpiresAt: time.Now().Add(time.Hour).UnixMilli()})
+	var output bytes.Buffer
+	input := `{"organization_uuid":"` + org + `","grant_id":"grant_next","request_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`
+	if code := Run([]string{"reset-redeem", "--config", configPath}, strings.NewReader(input), &output); code != 0 {
+		t.Fatalf("exit code = %d, output = %s", code, output.String())
+	}
+	if gotMethod != http.MethodPost || gotPath != "/api/organizations/"+org+"/reset_rate_limits" {
+		t.Fatalf("method=%s path=%s", gotMethod, gotPath)
+	}
+	if gotBody["program"] != "cedar_ember" || gotBody["grant_id"] != "grant_next" {
+		t.Fatalf("body=%v", gotBody)
+	}
+	if strings.Contains(output.String(), "access-live") {
+		t.Fatal("token leaked")
+	}
+}
+
+func TestResetRedeemRejectsBadGrantBeforeNetwork(t *testing.T) {
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		called = true
+		writer.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	configPath, credPath := testConfig(t, server.URL, server.URL+"/oauth/token", nil)
+	saveCredential(t, credPath, credential.Credential{AccessToken: "access-live", ExpiresAt: time.Now().Add(time.Hour).UnixMilli()})
+	var output bytes.Buffer
+	input := `{"organization_uuid":"11111111-1111-4111-8111-111111111111","grant_id":"Grant Next","request_id":"abc"}`
+	if code := Run([]string{"reset-redeem", "--config", configPath}, strings.NewReader(input), &output); code != 2 {
+		t.Fatalf("exit code = %d, output = %s", code, output.String())
+	}
+	if called {
+		t.Fatal("upstream called")
+	}
+	if strings.Contains(output.String(), "Grant Next") {
+		t.Fatal("grant id echoed")
+	}
+}
+
 func TestUpstream401ReturnsFailedEnvelope(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")

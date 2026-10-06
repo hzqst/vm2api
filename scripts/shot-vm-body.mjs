@@ -430,7 +430,7 @@ async function main() {
   const prompt = String(arg('--prompt', DEFAULT_PROMPT))
   const followup = String(arg('--followup', '用一句话继续刚才的对话'))
   const maxTokens = Number(arg('--max-tokens', String(DEFAULT_MAX_TOKENS))) || DEFAULT_MAX_TOKENS
-  const outDir = String(arg('--out', path.join(projectRoot, 'data', 'loadtests', 'shots')))
+  const outDir = String(arg('--out', path.join(projectRoot, 'data', 'shots')))
   const via = String(arg('--via', 'worker'))
   const routingFile = path.join(projectRoot, 'src', 'config', 'routing.json')
   const callerSystem = readCallerSystemArg()

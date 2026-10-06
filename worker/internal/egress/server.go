@@ -11,20 +11,23 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	kinproxy "github.com/dofastted/kin-gateway/worker/internal/proxy"
+	"golang.org/x/net/dns/dnsmessage"
 )
 
 type Config struct {
-	ProxyID     string `json:"proxy_id"`
-	ProxyURL    string `json:"proxy_url"`
-	ListenTCP   string `json:"listen_tcp"`
-	ListenDNS   string `json:"listen_dns"`
-	DNSUpstream string `json:"dns_upstream"`
+	ProxyID       string   `json:"proxy_id"`
+	ProxyURL      string   `json:"proxy_url"`
+	ListenTCP     string   `json:"listen_tcp"`
+	ListenDNS     string   `json:"listen_dns"`
+	DNSUpstream   string   `json:"dns_upstream"`
+	DNSEmptyTypes []uint16 `json:"dns_empty_types,omitempty"`
 }
 
 // IdleClose is how long a splice may sit with no bytes before both sides
@@ -97,6 +100,7 @@ func New(cfg Config) (*Server, error) {
 	if cfg.ListenTCP == "" {
 		return nil, fmt.Errorf("listen tcp address is required")
 	}
+	cfg.DNSEmptyTypes = append([]uint16(nil), cfg.DNSEmptyTypes...)
 	upstreams := parseDNSUpstreams(cfg.DNSUpstream)
 	if len(upstreams) == 0 {
 		upstreams = append([]string(nil), DefaultDNSUpstreams...)
@@ -111,6 +115,15 @@ func New(cfg Config) (*Server, error) {
 		upstreams: upstreams,
 		http: &http.Client{
 			Timeout: 10 * time.Second,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				if req.URL.Scheme != "https" {
+					return fmt.Errorf("refusing DoH redirect to non-HTTPS URL")
+				}
+				if len(via) >= 10 {
+					return fmt.Errorf("stopped after 10 redirects")
+				}
+				return nil
+			},
 			Transport: &http.Transport{
 				DialContext: dialer.DialContext,
 			},
@@ -358,6 +371,35 @@ func (s *Server) handleDNSTCP(ctx context.Context, conn net.Conn) {
 // ResolveDNS tries each upstream in order, starting from the last one that
 // succeeded, and returns the first valid reply.
 func (s *Server) ResolveDNS(ctx context.Context, query []byte) ([]byte, error) {
+	if len(s.cfg.DNSEmptyTypes) > 0 {
+		var msg dnsmessage.Message
+		if err := msg.Unpack(query); err != nil {
+			return nil, fmt.Errorf("decode DNS query for override: %w", err)
+		}
+		if msg.Response || msg.OpCode != 0 || len(msg.Questions) == 0 {
+			return nil, fmt.Errorf("DNS override requires a standard query with questions")
+		}
+		blocked := 0
+		for _, question := range msg.Questions {
+			if slices.Contains(s.cfg.DNSEmptyTypes, uint16(question.Type)) {
+				blocked++
+			}
+		}
+		if blocked > 0 {
+			reply := dnsmessage.Message{
+				Header: dnsmessage.Header{
+					ID: msg.ID, Response: true, RecursionDesired: msg.RecursionDesired,
+					RecursionAvailable: true, CheckingDisabled: msg.CheckingDisabled,
+				},
+				Questions: msg.Questions,
+			}
+			// Mixed questions cannot be forwarded without leaking an overridden type.
+			if blocked != len(msg.Questions) {
+				reply.RCode = dnsmessage.RCodeFormatError
+			}
+			return reply.Pack()
+		}
+	}
 	n := len(s.upstreams)
 	start := int(s.preferred.Load())
 	var errs []error

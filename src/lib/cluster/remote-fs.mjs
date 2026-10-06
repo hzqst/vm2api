@@ -54,6 +54,7 @@ const WRITE_CHUNK = 32 * 1024
  * slot then runs as 10000+n and must own its files); a non-root SSH user already is the slot uid.
  */
 export async function writeRemoteFile(sftp, file, data, { mode = 0o600, owner = null } = {}) {
+  if (!Buffer.isBuffer(data)) data = Buffer.from(data)
   const dir = file.slice(0, file.lastIndexOf('/'))
   const tmp = `${dir}/.kin-${crypto.randomBytes(8).toString('hex')}.tmp`
   let handle = null

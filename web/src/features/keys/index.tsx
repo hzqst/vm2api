@@ -4,6 +4,7 @@ import { VIEW_TITLES } from '@/config/nav'
 import type { ApiKeyItem } from '@/types/panel-keys'
 import { toast } from 'sonner'
 import { api } from '@/lib/api'
+import { copyText } from '@/lib/clipboard'
 import { fmtNum } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -168,12 +169,15 @@ export function KeysPage() {
         toast.error('无法还原明文 · 请换新')
         return
       }
-      try {
-        await navigator.clipboard.writeText(key)
+      if (await copyText(key)) {
         toast.success('已复制明文密钥，请妥善保存')
-      } catch {
-        toast.error('复制失败')
+        return
       }
+      // The browser refused (plain HTTP without execCommand, or the click's
+      // activation expired while revealing): hand the key over in the dialog,
+      // whose own button is a fresh gesture.
+      setRevealed({ title: '复制密钥', name: k.name, id: k.id, key })
+      toast.warning('浏览器拦截了自动复制，请在弹层中点「复制」或手动选中')
     } catch {
       /* onError 已 toast */
     }

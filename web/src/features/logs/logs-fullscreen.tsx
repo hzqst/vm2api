@@ -1,134 +1,133 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import type { Vm } from '@/types/panel-vm'
+import type { UsageLogFilters } from '@/types/panel-usage-logs'
 import { Minimize2 } from 'lucide-react'
-import { fmtMs, fmtNum } from '@/lib/format'
-import { opsSince } from '@/lib/ops-window'
+import { formatCurrency } from '@/lib/usage-format'
 import { Button } from '@/components/ui/button'
-import { logStatsQueryOptions } from '@/features/logs/queries'
-import { dashboardQueryOptions } from '@/features/overview/queries'
-import type { HideableLogColumn } from './column-visibility'
-import { LogsStream, type LogsStreamFilters } from './logs-stream'
+import { Switch } from '@/components/ui/switch'
+import { usageLogsOverviewQueryOptions } from './queries'
+import { VirtualizedLogsTable, type OpenDetail } from './virtualized-logs-table'
 
-const LIVE_POLL_MS = 3000
+const MS_FORMAT = new Intl.NumberFormat('zh-CN', {
+  style: 'unit',
+  unit: 'millisecond',
+  unitDisplay: 'narrow',
+  maximumFractionDigits: 0,
+})
+
+/** <1s 用毫秒，否则 1 位小数秒（hub `formatResponseTime`）。 */
+function formatResponseTime(ms: number | null): string {
+  if (ms == null || !Number.isFinite(ms)) return '-'
+  if (ms < 1000) return MS_FORMAT.format(ms)
+  return `${(ms / 1000).toFixed(1)}s`
+}
 
 function Metric({
   label,
   value,
-  tone,
+  last,
 }: {
   label: string
-  value: string
-  tone?: 'ok' | 'warn' | 'bad'
+  value: string | number
+  last?: boolean
 }) {
   return (
-    <div className='flex flex-col justify-center px-5'>
+    <div className={`flex flex-col justify-center ${last ? 'pl-5' : 'px-5'}`}>
       <div className='text-[10px] font-semibold tracking-wider text-muted-foreground uppercase'>
         {label}
       </div>
-      <div
-        className='font-mono text-xl leading-none font-bold tabular-nums'
-        style={tone ? { color: `var(--status-${tone})` } : undefined}
-      >
+      <div className='font-mono text-xl leading-none font-bold tabular-nums'>
         {value}
       </div>
     </div>
   )
 }
 
-function slaTone(sla: number | undefined): 'ok' | 'warn' | 'bad' | undefined {
-  if (sla == null) return undefined
-  const p = sla * 100
-  if (p < 90) return 'bad'
-  if (p < 99) return 'warn'
-  return 'ok'
-}
-
-/**
- * 全屏值班大屏（对齐 claude-code-hub 的 fullscreen live logs）：
- * 3s 轮询的流式日志 + 顶部实时指标条（当前并发 / 1h 请求 / 成功率 / 首字 p50）。
- * 原生 fullscreen 的进入/退出由 LogsPage 管，这里只管画面与 ESC 兜底。
- */
 export function LogsFullscreen({
+  title,
   filters,
-  vms,
-  showIngress,
-  hidden,
   onOpenDetail,
   onExit,
 }: {
-  filters: LogsStreamFilters
-  vms?: Map<string, Vm>
-  showIngress?: boolean
-  hidden?: readonly HideableLogColumn[]
-  onOpenDetail: (id: string) => void
+  title: string
+  filters: UsageLogFilters
+  onOpenDetail: OpenDetail
   onExit: () => void
 }) {
-  const since = opsSince('1h')
-  const stats = useQuery(logStatsQueryOptions(since, LIVE_POLL_MS))
-  const dash = useQuery(dashboardQueryOptions(LIVE_POLL_MS))
+  const [hideProvider, setHideProvider] = useState(false)
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+  const { data } = useQuery(usageLogsOverviewQueryOptions(tz, 3000))
 
-  // 浏览器拒绝原生全屏（或不支持）时的兜底：ESC 也要能退出这层覆盖。
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented) return
-      if (event.key === 'Escape') onExit()
+      if (!event.defaultPrevented && event.key === 'Escape') onExit()
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [onExit])
 
-  const w = stats.data?.window
-  const sla = w?.sla != null ? `${(w.sla * 100).toFixed(1)}%` : '—'
-  const concurrent = (dash.data?.vms || []).reduce(
-    (n, v) => n + (Number(v.inflight) || 0),
-    0
-  )
-
   return (
     <div
-      className='fixed inset-0 z-50 flex flex-col bg-background'
+      className='fixed inset-0 z-[70] flex flex-col bg-background'
       role='dialog'
       aria-modal='true'
-      aria-label='日志实时大屏'
     >
-      <div className='flex h-14 items-center justify-between gap-4 border-b px-4'>
-        <div className='flex min-w-0 items-center gap-2.5'>
-          <span className='relative flex size-2'>
-            <span className='absolute inline-flex size-full animate-ping rounded-full bg-primary/70' />
-            <span className='relative inline-flex size-2 rounded-full bg-primary' />
-          </span>
-          <span className='truncate text-base font-semibold tracking-tight'>
-            请求日志 · 实时
-          </span>
-        </div>
-        <div className='flex items-center gap-2'>
-          <div className='hidden h-full items-stretch divide-x divide-border/50 md:flex'>
-            <Metric label='当前并发' value={String(concurrent)} />
-            <Metric label='1h 请求' value={fmtNum(w?.requests || 0)} />
-            <Metric label='成功率' value={sla} tone={slaTone(w?.sla)} />
-            <Metric label='首字 p50' value={fmtMs(w?.ttft?.p50_ms)} />
+      <div className='flex h-14 items-center justify-between gap-4 border-b bg-background/95 px-6 backdrop-blur supports-[backdrop-filter]:bg-background/70'>
+        <div className='min-w-0'>
+          <div className='truncate text-base font-semibold tracking-tight'>
+            {title}
           </div>
+        </div>
+        <div className='flex items-center gap-4'>
           <Button
             variant='outline'
             size='sm'
-            className='gap-2'
             onClick={onExit}
+            className='gap-2'
           >
-            <Minimize2 className='size-4' />
+            <Minimize2 className='h-4 w-4' />
             退出全屏
           </Button>
+          <div className='hidden h-full items-stretch divide-x divide-border/50 md:flex'>
+            <Metric label='活跃 Session 数' value={data?.activeSessions ?? 0} />
+            <Metric label='今日请求' value={data?.todayRequests ?? 0} />
+            <Metric
+              label='今日消费'
+              value={formatCurrency(data?.todayActualCost ?? 0, 2)}
+            />
+            <Metric
+              label='平均响应时间'
+              value={formatResponseTime(data?.todayAvgDurationMs ?? null)}
+              last
+            />
+          </div>
         </div>
       </div>
-      <div className='min-h-0 flex-1 p-3'>
-        <LogsStream
+
+      <div className='group fixed top-20 right-0 z-[80] flex translate-x-[calc(100%-6px)] items-start transition-transform duration-300 focus-within:translate-x-0 hover:translate-x-0'>
+        <div className='mt-4 h-16 w-1.5 rounded-l-sm bg-primary/20 group-hover:bg-primary/50' />
+        <div className='flex w-72 flex-col gap-3 rounded-l-lg border border-r-0 bg-popover p-4 shadow-xl'>
+          <div className='flex items-center justify-between gap-3'>
+            <div className='text-sm font-medium'>隐藏供应商列</div>
+            <Switch
+              checked={hideProvider}
+              onCheckedChange={setHideProvider}
+              aria-label='隐藏供应商列'
+            />
+          </div>
+        </div>
+      </div>
+
+      <div className='flex-1 p-4'>
+        <VirtualizedLogsTable
           filters={filters}
-          vms={vms}
+          autoRefreshEnabled
+          autoRefreshIntervalMs={3000}
+          hideStatusBar
+          hideScrollToTop
+          hiddenColumns={hideProvider ? ['provider'] : undefined}
+          bodyClassName='h-[calc(100dvh_-_56px_-_32px_-_40px)]'
           onOpenDetail={onOpenDetail}
-          showIngress={showIngress}
-          hidden={hidden}
-          pollMs={LIVE_POLL_MS}
-          viewportClassName='h-[calc(100dvh-56px-24px-32px-28px)]'
         />
       </div>
     </div>

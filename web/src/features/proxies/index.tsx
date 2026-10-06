@@ -21,7 +21,7 @@ import {
   type ProxyFilter,
   type ProxySortKey,
   proxyBoundIds,
-  proxyHostText,
+  proxyLabel,
   proxyInFilter,
   proxyIsLocal,
   proxyMatchesQuery,
@@ -179,7 +179,7 @@ export function ProxiesPage() {
       const name = vmById.get(vmId)?.name || vmId
       toast.success(
         from && from.id !== id
-          ? `${name} 已从 ${proxyHostText(from)} 换绑到 ${to ? proxyHostText(to) : id}`
+          ? `${name} 已从 ${proxyLabel(from)} 换绑到 ${to ? proxyLabel(to) : id}`
           : `${name} 已绑定`
       )
       await refresh()
@@ -325,6 +325,7 @@ export function ProxiesPage() {
               bindLimit={bindLimit}
               probeMin={probeMin}
               dnsPrimary={String(cfg.dns_primary || 'auto')}
+              dnsDisableSvcbHttps={cfg.dns_disable_svcb_https === true}
               followProxyTimezone={cfg.follow_proxy_timezone !== false}
             />
           </aside>

@@ -1,0 +1,21 @@
+# Experimental native ARM64 control plane; Docker slot guests remain amd64.
+# docker compose -f docker-compose.yml -f docker-compose.arm64.yml up -d --build
+services:
+  vm2api:
+    image: ${VM2API_ARM64_IMAGE:-vm2api-arm64-control:local}
+    platform: linux/arm64
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.arm64-control
+    environment:
+      HOST: ${VM2API_BIND_HOST:-127.0.0.1}
+      DOCKER_DEFAULT_PLATFORM: linux/amd64
+      KIN_CLUSTER_WORKER_BIN: /opt/vm2api/cluster-bin-amd64/kin-worker
+      KIN_CLUSTER_EGRESS_BIN: /opt/vm2api/cluster-bin-amd64/kin-egress
+    volumes:
+      # Keep native runtime helpers out of the repository's amd64 bin/ assets.
+      - ./.local/arm64/vms:/opt/vm2api/vms
+      - ./.local/arm64/data:/opt/vm2api/data
+      - ./.local/arm64/bin:/opt/vm2api/bin
+      - ./.local/arm64/share:/opt/vm2api/share
+      - ./.local/arm64/config:/opt/vm2api/src/config

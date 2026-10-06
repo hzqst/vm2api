@@ -14,8 +14,9 @@ rust=0; go=0; telemetry=0
 case "$main" in
   kin-kernel|*/kin-kernel|kin-kernel.bin|*/kin-kernel.bin) rust=1 ;;
   kin-worker|*/kin-worker) go=1 ;;
-  */ld-linux-*.so.*)
-    # The shipped kernel uses a bundled glibc loader as PID1's executable.
+  */ld-linux-*.so.*|*/qemu-*)
+    # The shipped kernel uses a bundled glibc loader as PID1's executable; on
+    # an ARM64 host binfmt QEMU is PID1's executable and the program is argv[1].
     if tr '\000' '\n' < /proc/1/cmdline | grep -Eq '(^|/)kin-kernel(\.bin)?$'; then rust=1; fi
     if tr '\000' '\n' < /proc/1/cmdline | grep -Eq '(^|/)kin-worker$'; then go=1; fi
     ;;
@@ -33,7 +34,7 @@ function isSafeSlotId(id) {
   return /^[A-Za-z0-9][A-Za-z0-9_-]{0,80}$/.test(String(id || ''))
 }
 
-export async function readSlotProcessStatus({ projectRoot, vm, run = exec } = {}) {
+export async function readSlotProcessStatus({ projectRoot, vm, run = exec, timeoutMs = 2500 } = {}) {
   const unknown = { telemetry: { enabled: null, running: null }, process_topology: null }
   if (!projectRoot || !isSafeSlotId(vm?.id)) return unknown
   let enabled = null
@@ -47,7 +48,7 @@ export async function readSlotProcessStatus({ projectRoot, vm, run = exec } = {}
   try {
     const env = slotHost(vm).dockerEnv()
     const { stdout } = await run('docker', ['exec', slotContainerName({ vm }), 'sh', '-c', PROBE], {
-      timeout: 2500,
+      timeout: timeoutMs,
       maxBuffer: 4096,
       encoding: 'utf8',
       ...(env ? { env } : {}),
@@ -61,5 +62,37 @@ export async function readSlotProcessStatus({ projectRoot, vm, run = exec } = {}
   } catch {
     // A stopped container, denied Docker access, or timeout must not break the detail page.
     return { ...unknown, telemetry: { enabled, running: null } }
+  }
+}
+
+/**
+ * The sidecar is a `docker exec -d` child with no supervisor: a container restart,
+ * a host reboot or its own exit on a 4xx leaves the slot without telemetry for good.
+ * Relaunch it only when the config enables it and the container was observed without one.
+ * Background check: `docker exec` takes 3-5s on a loaded host, far over the detail page's budget.
+ */
+export async function ensureTelemetrySidecar({ projectRoot, vm, run = exec, timeoutMs = 15_000 } = {}) {
+  const status = await readSlotProcessStatus({ projectRoot, vm, run, timeoutMs })
+  if (status.telemetry.enabled !== true || status.telemetry.running !== false) {
+    return { ok: true, action: 'unchanged' }
+  }
+  try {
+    const env = slotHost(vm).dockerEnv()
+    await run(
+      'docker',
+      [
+        'exec',
+        '-d',
+        slotContainerName({ vm }),
+        '/usr/local/bin/kin-worker',
+        'telemetry',
+        '--config',
+        '/run/kin/worker.json',
+      ],
+      { timeout: timeoutMs, maxBuffer: 4096, encoding: 'utf8', ...(env ? { env } : {}) },
+    )
+    return { ok: true, action: 'started' }
+  } catch (error) {
+    return { ok: false, action: 'start_failed', error: String(error?.message || error) }
   }
 }

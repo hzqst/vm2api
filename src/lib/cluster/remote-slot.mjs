@@ -18,6 +18,7 @@ import {
   bridgeName,
   chainName,
   configuredDnsUpstream,
+  configuredDnsEmptyTypes,
   gatewayFromSubnet,
   iptablesPlan,
   isLocalEgressProxy,
@@ -194,6 +195,8 @@ export async function ensureRemoteEgress(session, vm, { imageRef }) {
   }
   const dnsUpstream = configuredDnsUpstream()
   if (dnsUpstream) cfg.dns_upstream = dnsUpstream
+  const dnsEmptyTypes = configuredDnsEmptyTypes()
+  if (dnsEmptyTypes.length) cfg.dns_empty_types = dnsEmptyTypes
   const body = `${JSON.stringify(cfg, null, 2)}\n`
   const digest = crypto.createHash('sha256').update(body).update(imageRef).digest('hex').slice(0, 16)
   // Beside the slot tree, outside every guest bind: the guest never sees the proxy password.

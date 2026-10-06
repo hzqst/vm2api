@@ -55,6 +55,7 @@ patches/
 # local scratch and unpublished artifacts
 /.tmp/
 /.tmp-*
+/tmp/
 /AGENTS.md
 /docs/benchmarks.zip
 /worker/bin/
@@ -64,3 +65,4 @@ patches/
 # local-only; not part of the published tree
 /web/pnpm-workspace.yaml
 /src/lib/oauth/auth.js
+/docs/auto-mode

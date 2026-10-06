@@ -5,7 +5,7 @@ import { slotHost } from '../vm/slot-host.mjs'
 
 const WORKER_CONFIG = '/run/kin/worker.json'
 const WORKER_BIN = '/usr/local/bin/kin-worker'
-const OPS = new Set(['refresh', 'usage', 'profile', 'models', 'count-tokens'])
+const OPS = new Set(['refresh', 'usage', 'profile', 'models', 'count-tokens', 'reset-status', 'reset-redeem'])
 
 function failure(code, message = undefined) {
   const error = { code }
@@ -101,7 +101,12 @@ export async function runSlotOauth(
   const argv = ['exec', '-i', '-u', user, containerName(exec?.vmId), WORKER_BIN, 'oauth', op, '--config', WORKER_CONFIG]
   if (force) argv.push('--force')
 
-  const stdin = op === 'count-tokens' ? JSON.stringify({ body: body || {}, headers: headers || {} }) : ''
+  const stdin =
+    op === 'count-tokens'
+      ? JSON.stringify({ body: body || {}, headers: headers || {} })
+      : op === 'reset-redeem'
+        ? JSON.stringify(body || {})
+        : ''
   let result
   try {
     result = await runDocker(argv, { stdin, timeoutMs, env: host.dockerEnv() })

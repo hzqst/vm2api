@@ -56,3 +56,63 @@ test('billing rows of an older account on a reused slot keep their own email', (
   const emails = usage.data.billing.accounts.map((row) => row.email)
   assert.deepEqual(emails, ['old@example.com', 'new@example.com', 'three@example.com'])
 })
+
+test('usage rows of a deleted VM are not listed', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-usage-deleted-'))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  fs.mkdirSync(path.join(root, 'vms'), { recursive: true })
+  fs.writeFileSync(path.join(root, 'vms', 'vm-02.json'), JSON.stringify({ id: 'vm-02' }))
+  const usage = buildUsage({
+    accountQuota: {
+      snapshot: () => ({
+        accounts: [
+          { account_id: 'two-uuid', vm_id: 'vm-02', email: 'two@example.com', requests: 1 },
+          { account_id: 'three-uuid', vm_id: 'vm-03', email: 'three@example.com', requests: 5 },
+        ],
+      }),
+    },
+    cfg: { paths: { project: root } },
+    requestLog: {
+      billingStats: () => ({ accounts: [{ account_id: 'three-uuid', vm_id: 'vm-03', total_cost: 3 }] }),
+    },
+  })
+  assert.deepEqual(
+    usage.data.accounts.map((a) => a.vm_id),
+    ['vm-02'],
+  )
+  assert.equal(usage.data.totals.requests, 1)
+  assert.equal(usage.data.billing.accounts[0].email, 'three@example.com')
+})
+
+test('GPT usage row without pool email takes slot email', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-gpt-usage-'))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  fs.mkdirSync(path.join(root, 'vms'), { recursive: true })
+  fs.writeFileSync(
+    path.join(root, 'vms', 'vm-codex-01.json'),
+    JSON.stringify({
+      id: 'vm-codex-01',
+      platform: 'openai',
+      family: 'codex',
+      codex_kernel: true,
+      email: 'lemeryvorhees@gmail.com',
+      codex: { email: 'lemeryvorhees@gmail.com' },
+    }),
+  )
+  const usage = buildUsage({
+    accountQuota: {
+      snapshot: () => ({
+        accounts: [{ account_id: 'vm-codex-01', vm_id: 'vm-codex-01', email: null }],
+      }),
+    },
+    cfg: { paths: { project: root } },
+    requestLog: {
+      billingStats: () => ({
+        accounts: [{ account_id: 'vm-codex-01', vm_id: 'vm-codex-01', total_cost: 139.87, today_cost: 24.86 }],
+      }),
+    },
+  })
+  const row = usage.data.accounts.find((a) => a.vm_id === 'vm-codex-01')
+  assert.equal(row?.email, 'lemeryvorhees@gmail.com')
+  assert.equal(row?.total_cost, 139.87)
+})

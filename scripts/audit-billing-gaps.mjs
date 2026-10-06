@@ -32,7 +32,6 @@ const out = {
   ua: rows(`
     SELECT CASE
       WHEN user_agent LIKE '%kin-console-test%' THEN 'vm-test'
-      WHEN user_agent LIKE '%kin-console-loadtest%' THEN 'loadtest'
       WHEN user_agent LIKE '%claude-cli%' OR user_agent LIKE '%claude-code%'
         OR user_agent LIKE '%Claude-Code%' OR user_agent LIKE '%Claude Code%' THEN 'official-cc'
       WHEN user_agent LIKE '%Rikka%' THEN 'rikka'
@@ -56,7 +55,6 @@ const out = {
       ROUND(SUM(COALESCE(total_cost,0)),4) AS cost
     FROM usage_logs
     WHERE user_agent NOT LIKE '%kin-console-test%'
-      AND user_agent NOT LIKE '%kin-console-loadtest%'
       AND user_agent NOT LIKE '%claude-cli%'
       AND user_agent NOT LIKE '%claude-code%'
       AND user_agent NOT LIKE '%Claude-Code%'
@@ -76,7 +74,6 @@ const out = {
   today_by_ua: rows(`
     SELECT CASE
       WHEN user_agent LIKE '%kin-console-test%' THEN 'vm-test'
-      WHEN user_agent LIKE '%kin-console-loadtest%' THEN 'loadtest'
       WHEN user_agent LIKE '%claude-cli%' OR user_agent LIKE '%claude-code%'
         OR user_agent LIKE '%Claude-Code%' OR user_agent LIKE '%Claude Code%' THEN 'official-cc'
       ELSE 'third-or-other'

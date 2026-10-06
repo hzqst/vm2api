@@ -1,7 +1,7 @@
 import type { Vm } from '@/types/panel-vm'
 import { Globe } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { proxyHostLabel } from '@/lib/vm-status'
+import { proxyHostLabel, proxyNamedLabel } from '@/lib/vm-status'
 import { proxySurfaceClass, vmProxyTone } from '@/features/proxies/proxy-tone'
 
 function latencyDigits(ms: number): string {
@@ -24,12 +24,20 @@ export function ProxyChip({
   const blocked = vm.proxy?.blocked_reason === 'ipv6_disabled'
   const lat = blocked ? null : vm.proxy?.latency_ms
   const bound = host !== '—'
-  const label = bound ? host : tone === 'danger' ? '缺代理' : '直连'
+  // 芯片窄，起了名就只显示名称；完整的「名称 · 地址」放进 title。
+  const named = proxyNamedLabel(vm.proxy)
+  const label = bound
+    ? vm.proxy?.label?.trim() || host
+    : tone === 'danger'
+      ? '缺代理'
+      : '直连'
   const title = blocked
-    ? `${host} · IPv6 已关闭（设置 → SOCKS5 开启）`
+    ? `${named} · IPv6 已关闭（设置 → SOCKS5 开启）`
     : lat != null && bound
-      ? `${host} · ${lat}ms`
-      : label
+      ? `${named} · ${lat}ms`
+      : bound
+        ? named
+        : label
 
   return (
     <div

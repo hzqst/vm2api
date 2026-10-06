@@ -1,14 +1,22 @@
 package egress
 
 import (
+	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/binary"
 	"errors"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -219,6 +227,215 @@ func TestResolveDNSOverDoH(t *testing.T) {
 	}
 }
 
+func TestResolveDNSOverDomainTLSDoH(t *testing.T) {
+	const hostname = "nonresolvable.example.invalid"
+	query := []byte{0x12, 0x34, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0,
+		7, 'e', 'x', 'a', 'm', 'p', 'l', 'e', 3, 'c', 'o', 'm', 0, 0, 1, 0, 1}
+	reply := append([]byte(nil), query...)
+	reply[2], reply[3], reply[7] = 0x81, 0x80, 1
+	reply = append(reply, 0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 192, 0, 2, 1)
+	for _, tc := range []struct {
+		name     string
+		certHost string
+		trust    bool
+	}{
+		{"trusted", hostname, true},
+		{"untrusted", hostname, false},
+		{"wrong-hostname", "different.example.invalid", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cert, roots := testDoHCertificate(t, tc.certHost)
+			sni := make(chan string, 1)
+			ts := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				host, _, err := net.SplitHostPort(r.Host)
+				if err != nil || host != hostname || r.Method != http.MethodPost || r.URL.Path != "/dns-query" {
+					t.Errorf("unexpected DoH request: %s %s host=%s", r.Method, r.URL, r.Host)
+				}
+				q, err := io.ReadAll(r.Body)
+				if err != nil || !bytes.Equal(q, query) {
+					t.Errorf("DoH query=%x err=%v", q, err)
+				}
+				w.Header().Set("Content-Type", "application/dns-message")
+				_, _ = w.Write(reply)
+			}))
+			ts.TLS = &tls.Config{Certificates: []tls.Certificate{cert},
+				GetConfigForClient: func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+					sni <- hello.ServerName
+					return nil, nil
+				},
+			}
+			ts.StartTLS()
+			defer ts.Close()
+			_, port, err := net.SplitHostPort(ts.Listener.Addr().String())
+			if err != nil {
+				t.Fatal(err)
+			}
+			socksLn, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer socksLn.Close()
+			target := make(chan string, 1)
+			go serveTestSOCKSWithTarget(t, socksLn, func(atyp byte, host string, targetPort uint16) (string, error) {
+				if atyp != 0x03 || host != hostname || formatPort(targetPort) != port {
+					target <- "unexpected SOCKS target: " + net.JoinHostPort(host, formatPort(targetPort)) + " ATYP=" + strconv.Itoa(int(atyp))
+					return "", errors.New("unexpected SOCKS target")
+				}
+				target <- ""
+				return ts.Listener.Addr().String(), nil
+			})
+			srv, err := New(Config{
+				ProxyURL: "socks5h://" + socksLn.Addr().String(), ListenTCP: "127.0.0.1:0",
+				DNSUpstream: "https://" + net.JoinHostPort(hostname, port) + "/dns-query",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			transport := srv.http.Transport.(*http.Transport)
+			defer transport.CloseIdleConnections()
+			// Install only the fixture CA, keeping normal TLS hostname verification.
+			transport.TLSClientConfig = &tls.Config{RootCAs: x509.NewCertPool()}
+			if tc.trust {
+				transport.TLSClientConfig.RootCAs = roots
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			got, err := srv.ResolveDNS(ctx, query)
+			switch tc.name {
+			case "trusted":
+				if err != nil || !bytes.Equal(got, reply) {
+					t.Fatalf("DNS reply=%x err=%v", got, err)
+				}
+			case "untrusted":
+				var certErr x509.UnknownAuthorityError
+				if !errors.As(err, &certErr) {
+					t.Fatalf("want unknown certificate authority, got %v", err)
+				}
+			case "wrong-hostname":
+				var certErr x509.HostnameError
+				if !errors.As(err, &certErr) {
+					t.Fatalf("want certificate hostname rejection, got %v", err)
+				}
+			}
+			select {
+			case problem := <-target:
+				if problem != "" {
+					t.Fatal(problem)
+				}
+			case <-ctx.Done():
+				t.Fatal("no SOCKS CONNECT observed")
+			}
+			select {
+			case got := <-sni:
+				if got != hostname {
+					t.Fatalf("TLS SNI=%q want %q", got, hostname)
+				}
+			case <-ctx.Done():
+				t.Fatal("no TLS ClientHello observed")
+			}
+		})
+	}
+}
+
+func testDoHCertificate(t *testing.T, hostname string) (tls.Certificate, *x509.CertPool) {
+	t.Helper()
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ca := &x509.Certificate{
+		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "DoH test CA"},
+		NotBefore: time.Unix(0, 0), NotAfter: time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC),
+		IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign,
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, ca, ca, public, private)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := x509.ParseCertificate(caDER)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf := &x509.Certificate{
+		SerialNumber: big.NewInt(2), DNSNames: []string{hostname},
+		NotBefore: ca.NotBefore, NotAfter: ca.NotAfter,
+		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	leafDER, err := x509.CreateCertificate(rand.Reader, leaf, root, public, private)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roots := x509.NewCertPool()
+	roots.AddCert(root)
+	return tls.Certificate{Certificate: [][]byte{leafDER, caDER}, PrivateKey: private}, roots
+}
+
+func TestDoHRedirectRequiresHTTPS(t *testing.T) {
+	for _, status := range []int{http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
+		for _, downgrade := range []bool{false, true} {
+			t.Run(strconv.Itoa(status)+"/downgrade="+strconv.FormatBool(downgrade), func(t *testing.T) {
+				plaintext := make(chan struct{}, 1)
+				httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					plaintext <- struct{}{}
+					w.WriteHeader(http.StatusNoContent)
+				}))
+				defer httpServer.Close()
+				query := []byte{0x12, 0x34, 0x01, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1}
+				reply := append([]byte(nil), query...)
+				reply[2] |= 0x80
+				ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.URL.Path == "/dns-query" {
+						target := "/answer"
+						if downgrade {
+							target = httpServer.URL + "/answer"
+						}
+						http.Redirect(w, r, target, status)
+						return
+					}
+					q, err := io.ReadAll(r.Body)
+					if r.Method != http.MethodPost || err != nil || !bytes.Equal(q, query) {
+						t.Errorf("redirect lost DNS POST: method=%s body=%x err=%v", r.Method, q, err)
+					}
+					w.Header().Set("Content-Type", "application/dns-message")
+					_, _ = w.Write(reply)
+				}))
+				defer ts.Close()
+				socksLn, err := net.Listen("tcp", "127.0.0.1:0")
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer socksLn.Close()
+				// A second CONNECT would expose a rejected downgrade to the HTTP fixture.
+				go serveTestSOCKS(t, socksLn)
+				go serveTestSOCKS(t, socksLn)
+				srv, err := New(Config{ProxyURL: "socks5h://" + socksLn.Addr().String(),
+					ListenTCP: "127.0.0.1:0", DNSUpstream: ts.URL + "/dns-query"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				transport := srv.http.Transport.(*http.Transport)
+				defer transport.CloseIdleConnections()
+				transport.TLSClientConfig = ts.Client().Transport.(*http.Transport).TLSClientConfig.Clone()
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				defer cancel()
+				got, err := srv.ResolveDNS(ctx, query)
+				if downgrade {
+					if err == nil {
+						t.Fatal("HTTPS to HTTP redirect was accepted")
+					}
+				} else if err != nil || !bytes.Equal(got, reply) {
+					t.Fatalf("HTTPS redirect reply=%x err=%v", got, err)
+				}
+				select {
+				case <-plaintext:
+					t.Fatal("DNS request leaked to plaintext HTTP redirect")
+				default:
+				}
+			})
+		}
+	}
+}
+
 func TestResolveDNSFallsBackToNextUpstream(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		q, _ := io.ReadAll(r.Body)
@@ -277,6 +494,12 @@ func TestDefaultDNSUpstreamsWhenEmpty(t *testing.T) {
 }
 
 func serveTestSOCKS(t *testing.T, ln net.Listener) {
+	serveTestSOCKSWithTarget(t, ln, func(_ byte, host string, port uint16) (string, error) {
+		return net.JoinHostPort(host, formatPort(port)), nil
+	})
+}
+
+func serveTestSOCKSWithTarget(t *testing.T, ln net.Listener, target func(byte, string, uint16) (string, error)) {
 	t.Helper()
 	c, err := ln.Accept()
 	if err != nil {
@@ -315,7 +538,11 @@ func serveTestSOCKS(t *testing.T, ln net.Listener) {
 	pb := make([]byte, 2)
 	_, _ = io.ReadFull(c, pb)
 	port = binary.BigEndian.Uint16(pb)
-	up, err := net.Dial("tcp", net.JoinHostPort(host, formatPort(port)))
+	address, err := target(req[3], host, port)
+	if err != nil {
+		return
+	}
+	up, err := net.Dial("tcp", address)
 	if err != nil {
 		_, _ = c.Write([]byte{0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 		return

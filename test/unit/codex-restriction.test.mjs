@@ -6,7 +6,7 @@ import { normalizeCodexRouting } from '../../src/lib/protocol/codex-route.mjs'
 const routing = { codex: normalizeCodexRouting() }
 
 test('official Codex CLI is allowed', () => {
-  const headers = { 'user-agent': 'codex_cli_rs/0.153.4 (linux x86_64)', 'x-codex-installation-id': 'dev-1' }
+  const headers = { 'user-agent': 'codex_cli_rs/0.160.0 (linux x86_64)', 'x-codex-installation-id': 'dev-1' }
   assert.equal(classifyCodexClient(headers, {}), 'official_codex')
   assert.equal(restrictCodexClient(headers, {}, routing).ok, true)
 })

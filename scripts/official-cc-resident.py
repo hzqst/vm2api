@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Keep official Claude Code attached after init hello.
+"""Keep the slot cli-node attached after init hello.
 
 Host PTY + `docker exec -it` so the CLI stays in an interactive session.
-Does not print credentials. Exits when the guest `claude` process exits.
+Does not print credentials. Exits when the guest CLI process exits.
 """
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ def main() -> int:
         return 2
     tz = os.environ.get("TZ", "UTC")
     lang = os.environ.get("LANG", "en_US.UTF-8")
+    cli = os.environ["KIN_CLI_BIN"]
     argv = [
         "docker", "exec", "-it",
         "-u", f"{uid}:{gid}",
@@ -28,6 +29,10 @@ def main() -> int:
         "-e", f"LANG={lang}",
         "-e", f"LC_ALL={lang}",
         "-e", "PATH=/home/kincli/.local/bin:/usr/bin:/bin",
+        # The host Go Refresher is the only RT writer; the marker lets the host
+        # find this process apart from the kernel's CLI on the same binary.
+        "-e", "CLAUDE_CODE_KIN_HOST_REFRESH=1",
+        "-e", "KIN_OFFICIAL_CC=1",
         "-e", "CLAUDE_CODE_USE_BEDROCK=0",
         "-e", "CLAUDE_CODE_USE_VERTEX=0",
         "-e", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=0",
@@ -38,7 +43,7 @@ def main() -> int:
         "-e", "ANTHROPIC_AUTH_TOKEN=",
         "-w", "/home/kincli",
         container,
-        "/home/kincli/.local/bin/claude",
+        cli,
     ]
     return pty.spawn(argv) or 0
 

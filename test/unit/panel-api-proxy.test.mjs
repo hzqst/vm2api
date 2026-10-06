@@ -71,6 +71,7 @@ test('dashboard and vm detail merge pool health onto bound VM', async () => {
   bound.geo_city = 'Shinjuku'
   bound.geo_timezone = 'Asia/Tokyo'
   bound.geo_checked_at = '2026-01-01T00:00:00Z'
+  bound.label = '东京-2'
   pool.save()
   pool.stopScheduler()
 
@@ -93,6 +94,7 @@ test('dashboard and vm detail merge pool health onto bound VM', async () => {
   assert.equal(vm.proxy.status, 'ok')
   assert.equal(vm.proxy.latency_ms, 12)
   assert.equal(vm.proxy.host, '10.8.8.8')
+  assert.equal(vm.proxy.label, '东京-2', '槽位代理带上池里的实时名称')
   assert.equal(vm.proxy.geo.timezone, 'Asia/Tokyo')
   assert.equal(vm.proxy.geo.country_code, 'JP')
   assert.equal(vm.proxy.url, undefined)

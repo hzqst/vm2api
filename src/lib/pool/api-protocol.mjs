@@ -1,4 +1,7 @@
 import { officialMessagesBody } from '../protocol/anthropic-messages.mjs'
+import { prepareClassifierBody } from '../protocol/request-purpose.mjs'
+import { consumeClaudeSSEData } from '../protocol/convert.mjs'
+import { mapUpstreamError } from '../core/errors.mjs'
 import { forwardApi, readApiJson } from '../transport/api-kernel-client.mjs'
 import { messagesUrl, normalizeProtocol, resolvePreset, responsesUrl, upstreamAuthHeaders } from './api-presets.mjs'
 import { claudeToOpenAIResponsesRequest } from './api-openai.mjs'
@@ -62,6 +65,7 @@ export async function runApiInference({
   personaHideTokens,
   cacheTtl,
   converters,
+  requestContext = null,
 } = {}) {
   const canonical = officialMessagesBody(convertedBody)
   const model = canonical.model
@@ -80,9 +84,25 @@ export async function runApiInference({
   const protocolKind = normalizeProtocol(picked.endpoint.protocol || preset.protocol, preset.kind)
   const extraHeaders = joinHeaderMap(picked.endpoint.headers)
   const isOpenAI = protocolKind === 'openai'
+  if (requestContext && (isOpenAI || picked.upstream_model !== canonical.model)) {
+    return {
+      ok: false,
+      status: 400,
+      terminalState: 'rejected',
+      body: {
+        type: 'error',
+        error: {
+          type: 'invalid_request_error',
+          code: 'classifier_model_incompatible',
+          message: 'Classifier requests require the selected Anthropic model without endpoint model substitution.',
+        },
+      },
+    }
+  }
   const body = isOpenAI
     ? { ...claudeToOpenAIResponsesRequest({ ...canonical, model: picked.upstream_model }), stream: true }
     : { ...canonical, model: picked.upstream_model, stream: true }
+  if (requestContext) Object.assign(body, prepareClassifierBody(body))
   const headers = {
     'content-type': 'application/json',
     accept: 'text/event-stream',
@@ -148,7 +168,15 @@ export async function runApiInference({
     return {
       ...resultBase,
       ok: false,
-      body: { type: 'error', error: { type: 'api_error', message: String(message).slice(0, 300) } },
+      body: {
+        type: 'error',
+        error: {
+          ...(requestContext ? payload?.error : {}),
+          ...(requestContext && payload?.error?.code ? { upstream_code: payload.error.code } : {}),
+          type: requestContext ? payload?.error?.type || 'api_error' : 'api_error',
+          message: String(message).slice(0, 300),
+        },
+      },
       terminalState: 'rejected',
     }
   }
@@ -167,14 +195,72 @@ export async function runApiInference({
     })
   }
 
+  const classifierSseState = { dataBuf: '' }
+  let classifierError = null
+  let classifierStopped = false
+  const readUpstreamLines = async (onLine) => {
+    try {
+      await readLines(upstream, async (line) => {
+        if (requestContext) {
+          const event = consumeClaudeSSEData(line, classifierSseState)
+          if (event?.type === 'error')
+            classifierError = {
+              ...event,
+              error: { ...event.error, ...(event.error?.code ? { upstream_code: event.error.code } : {}) },
+            }
+          if (event?.type === 'message_stop') classifierStopped = true
+        }
+        await onLine(line)
+      })
+    } catch (error) {
+      if (!requestContext) throw error
+      classifierError = {
+        type: 'error',
+        error: {
+          type: 'api_error',
+          code: 'upstream_stream_interrupted',
+          status: 502,
+          message: String(error.message || 'Classifier stream interrupted').slice(0, 300),
+        },
+      }
+    }
+  }
+  const classifierFailure = () => {
+    if (!requestContext || (!classifierError && classifierStopped)) return null
+    const body = classifierError || {
+      type: 'error',
+      error: {
+        type: 'api_error',
+        code: 'upstream_stream_interrupted',
+        status: 502,
+        message: 'Classifier stream ended before message_stop',
+      },
+    }
+    const declared = Number(body.error?.status)
+    const status = declared >= 400 && declared < 600 ? declared : mapUpstreamError(200, body).status
+    return {
+      ...resultBase,
+      ok: false,
+      status,
+      body,
+      headers: {
+        ...resultBase.headers,
+        ...(body.error?.retry_after ? { 'retry-after': String(body.error.retry_after) } : {}),
+      },
+      terminalState: 'rejected',
+    }
+  }
+
   if (!clientStream) {
     const assembler = converters.createClaudeMessageAssembler()
     let committed = false
-    await readLines(upstream, async (line) => {
+    await readUpstreamLines(async (line) => {
       applyMaybeUsageHide(line, personaHideTokens, cacheTtl, converters)
       converters.applyClaudeSSELineToMessage(line, assembler)
       if (!committed && String(line).startsWith('data:')) committed = true
     })
+    const failure = classifierFailure()
+    if (failure) return { ...failure, committed: false }
     return {
       ...resultBase,
       ok: resultBase.ok && !!assembler.message,
@@ -197,7 +283,7 @@ export async function runApiInference({
   let sawStop = false
   const started = Date.now()
   let ttftMs = null
-  await readLines(upstream, async (line) => {
+  await readUpstreamLines(async (line) => {
     if (personaHideTokens) line = converters.hidePersonaUsageInSseLine(line, personaHideTokens, cacheTtl) || line
     if (String(line).startsWith('data:') && ttftMs == null) ttftMs = Date.now() - started
     if (String(line).includes('message_stop')) sawStop = true
@@ -220,6 +306,9 @@ export async function runApiInference({
       writeChunks(converters.claudeSSELineToOpenAICompletionChunks(line, state))
     else writeChunks(converters.claudeSSELineToResponsesEvents(line, state))
   })
+
+  const failure = classifierFailure()
+  if (failure) return { ...failure, committed, ttftMs }
 
   return {
     ...resultBase,

@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -20,10 +21,22 @@ import (
 )
 
 const (
-	requestTimeout = 30 * time.Second
-	maxBodyBytes   = 4 << 20
+	requestTimeout       = 30 * time.Second
+	maxBodyBytes         = 4 << 20
+	claudeResetUsagePath = "/api/oauth/usage?cedar_ember=1&skip_spend=1"
 )
 
+var (
+	resetOrgPattern     = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+	resetGrantPattern   = regexp.MustCompile(`^[a-z0-9_-]{1,40}$`)
+	resetRequestPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+)
+
+type resetRedeemInput struct {
+	OrganizationUUID string `json:"organization_uuid"`
+	GrantID          string `json:"grant_id"`
+	RequestID        string `json:"request_id"`
+}
 type responseEnvelope struct {
 	OK      bool              `json:"ok"`
 	Status  int               `json:"status"`
@@ -116,6 +129,32 @@ func Run(args []string, stdin io.Reader, stdout io.Writer) int {
 		} else {
 			return writeAndReturn(stdout, errorEnvelope(0, "invalid_arguments", "invalid count-tokens input"), 2)
 		}
+	case "reset-status":
+		// cedar_ember hides grants unless the caller is the external CLI surface.
+		// The slot telemetry UA is claude-code/<ver>, which upstream answers as ineligible_reason=surface.
+		headers["user-agent"] = claudeResetUserAgent(cfg)
+		headers["x-app"] = "cli"
+		response, err = client.Get(ctx, claudeResetUsagePath, headers)
+	case "reset-redeem":
+		var redeemInput resetRedeemInput
+		if err = decodeResetRedeem(stdin, &redeemInput); err != nil {
+			return writeAndReturn(stdout, errorEnvelope(0, "invalid_arguments", "invalid reset redeem request"), 2)
+		}
+		target, pathErr := resetRedeemPath(redeemInput.OrganizationUUID)
+		if pathErr != nil {
+			return writeAndReturn(stdout, errorEnvelope(0, "invalid_arguments", "invalid reset redeem request"), 2)
+		}
+		payload, marshalErr := json.Marshal(map[string]string{
+			"program":    "cedar_ember",
+			"grant_id":   redeemInput.GrantID,
+			"request_id": redeemInput.RequestID,
+		})
+		if marshalErr != nil {
+			return writeAndReturn(stdout, errorEnvelope(0, "invalid_arguments", "invalid reset redeem request"), 2)
+		}
+		headers["user-agent"] = claudeResetUserAgent(cfg)
+		headers["x-app"] = "cli"
+		response, err = client.Post(ctx, target, payload, headers)
 	}
 	if err != nil {
 		code := classifyError(err)
@@ -143,7 +182,7 @@ func parseArgs(args []string) (string, string, bool, bool) {
 
 func validateOperation(op string) error {
 	switch op {
-	case "refresh", "usage", "profile", "models", "count-tokens":
+	case "refresh", "usage", "profile", "models", "count-tokens", "reset-status", "reset-redeem":
 		return nil
 	default:
 		return fmt.Errorf("unknown oauth operation %q", op)
@@ -160,7 +199,7 @@ func oauthHTTPClient(cfg config.Config) (*http.Client, error) {
 func requestHeaders(cfg config.Config, op string) map[string]string {
 	headers := map[string]string{"user-agent": userAgent(cfg)}
 	switch op {
-	case "usage", "profile", "models":
+	case "usage", "profile", "models", "reset-status", "reset-redeem":
 		headers["anthropic-beta"] = "oauth-2025-04-20"
 	}
 	return headers
@@ -176,6 +215,14 @@ func userAgent(cfg config.Config) string {
 		return "claude-cli/" + version + " (external, cli)"
 	}
 	return "claude-cli/2.1.284 (external, cli)"
+}
+
+func claudeResetUserAgent(cfg config.Config) string {
+	version := strings.TrimSpace(cfg.Telemetry.Identity.CLIVersion)
+	if version == "" {
+		version = "2.1.284"
+	}
+	return "claude-cli/" + version + " (external, cli)"
 }
 
 func mergeHeaders(base, extra map[string]string) map[string]string {
@@ -207,6 +254,33 @@ func decodeCountTokens(reader io.Reader, input *countTokensInput) error {
 		return errors.New("count-tokens body is required")
 	}
 	return nil
+}
+
+func decodeResetRedeem(reader io.Reader, input *resetRedeemInput) error {
+	if reader == nil {
+		return errors.New("reset redeem input is required")
+	}
+	raw, err := io.ReadAll(io.LimitReader(reader, maxBodyBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(raw) == 0 || len(raw) > maxBodyBytes {
+		return errors.New("reset redeem input is invalid")
+	}
+	if err := json.Unmarshal(raw, input); err != nil {
+		return err
+	}
+	if !resetGrantPattern.MatchString(input.GrantID) || !resetRequestPattern.MatchString(input.RequestID) {
+		return errors.New("reset redeem input is invalid")
+	}
+	return nil
+}
+
+func resetRedeemPath(org string) (string, error) {
+	if !resetOrgPattern.MatchString(org) || strings.EqualFold(org, "00000000-0000-0000-0000-000000000000") {
+		return "", errors.New("invalid organization")
+	}
+	return "/api/organizations/" + strings.ToLower(org) + "/reset_rate_limits", nil
 }
 
 func writeUpstreamResponse(stdout io.Writer, response *upstream.Response) int {

@@ -206,7 +206,14 @@ test('remote iptables script mirrors applyIptables semantics', () => {
   assert.match(lines[2], /'-C' 'PREROUTING'.*\|\| sudo -n iptables .*'-A' 'PREROUTING'/)
   assert.ok(lines.at(-1).includes("'-C' 'FORWARD'") && lines.at(-1).includes("'-I' 'FORWARD' '1'"))
   assert.ok(script.includes("'!'"), 'negation is passed as its own quoted arg')
-  assert.equal(lines.length, 1 + plan.add.length - 2, 'two -C rows fold into their guarded row')
+  const guards = plan.add.filter((row) => row.includes('-C')).length
+  assert.equal(lines.length, 1 + plan.add.length - guards, '-C rows fold into their guarded row')
+  const inputLines = lines.filter((line) => line.includes("'INPUT'"))
+  assert.equal(inputLines.length, 2)
+  for (const line of inputLines) {
+    assert.match(line, /'-C' 'INPUT'.*\|\| sudo -n iptables .*'-I' 'INPUT' '1'/)
+    assert.ok(line.includes("'-i' 'kegabc' '-s' '172.30.0.0/16' '-d' '172.30.0.0/16'"))
+  }
   assert.doesNotMatch(remoteIptablesScript(plan, { sudo: false }), /sudo/)
 })
 
@@ -245,7 +252,15 @@ test('slot image tag follows payload bytes only; a VERSION bump keeps the image'
     fakeElf(path.join(root, f), 1)
   }
   fakeElf(path.join(root, 'bin/kin-codex-kernel'), 1)
-  const envKeys = ['KIN_KERNEL_BIN', 'KIN_WORKER_BIN', 'KIN_EGRESS_BIN', 'KIN_CODEX_KERNEL_BIN', 'KIN_WRAP_CLI_ROOT']
+  const envKeys = [
+    'KIN_KERNEL_BIN',
+    'KIN_WORKER_BIN',
+    'KIN_EGRESS_BIN',
+    'KIN_CODEX_KERNEL_BIN',
+    'KIN_WRAP_CLI_ROOT',
+    'KIN_CLUSTER_WORKER_BIN',
+    'KIN_CLUSTER_EGRESS_BIN',
+  ]
   const saved = Object.fromEntries(envKeys.map((k) => [k, process.env[k]]))
   t.after(() => {
     for (const [k, v] of Object.entries(saved)) {
@@ -255,6 +270,9 @@ test('slot image tag follows payload bytes only; a VERSION bump keeps the image'
   })
   for (const k of envKeys) delete process.env[k]
   process.env.KIN_CODEX_KERNEL_BIN = path.join(root, 'bin/kin-codex-kernel')
+  // Use this test's amd64 fixtures independently of native controller defaults.
+  process.env.KIN_CLUSTER_WORKER_BIN = path.join(root, 'bin/kin-worker')
+  process.env.KIN_CLUSTER_EGRESS_BIN = path.join(root, 'bin/kin-egress')
   fs.chmodSync(process.env.KIN_CODEX_KERNEL_BIN, 0o755)
 
   const a = slotImageSpec(root, 'ubuntu-24.04')
@@ -273,6 +291,60 @@ test('slot image tag follows payload bytes only; a VERSION bump keeps the image'
   fs.writeFileSync(path.join(root, 'bin/kin-worker'), '#!/bin/sh\n')
   assert.throws(() => slotImageSpec(root, 'ubuntu-24.04'), { code: 'slot_payload_invalid' })
   assert.throws(() => slotImageSpec(root, 'nope-os'), { code: 'invalid_kernel' })
+})
+
+test('amd64 node payload stays separate from native ARM control helpers', (t) => {
+  const root = tmpDir('kin-arm-cluster-payload-')
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  for (const file of [
+    'share/wrap-cli/cli-node',
+    'share/wrap-cli/cc-node',
+    'bin/kin-kernel',
+    'bin/kin-codex-kernel',
+    'bin/kin-worker',
+    'bin/kin-egress',
+    'amd64/kin-worker',
+    'amd64/kin-egress',
+  ]) {
+    fakeElf(path.join(root, file), 1)
+  }
+  for (const name of ['kin-worker', 'kin-egress']) {
+    const file = path.join(root, 'bin', name)
+    const arm = fs.readFileSync(file)
+    arm.writeUInt16LE(183, 18) // ELF e_machine: AArch64.
+    fs.writeFileSync(file, arm)
+  }
+  const envKeys = [
+    'KIN_KERNEL_BIN',
+    'KIN_WORKER_BIN',
+    'KIN_EGRESS_BIN',
+    'KIN_CODEX_KERNEL_BIN',
+    'KIN_WRAP_CLI_ROOT',
+    'KIN_CLUSTER_WORKER_BIN',
+    'KIN_CLUSTER_EGRESS_BIN',
+  ]
+  const saved = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]))
+  t.after(() => {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  })
+  for (const key of envKeys) delete process.env[key]
+  process.env.KIN_WORKER_BIN = path.join(root, 'bin', 'kin-worker')
+  process.env.KIN_CODEX_KERNEL_BIN = path.join(root, 'bin', 'kin-codex-kernel')
+  fs.chmodSync(process.env.KIN_CODEX_KERNEL_BIN, 0o755)
+  process.env.KIN_CLUSTER_WORKER_BIN = path.join(root, 'amd64', 'kin-worker')
+  process.env.KIN_CLUSTER_EGRESS_BIN = path.join(root, 'amd64', 'kin-egress')
+  const payload = slotImageSpec(root, 'ubuntu-24.04')
+  for (const name of ['kin-worker', 'kin-egress']) {
+    const entry = payload.files.find((file) => file.name === `usr/local/bin/${name}`)
+    assert.equal(entry.src, path.join(root, 'amd64', name))
+    assert.equal(fs.readFileSync(entry.src).readUInt16LE(18), 62)
+    assert.equal(fs.readFileSync(path.join(root, 'bin', name)).readUInt16LE(18), 183)
+  }
+  process.env.KIN_CLUSTER_WORKER_BIN = process.env.KIN_WORKER_BIN
+  assert.throws(() => slotImageSpec(root, 'ubuntu-24.04'), { code: 'slot_payload_invalid' })
 })
 
 test('tar stream round-trips through system tar with modes intact', async (t) => {

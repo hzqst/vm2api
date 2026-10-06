@@ -1,0 +1,1 @@
+import{i as e}from"./button-B7yMy2z2.js";var t=e(`check`,[[`path`,{d:`M20 6 9 17l-5-5`,key:`1gmf2c`}]]),n=Object.defineProperty,r=(e,t)=>n(e,`name`,{value:t,configurable:!0});function i(e,[t,n]){return Math.min(n,Math.max(t,e))}r(i,`clamp`);export{t as n,i as t};

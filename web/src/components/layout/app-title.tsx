@@ -29,7 +29,7 @@ export function AppTitle({ version }: { version?: string }) {
             aria-label='vm2api 概览'
             className='flex min-w-0 flex-1 items-center gap-2.5 rounded-lg outline-hidden focus-visible:ring-2 focus-visible:ring-sidebar-ring'
           >
-            <span className='grid size-10 shrink-0 place-items-center rounded-lg bg-primary text-primary-foreground shadow-sm ring-1 ring-primary/30 group-data-[collapsible=icon]:size-8'>
+            <span className='grid size-10 shrink-0 place-items-center rounded-xl bg-slate-950 text-white shadow-md ring-1 ring-cyan-500/35 group-data-[collapsible=icon]:size-8'>
               <Logo
                 aria-hidden
                 className='size-5 group-data-[collapsible=icon]:size-4'

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Issue 提交指南
+    url: https://github.com/dofastted/vm2api/blob/main/ISSUE_GUIDE.md
+    about: 提交前先看：版本、复现路线、环境、日志、脱敏
+  - name: Telegram @VM2API
+    url: https://t.me/VM2API
+    about: 使用交流；安全漏洞请私信，不要公开提 Issue

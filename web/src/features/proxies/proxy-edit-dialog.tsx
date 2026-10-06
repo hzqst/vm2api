@@ -17,6 +17,9 @@ import { dashboardQueryOptions } from '@/features/overview/queries'
 import { proxiesQueryOptions } from '@/features/proxies/queries'
 import { proxyBoundIds } from './proxy-sort'
 
+/** 与网关 PROXY_LABEL_MAX 一致。 */
+const PROXY_LABEL_MAX = 64
+
 type EditResult = {
   proxy?: VmProxySnap
   workers?: { vm_id: string; ok: boolean; error?: string | null }[]
@@ -40,8 +43,11 @@ export function ProxyEditDialog({
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [clearAuth, setClearAuth] = useState(false)
+  const [label, setLabel] = useState('')
 
   const boundCount = proxyBoundIds(proxy || undefined).length
+  // 代理名称只影响显示：只改名称时网关不会重载已绑槽位的 worker。
+  const labelChanged = label.trim() !== String(proxy?.label || '')
 
   // 按 id 重置，而不是按对象身份。代理页每次 refetch 都会产出新的 proxy 对象，
   // 若依赖对象引用，编辑期间的一次后台刷新就会把用户正在输入的账密清空。
@@ -53,6 +59,7 @@ export function ProxyEditDialog({
     setUsername('')
     setPassword('')
     setClearAuth(false)
+    setLabel(String(proxy?.label || ''))
     // proxy 的其余字段刻意不入依赖：只有换了目标才该重置表单。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [proxyId])
@@ -72,6 +79,7 @@ export function ProxyEditDialog({
         if (username.trim()) patch.username = username.trim()
         if (password) patch.password = password
       }
+      if (labelChanged) patch.label = label.trim()
       return api<EditResult>(
         `/api/panel/proxies/${encodeURIComponent(String(proxy?.id || ''))}`,
         { method: 'PUT', body: JSON.stringify(patch) }
@@ -109,12 +117,14 @@ export function ProxyEditDialog({
   // password_without_username 拒掉 —— 在这里先拦住，别让用户白填一遍。
   const passwordWithoutUser =
     !clearAuth && !!password && !username.trim() && !proxy?.has_auth
-  const nothingChanged =
+  const connectionChanged = !(
     host.trim() === String(proxy?.host || '') &&
     port.trim() === String(proxy?.port ?? '') &&
     !username.trim() &&
     !password &&
     !clearAuth
+  )
+  const nothingChanged = !connectionChanged && !labelChanged
 
   return (
     <Dialog open={!!proxy} onOpenChange={onOpenChange}>
@@ -123,6 +133,15 @@ export function ProxyEditDialog({
           <DialogTitle>编辑代理</DialogTitle>
         </DialogHeader>
         <div className='space-y-3'>
+          <div className='space-y-1'>
+            <Label>代理名称</Label>
+            <Input
+              value={label}
+              maxLength={PROXY_LABEL_MAX}
+              onChange={(e) => setLabel(e.target.value)}
+              placeholder='如：东京-2 号机、xx 机房'
+            />
+          </div>
           <div className='grid gap-3 sm:grid-cols-[2fr_1fr]'>
             <div className='space-y-1'>
               <Label>主机</Label>
@@ -199,7 +218,7 @@ export function ProxyEditDialog({
               只填密码不生效，SOCKS5 需要同时有用户名。
             </p>
           ) : null}
-          {boundCount ? (
+          {boundCount && connectionChanged ? (
             <p className='text-xs text-[color:var(--status-caution)]'>
               该代理已绑 {boundCount} 台槽位，保存后会重载它们的 worker。
             </p>

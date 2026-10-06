@@ -110,3 +110,43 @@ test('snapshot 回归：列表接口永不返回账密', () => {
   const s = JSON.stringify(pool.snapshot())
   assert.doesNotMatch(s, /alice|s3cret|socks5:\/\//, 'GET /proxies 的载荷不得含账密')
 })
+
+test('update: 只改代理名称不动连接字段，也不要求重载槽位；重开后名称仍在', () => {
+  const pool = makePool()
+  const p = seed(pool)
+  const r = pool.update(p.id, { label: '  东京-2 号机  ' })
+  assert.equal(r.ok, true)
+  assert.equal(r.connection_changed, false)
+  assert.equal(r.proxy.label, '东京-2 号机')
+  assert.equal(p.raw, 'socks5://alice:s3cret@1.2.3.4:1080', '只改名称不应改写 raw')
+  pool.load()
+  assert.equal(pool.state.proxies[0].label, '东京-2 号机')
+  assert.equal(pool.snapshot().proxies[0].label, '东京-2 号机')
+})
+
+test('update: 代理名称传空串清除；超长或非字符串被拒', () => {
+  const pool = makePool()
+  const p = seed(pool)
+  pool.update(p.id, { label: 'a' })
+  assert.equal(pool.update(p.id, { label: '' }).proxy.label, null)
+  assert.equal(pool.update(p.id, { label: 'x'.repeat(65) }).error, 'label_too_long')
+  assert.equal(pool.update(p.id, { label: 123 }).error, 'invalid_label')
+})
+
+test('update: 连接字段与名称同改时报告 connection_changed', () => {
+  const pool = makePool()
+  const p = seed(pool)
+  const r = pool.update(p.id, { port: 1082, label: 'box' })
+  assert.equal(r.connection_changed, true)
+  assert.equal(p.port, 1082)
+  assert.equal(p.label, 'box')
+})
+
+test('labelOf 只给名称，不带账密；未知代理返回 null', () => {
+  const pool = makePool()
+  const p = seed(pool)
+  assert.equal(pool.labelOf(p.id), null)
+  pool.update(p.id, { label: 'tw-box' })
+  assert.equal(pool.labelOf(p.id), 'tw-box')
+  assert.equal(pool.labelOf('px-missing'), null)
+})

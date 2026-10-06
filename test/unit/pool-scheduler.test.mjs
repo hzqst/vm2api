@@ -1870,7 +1870,7 @@ test('account concurrency is not clamped to ready_slots', async (t) => {
   for (const item of held) item.release()
 })
 
-test('session slots cap concurrent seats on one VM', async (t) => {
+test('session slots cap distinct seats on one VM, not requests', async (t) => {
   const root = project()
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
   const file = path.join(root, 'vms', 'vm-01.json')
@@ -1895,10 +1895,20 @@ test('session slots cap concurrent seats on one VM', async (t) => {
     excluded: new Set(['account-2']),
     allowWait: false,
   })
-  assert.equal(second.ok, false)
-  assert.equal(second.reason, 'all_accounts_busy')
-  assert.ok((second.wait_reasons || []).includes('session_slots_full'))
+  assert.equal(second.ok, true)
+  assert.equal(second.slotIndex, first.slotIndex)
+  assert.equal(pool.usedSlotCount('vm-01'), 1)
+  const blocked = await pool.selectAndReserve({
+    model: 'claude-test',
+    stickyKey: 'other-conv',
+    excluded: new Set(['account-2']),
+    allowWait: false,
+  })
+  assert.equal(blocked.ok, false)
+  assert.equal(blocked.reason, 'all_accounts_busy')
+  assert.ok((blocked.wait_reasons || []).includes('session_slots_full'))
   first.release()
+  second.release()
   const other = await pool.selectAndReserve({
     model: 'claude-test',
     stickyKey: 'other-conv',
@@ -1907,6 +1917,59 @@ test('session slots cap concurrent seats on one VM', async (t) => {
   })
   assert.equal(other.ok, true)
   other.release()
+})
+
+test('concurrent requests of one key share a seat and the next key gets seat 1', () => {
+  const pool = new PoolScheduler({ projectRoot: 'x:/unused' })
+  const holds = [
+    pool.acquireSlot('vm-1', 'key-a', 2),
+    pool.acquireSlot('vm-1', 'key-a', 2),
+    pool.acquireSlot('vm-1', 'key-a', 2),
+  ]
+  assert.deepEqual(
+    holds.map((hold) => hold?.index),
+    [0, 0, 0],
+  )
+  assert.equal(pool.usedSlotCount('vm-1'), 1)
+  const b = pool.acquireSlot('vm-1', 'key-b', 2)
+  assert.equal(b?.index, 1)
+  assert.equal(pool.usedSlotCount('vm-1'), 2)
+})
+
+test('a seat frees only after its last hold is released', () => {
+  const pool = new PoolScheduler({ projectRoot: 'x:/unused' })
+  const holds = [
+    pool.acquireSlot('vm-1', 'key-a', 2),
+    pool.acquireSlot('vm-1', 'key-a', 2),
+    pool.acquireSlot('vm-1', 'key-a', 2),
+  ]
+  pool.releaseSlotHold('vm-1', holds[0].holdKey)
+  pool.releaseSlotHold('vm-1', holds[1].holdKey)
+  assert.equal(pool.usedSlotCount('vm-1'), 1)
+  assert.equal(pool.slotInflight('vm-1', 0), true)
+  pool.releaseSlotHold('vm-1', holds[2].holdKey)
+  assert.equal(pool.usedSlotCount('vm-1'), 0)
+  assert.equal(pool.slotInflight('vm-1', 0), false)
+})
+
+test('a full VM still admits a key that already holds a seat and refuses a new key', () => {
+  const pool = new PoolScheduler({ projectRoot: 'x:/unused' })
+  const a = pool.acquireSlot('vm-1', 'key-a', 2)
+  const b = pool.acquireSlot('vm-1', 'key-b', 2)
+  assert.deepEqual([a.index, b.index], [0, 1])
+  const again = pool.acquireSlot('vm-1', 'key-a', 2)
+  assert.equal(again?.index, 0)
+  assert.equal(pool.usedSlotCount('vm-1'), 2)
+  assert.equal(pool.acquireSlot('vm-1', 'key-c', 2), null)
+})
+
+test('a released seat taken by another key is not shared with its former owner', () => {
+  const pool = new PoolScheduler({ projectRoot: 'x:/unused' })
+  const a = pool.acquireSlot('vm-1', 'key-a', 1)
+  pool.releaseSlotHold('vm-1', a.holdKey)
+  const b = pool.acquireSlot('vm-1', 'key-b', 1)
+  assert.equal(b.index, 0)
+  assert.equal(pool.acquireSlot('vm-1', 'key-a', 1), null)
 })
 
 test('skipSessionSlot probe bypasses full session seats without occupying one', async (t) => {

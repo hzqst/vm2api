@@ -23,6 +23,7 @@ import { UsageLogsRepo } from '../db/repos/usage-logs-repo.mjs'
 import { classifyRequestError, resolveMutedErrorClasses } from './error-class.mjs'
 import { costColumnsFromUsage, normalizeUsage } from './pricing.mjs'
 import { normalizeCacheTtl } from '../protocol/cache-ttl.mjs'
+import { REASONING_EFFORTS, sessionIdForLog } from '../protocol/log-fields.mjs'
 
 /** Persist the token a client actually sent — only for failed ingress auth. */
 export function presentedApiKeyForLog(token) {
@@ -143,7 +144,7 @@ function redactHeaders(headers = {}) {
   const out = {}
   for (const [k, v] of Object.entries(headers)) {
     const key = String(k).toLowerCase()
-    if (key === 'authorization' || key === 'x-api-key' || key === 'cookie') {
+    if (key === 'authorization' || key === 'x-api-key' || key === 'cookie' || key === 'set-cookie') {
       out[key] = '***REDACTED***'
     } else if (key === 'x-panel-token') {
       out[key] = '***REDACTED***'
@@ -280,6 +281,25 @@ function clampBody(obj, maxChars = 200_000) {
   return { _truncated: true, _chars: raw.length, preview: raw.slice(0, maxChars) }
 }
 
+/**
+ * Client-facing response as stored in a debug record. The body stays raw text
+ * (SSE frames or JSON) so the panel can show exactly what went out; only
+ * credential-shaped substrings are masked.
+ */
+function debugResponse(captured) {
+  let body = captured.body || ''
+  try {
+    body = JSON.parse(redactSecrets(body))
+  } catch {}
+  return {
+    status: captured.status ?? null,
+    headers: captured.headers || null,
+    body,
+    bytes: captured.bytes || 0,
+    truncated: !!captured.truncated,
+  }
+}
+
 export function resolveLogMode(envMode, req) {
   const hdr = String(req?.headers?.['x-kin-log'] || '')
     .trim()
@@ -379,7 +399,57 @@ export class RequestLogStore {
       ip: safeIp(req),
       user_agent: String(req.headers?.['user-agent'] || '').slice(0, 512),
       headers: mode === 'debug' ? redactHeaders(req.headers) : null,
+      // Outbound bodies carry the gateway's rewrite (persona / overlay) and are
+      // readable by the owning tenant; only the operator's configured mode may
+      // enable them, never the caller's x-kin-debug / x-kin-log header.
+      capture_outbound: this.mode === 'debug',
     }
+  }
+
+  /**
+   * Debug mode only: mirror what the client actually received (status,
+   * headers, body bytes up to maxDebugBodyChars) onto `ctx.response` so
+   * finish() can store it next to the inbound/outbound bodies. Normal mode
+   * never wraps the response.
+   */
+  tapResponse(ctx, res) {
+    if (!ctx || ctx.mode !== 'debug' || !res || ctx.response) return
+    const limit = Math.max(0, this.maxDebugBodyChars)
+    const captured = { status: null, headers: null, body: '', bytes: 0, truncated: false }
+    ctx.response = captured
+    const decoder = new TextDecoder()
+    const take = (chunk, encoding) => {
+      if (chunk == null || typeof chunk === 'function') return
+      const buf =
+        typeof chunk === 'string' ? Buffer.from(chunk, typeof encoding === 'string' ? encoding : 'utf8') : chunk
+      if (!(buf instanceof Uint8Array)) return
+      captured.bytes += buf.byteLength
+      if (captured.truncated) return
+      const room = limit - captured.body.length
+      const text = decoder.decode(buf, { stream: true })
+      if (text.length <= room) {
+        captured.body += text
+        return
+      }
+      captured.body += text.slice(0, Math.max(0, room))
+      captured.truncated = true
+    }
+    const write = res.write
+    const end = res.end
+    res.write = function tappedWrite(chunk, encoding, cb) {
+      take(chunk, encoding)
+      return write.call(this, chunk, encoding, cb)
+    }
+    res.end = function tappedEnd(chunk, encoding, cb) {
+      take(chunk, encoding)
+      return end.call(this, chunk, encoding, cb)
+    }
+    res.once('finish', () => {
+      captured.status = res.statusCode || null
+      try {
+        captured.headers = redactHeaders(res.getHeaders?.() || {})
+      } catch {}
+    })
   }
 
   /**
@@ -428,6 +498,9 @@ export class RequestLogStore {
       attempt_count: extra.attempt_count ?? null,
       final_state: extra.final_state || null,
       final_account_id: extra.final_account_id || extra.account_id || null,
+      session_id: sessionIdForLog(extra.session_id),
+      outbound_session_id: sessionIdForLog(extra.outbound_session_id),
+      reasoning_effort: REASONING_EFFORTS.has(extra.reasoning_effort) ? extra.reasoning_effort : null,
       // sub2api ownership + billing columns
       user_id: extra.user_id ?? null,
       group_id: extra.group_id ?? 1,
@@ -465,16 +538,26 @@ export class RequestLogStore {
         ...summary,
         headers: ctx.headers,
         inbound_summary: extra.inbound_summary || summarizeBody(extra.inbound_body),
-        request_body_snapshot: extra.inbound_body != null ? sanitizeRequestBodySnapshot(extra.inbound_body) : null,
-        inbound_body: extra.inbound_body != null ? clampBody(extra.inbound_body, this.maxDebugBodyChars) : null,
+        request_body_snapshot:
+          !extra.classifier && extra.inbound_body != null ? sanitizeRequestBodySnapshot(extra.inbound_body) : null,
+        inbound_body:
+          !extra.classifier && extra.inbound_body != null
+            ? clampBody(extra.inbound_body, this.maxDebugBodyChars)
+            : null,
         hop_meta: extra.hop_meta || null,
         via: extra.via || extra.hop_meta?.via || null,
         upstream_status: extra.upstream_status ?? null,
         outbound_summary: extra.outbound_summary || null,
         cache_prefix: extra.cache_prefix || null,
         cache_continuity: extra.cache_continuity || null,
-        outbound_headers: extra.outbound_headers != null ? redactHeaders(extra.outbound_headers) : null,
-        outbound_body: extra.outbound_body != null ? clampBody(extra.outbound_body, this.maxDebugBodyChars) : null,
+        classifier: extra.classifier || null,
+        outbound_headers:
+          ctx.capture_outbound && extra.outbound_headers != null ? redactHeaders(extra.outbound_headers) : null,
+        outbound_body:
+          ctx.capture_outbound && !extra.classifier && extra.outbound_body != null
+            ? clampBody(extra.outbound_body, this.maxDebugBodyChars)
+            : null,
+        response: ctx.response ? debugResponse(ctx.response) : null,
       }
       try {
         this.repo.insertDebug(summary.request_id || summary.id, summary.ts, debugRec)

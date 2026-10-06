@@ -51,7 +51,7 @@ function probeOlderThanRefresh(vm: Vm): boolean {
  * 一次失败不能当成授权吊销或凭证作废。
  */
 const TEST_PROBE_SOURCES =
-  /^(test-chat|kin-console-test|kin-console-loadtest|health-probe|kin-health-probe)$/i
+  /^(test-chat|kin-console-test|health-probe|kin-health-probe)$/i
 
 const USAGE_PROBE_SOURCES = new Set([
   'vm-oauth-usage',
@@ -746,4 +746,20 @@ export function proxyHostLabel(
     return `${host}${proxy.port != null ? `:${proxy.port}` : ''}`
   }
   return proxy.id || '—'
+}
+
+/** 带代理名称的地址：`名称 · host:port`；没起名就退回 proxyHostLabel()。 */
+export function proxyNamedLabel(
+  proxy:
+    | {
+        host?: string
+        port?: number | string
+        id?: string
+        label?: string | null
+      }
+    | undefined
+): string {
+  const host = proxyHostLabel(proxy)
+  const name = proxy?.label?.trim()
+  return name && host !== '—' ? `${name} · ${host}` : host
 }

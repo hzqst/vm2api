@@ -40,7 +40,18 @@ export type RequestLogItem = {
   api_key_presented?: string | null
   /** XFF 首段回落 socket 地址，截断 45 字符，空时为 ''。非凭证，无需掩码。 */
   ip?: string
+  /** debug 模式下网关实际回给客户端的响应；body 为原始文本（SSE）或已解析 JSON。 */
+  response?: DebugResponseCapture | null
   [key: string]: unknown
+}
+
+export type DebugResponseCapture = {
+  status: number | null
+  headers: Record<string, unknown> | null
+  body: unknown
+  /** 实际写出的总字节数（未截断）。 */
+  bytes: number
+  truncated: boolean
 }
 
 export type RequestAttempt = {

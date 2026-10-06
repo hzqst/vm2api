@@ -8,7 +8,8 @@
  *                   passthrough: official Claude Code keeps the caller
  *                   session; unofficial hashes the caller token. With no
  *                   caller session, derive a UUID from account + client +
- *                   first user text (sub2api buildStableSessionSeed). Never
+ *                   first user identity text (first non-reminder block;
+ *                   sub2api buildStableSessionSeed). Never
  *                   randomUUID while any of those anchors exist. A sticky
  *                   row for the same VM reuses the id it already stored.
  *                   Outbound always has a session. Email never goes in
@@ -92,17 +93,52 @@ export function sessionContextDiscriminator({ clientIp = '', userAgent = '', api
   return `${ip}:${ua}:${key}`
 }
 
-/**
- * Account + client + first user text. Appending later messages does not
- * change the seed. This is not the pool sticky key.
- */
-export function buildStableSessionSeed(accountId, clientDiscriminator, firstUserText) {
-  return `${String(accountId ?? '').trim()}::${String(clientDiscriminator ?? '')}::${String(firstUserText ?? '')}`
+const SYSTEM_REMINDER_BLOCK_RE = /<system-reminder>[\s\S]*?<\/system-reminder>/gi
+
+/** Nothing but <system-reminder> blocks: client-injected context (date, cwd, rules), not the conversation. */
+export function isSystemReminderOnly(text) {
+  const t = String(text ?? '').trim()
+  return t !== '' && t.replace(SYSTEM_REMINDER_BLOCK_RE, '').trim() === ''
 }
 
-function stableSessionMaterial(accountId, clientDiscriminator, firstUserText) {
+/**
+ * Session identity of the first user message, from its ordered text blocks:
+ * the first block that is not pure <system-reminder>. Clients that lead with a
+ * verbatim date/cwd reminder would otherwise merge every conversation opened
+ * that day in that directory. Blocks after the chosen one change per turn on
+ * some clients, so they never join the identity. All-reminder messages fall
+ * back to the first block.
+ */
+export function firstUserIdentityText(texts = []) {
+  const blocks = texts.filter((t) => typeof t === 'string' && t.trim())
+  return blocks.find((t) => !isSystemReminderOnly(t)) ?? blocks[0] ?? ''
+}
+
+/** `firstUserIdentityText` of the first `role: user` message (Anthropic / Chat shape). */
+export function extractFirstUserIdentity(messages) {
+  if (!Array.isArray(messages)) return ''
+  const user = messages.find((m) => m?.role === 'user')
+  const content = user?.content
+  if (typeof content === 'string') return firstUserIdentityText([content])
+  if (!Array.isArray(content)) return ''
+  return firstUserIdentityText(
+    content.map((block) =>
+      typeof block === 'string' ? block : block?.type === 'text' && typeof block.text === 'string' ? block.text : '',
+    ),
+  )
+}
+
+/**
+ * Account + client + first user identity text. Appending later messages does
+ * not change the seed. This is not the pool sticky key.
+ */
+export function buildStableSessionSeed(accountId, clientDiscriminator, firstUserIdentity) {
+  return `${String(accountId ?? '').trim()}::${String(clientDiscriminator ?? '')}::${String(firstUserIdentity ?? '')}`
+}
+
+function stableSessionMaterial(accountId, clientDiscriminator, firstUserIdentity) {
   if (String(accountId || '').trim()) return true
-  if (String(firstUserText || '').trim()) return true
+  if (String(firstUserIdentity || '').trim()) return true
   return (
     String(clientDiscriminator || '')
       .replace(/:/g, '')
@@ -284,9 +320,9 @@ function resolvePassthroughOutboundSessionId(caller, opts) {
           userAgent: opts.userAgent,
           apiKeyId: opts.apiKeyId,
         })
-  const firstUserText = String(opts.firstUserText || '')
-  if (stableSessionMaterial(accountId, discriminator, firstUserText)) {
-    return uuidFromSeed(STABLE_SESSION_SEED + buildStableSessionSeed(accountId, discriminator, firstUserText))
+  const firstUserIdentity = String(opts.firstUserIdentity || '')
+  if (stableSessionMaterial(accountId, discriminator, firstUserIdentity)) {
+    return uuidFromSeed(STABLE_SESSION_SEED + buildStableSessionSeed(accountId, discriminator, firstUserIdentity))
   }
   return crypto.randomUUID()
 }
@@ -316,9 +352,9 @@ export function resolveOutboundSessionId(callerSession, opts = {}) {
           userAgent: opts.userAgent,
           apiKeyId: opts.apiKeyId,
         })
-  const firstUserText = String(opts.firstUserText || '')
-  const identity = caller || buildStableSessionSeed(accountId, discriminator, firstUserText)
-  if (caller || stableSessionMaterial(accountId, discriminator, firstUserText)) {
+  const firstUserIdentity = String(opts.firstUserIdentity || '')
+  const identity = caller || buildStableSessionSeed(accountId, discriminator, firstUserIdentity)
+  if (caller || stableSessionMaterial(accountId, discriminator, firstUserIdentity)) {
     return rebuildOutboundSession({ identity, epoch: opts.epoch ?? 'pending' })
   }
   return crypto.randomUUID()
@@ -356,7 +392,7 @@ export function applyCrsIdentityReplace(body, identity, inbound = {}, reqHeaders
       clientIp: opts.clientIp,
       userAgent: opts.userAgent || headerValue(reqHeaders, 'user-agent'),
       apiKeyId: opts.apiKeyId,
-      firstUserText: opts.firstUserText,
+      firstUserIdentity: opts.firstUserIdentity,
     })
 
   const md = {}

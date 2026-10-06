@@ -8,6 +8,8 @@ import {
   changelogSince,
   compareSemver,
   normalizeTag,
+  parseReleaseTag,
+  imageTagFor,
   readLocalVersion,
   loadChangelog,
   publicRelease,
@@ -250,4 +252,62 @@ test('startHostUpgrade rejects non-semver targets', async () => {
   })
   assert.equal(result.status, 400)
   assert.equal(result.error.code, 'invalid_version')
+})
+
+test('release tags carry an optional architecture suffix that is cleaned and recognized', () => {
+  assert.deepEqual(parseReleaseTag('v1.2.7'), { version: '1.2.7', tag: 'v1.2.7', arch: '' })
+  assert.deepEqual(parseReleaseTag('1.2.7-aarch64'), { version: '1.2.7', tag: 'v1.2.7', arch: 'arm64' })
+  assert.deepEqual(parseReleaseTag('v1.2.7-X86_64'), { version: '1.2.7', tag: 'v1.2.7', arch: 'amd64' })
+  assert.equal(parseReleaseTag('v1.2.7-riscv64'), null)
+  assert.equal(parseReleaseTag('v1.2.7-arm64; rm -rf /'), null)
+  assert.equal(normalizeTag('v1.2.7-arm64'), 'v1.2.7')
+  assert.equal(imageTagFor('v1.2.7', 'x64'), 'v1.2.7')
+  assert.equal(imageTagFor('v1.2.7-arm64', 'arm64'), 'v1.2.7-arm64')
+  assert.equal(imageTagFor('v1.2.7', 'aarch64'), 'v1.2.7-arm64')
+  assert.equal(imageTagFor('v1.2.7', 'ppc64'), '')
+})
+
+test('startHostUpgrade rejects a suffix for another architecture before spawning', async () => {
+  const result = await startHostUpgrade({
+    confirm: true,
+    version: 'v1.2.7-amd64',
+    arch: 'arm64',
+    spawnImpl() {
+      throw new Error('should not spawn')
+    },
+  })
+  assert.equal(result.status, 400)
+  assert.equal(result.error.code, 'arch_mismatch')
+})
+
+test('ARM64 host upgrade pins the arm64 image and refuses a source tree without the override', async () => {
+  clearReleaseCache()
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vm2api-release-'))
+  const spawned = []
+  try {
+    fs.writeFileSync(path.join(tmp, 'VERSION'), '1.2.6\n')
+    fs.writeFileSync(path.join(tmp, 'CHANGELOG.md'), FIXTURE)
+    const result = await startHostUpgrade({
+      projectRoot: tmp,
+      confirm: true,
+      version: 'v1.2.7-arm64',
+      arch: 'arm64',
+      fetchImpl: async () => ({ ok: true, json: async () => ({ tag_name: 'v1.2.7', body: '' }) }),
+      spawnImpl(cmd, args, opts) {
+        spawned.push({ cmd, args, opts })
+        return { unref() {} }
+      },
+    })
+    if (result.status === 409) return
+    assert.equal(result.status, 202)
+    assert.equal(result.data.target, 'v1.2.7')
+    const script = spawned[0].args[spawned[0].args.indexOf('-c') + 1]
+    assert.match(script, /^TAG=v1\.2\.7$/m)
+    assert.match(script, /^IMAGE_TAG=v1\.2\.7-arm64$/m)
+    assert.match(script, /VM2API_IMAGE_TAG=\$IMAGE_TAG/)
+    assert.ok(script.indexOf('docker-compose.arm64.yml') < script.indexOf('git checkout'))
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+    clearReleaseCache()
+  }
 })

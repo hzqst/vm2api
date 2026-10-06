@@ -1,11 +1,13 @@
 import type { AuthScheme, OauthFlavor, Vm } from '@/types/panel-vm'
 import { isCodexVm } from '@/lib/vm-kind'
 
-export type CredType = 'oauth' | 'setup-token' | 'apikey' | 'none'
+export type CredType =
+  'oauth' | 'setup-token' | 'official-setup-token' | 'apikey' | 'none'
 
 const CRED_TYPE_LABEL: Record<CredType, string> = {
   oauth: 'OAuth',
   'setup-token': 'Setup Token',
+  'official-setup-token': '官方 Setup Token',
   apikey: 'Console',
   none: '无凭证',
 }
@@ -19,7 +21,7 @@ const CRED_TYPE_LABEL: Record<CredType, string> = {
  *
  * 注意 gateway 有三套互不通用的词汇表：
  * - `flavor` 用下划线（`setup_token`）
- * - `credential_mode` 用连字符（`setup-token`）
+ * - `credential_mode` 用连字符（`setup-token` / `official-setup-token`）
  * - `/vms/import` 的 `type` 又是第三套
  * 归一化时统一把下划线转连字符，但**不要**拿转换结果去当 flavor 用。
  */
@@ -28,6 +30,13 @@ export function credTypeFromMode(raw: unknown): CredType {
     .toLowerCase()
     .replace(/_/g, '-')
   if (!m) return 'none'
+  if (
+    m === 'official-setup-token' ||
+    m === 'office-setup-token' ||
+    m === 'claude-setup-token'
+  ) {
+    return 'official-setup-token'
+  }
   if (m === 'setup-token') return 'setup-token'
   if (m === 'apikey' || m === 'api-key' || m === 'console') return 'apikey'
   return 'oauth'
@@ -79,13 +88,13 @@ export function supportsOfficialCc(vm: Vm | undefined): boolean {
 
 /**
  * 能否刷新凭证。镜像 gateway `canRefreshCredential`：
- * Console API Key 永远不能刷新；Setup Token 无 refresh 时也不能。
+ * Console API Key 和官方 Setup Token 永远不能刷新；转换后的 Setup Token 无 refresh 时也不能。
  * GPT 槽有 refresh_token 才能刷新。
  */
 export function canRefreshCredential(vm: Vm | undefined): boolean {
   if (isCodexVm(vm)) return Boolean(vm?.has_refresh)
   const type = credTypeOf(vm)
-  if (type === 'apikey') return false
+  if (type === 'apikey' || type === 'official-setup-token') return false
   if (type === 'setup-token') return !!vm?.has_refresh
   return true
 }

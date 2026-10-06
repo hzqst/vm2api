@@ -7,7 +7,12 @@ import crypto from 'node:crypto'
 import { ENVELOPE_NEEDLES, extractPrompt } from '../core/distill-detect.mjs'
 import { resolveStoreDb } from '../db/database.mjs'
 import { StickyRepo } from '../db/repos/sticky-repo.mjs'
-import { claudeCodeAgentRootSession, extractCallerSession, parseUserId } from '../identity/identity-rewrite.mjs'
+import {
+  claudeCodeAgentRootSession,
+  extractCallerSession,
+  firstUserIdentityText,
+  parseUserId,
+} from '../identity/identity-rewrite.mjs'
 
 export const DEFAULT_STICKY_HEADER_KEYS = [
   'x-session-id',
@@ -78,9 +83,10 @@ export function isPersistableEnvelope(body = {}, inbound = null) {
   return ENVELOPE_NEEDLES.some((item) => hay.includes(String(item).toLowerCase()))
 }
 
-/** First text block only. Later blocks of the same user message change every
- * turn and must not open another VM session slot. This matches
- * extractFirstUserText, which already seeds the outbound session id.
+/** One block of the first user message, chosen by firstUserIdentityText: the
+ * first one that is not pure <system-reminder>. Later blocks of the same user
+ * message change every turn and must not open another VM session slot. The
+ * outbound session seed picks the same block (extractFirstUserIdentity).
  */
 export function firstUserFingerprint(body = {}) {
   const msgs = Array.isArray(body?.messages) ? body.messages : Array.isArray(body?.input) ? body.input : []
@@ -90,16 +96,11 @@ export function firstUserFingerprint(body = {}) {
     const c = user.content ?? user.text ?? user.input
     if (typeof c === 'string') text = c
     else if (Array.isArray(c)) {
-      for (const part of c) {
-        if (typeof part === 'string' && part) {
-          text = part
-          break
-        }
-        if (part?.type === 'text' && typeof part.text === 'string' && part.text) {
-          text = part.text
-          break
-        }
-      }
+      text = firstUserIdentityText(
+        c.map((part) =>
+          typeof part === 'string' ? part : part?.type === 'text' && typeof part.text === 'string' ? part.text : '',
+        ),
+      )
     }
   } else if (typeof body?.input === 'string') {
     text = body.input

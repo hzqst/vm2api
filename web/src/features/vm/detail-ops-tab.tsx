@@ -14,6 +14,7 @@ import { Field } from '@/features/vm/detail-section-primitives'
 import { VmEnvironmentCard } from '@/features/vm/environment-card'
 import { NodeChip } from '@/features/vm/node-chip'
 import { isRemoteVm, REMOTE_UNSUPPORTED_TEXT } from '@/features/vm/placement'
+import { VmShellCard } from '@/features/vm/vm-shell-card'
 
 type VmOpsTabProps = {
   vm: Vm
@@ -24,6 +25,8 @@ type VmOpsTabProps = {
   refreshBlocked: string
   savingTimezone: boolean
   onAction: (path: string, body?: unknown) => void
+  /** 终端快捷指令执行后刷新详情。 */
+  onRefresh: () => void
   onTimezoneSave: (timezone: string) => void
   onTimezoneFollowProxy: () => void
   onReset: () => void
@@ -40,6 +43,7 @@ export function VmOpsTab(props: VmOpsTabProps) {
     refreshBlocked,
     savingTimezone,
     onAction,
+    onRefresh,
     onTimezoneSave,
     onTimezoneFollowProxy,
     onReset,
@@ -197,6 +201,7 @@ export function VmOpsTab(props: VmOpsTabProps) {
           </div>
         </>
       )}
+      {gpt ? null : <VmShellCard vm={vm} onChanged={onRefresh} />}
       <Separator />
       <div className='flex flex-wrap gap-2'>
         <Button size='sm' variant='outline' onClick={onReset}>
