@@ -152,7 +152,7 @@ test('request attempt ledger records final state and commit boundary', () => {
       vmId: 'vm-01',
       accountId: 'account-1',
       model: 'claude-test',
-      selectionReason: 'weighted-round-robin',
+      selectionReason: 'balanced',
       waitMs: 4,
     })
     repo.complete('req-1', 1, {

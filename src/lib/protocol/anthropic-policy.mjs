@@ -1,7 +1,12 @@
 import crypto from 'node:crypto'
 import { liftMidConversationSystemMessages, stripIllegalContentFields } from './sanitize.mjs'
 import { isAnthropicServerTool } from './web-search.mjs'
-import { normalizeThinkingForModel, ensureUnofficialAdaptiveThinking, ensureUnofficialEffortHigh } from './thinking.mjs'
+import {
+  normalizeThinkingForModel,
+  ensureUnofficialAdaptiveThinking,
+  ensureUnofficialEffortHigh,
+  downgradeUngatedThinkingDisplay,
+} from './thinking.mjs'
 import { applyMaxTokensCap, applyModelRequestRules, getCapabilities } from './model-policy.mjs'
 import { ensureOutputConfigSchema, rectifyUnofficialRequest } from './request-rectifier.mjs'
 import { DEFAULT_CACHE_TTL, applyCacheBreakpoints, stripCacheScopeFields } from './cache-ttl.mjs'
@@ -303,7 +308,7 @@ export function sanitizeAnthropicBodyForBetaTokens(body = {}, anthropicBetaHeade
   ) {
     out = liftMidConversationSystemMessages(out)
   }
-  return out
+  return downgradeUngatedThinkingDisplay(out, anthropicBetaHeader)
 }
 
 /** sub2api normalizeClaudeOAuthRequestBody defaults (temperature / empty tools). */

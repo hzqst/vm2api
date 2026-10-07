@@ -30,7 +30,7 @@ location ~ ^/api/panel/(cluster/nodes|vms)/[^/]+/shell$ {
 }
 ```
 
-HostDzire（`kin.fkcodex.com`）前面还有 Go 前门 `:8787`，Node 在 `:8788`。前门会丢掉 `Upgrade`。shell 必须直连 Node，不要指 `:8787`：
+生产机前面还有 Go 前门 `:8787`，Node 在 `:8788`。前门会丢掉 `Upgrade`。shell 必须直连 Node，不要指 `:8787`：
 
 ```nginx
 location ~ ^/api/panel/(cluster/nodes|vms)/[^/]+/shell$ {
@@ -76,7 +76,7 @@ curl -sk -D - -o /dev/null \
 nginx -T 2>/dev/null | grep -n shell
 ```
 
-HostDzire 上这一段的 `proxy_pass` 必须是 `127.0.0.1:8788`。
+生产机上这一段的 `proxy_pass` 必须是 `127.0.0.1:8788`。
 
 ## 和页面资源分开看
 

@@ -8,6 +8,7 @@ import {
   responsesSseToChatChunk,
   responsesSseToAnthropicEvents,
   createAnthropicSseState,
+  createResponsesSseEventNamer,
   assembleCodexBodyFromSse,
   codexBodyToAnthropicMessage,
   stripCodexIdentity,
@@ -254,4 +255,39 @@ test('assembles Codex SSE chunks into Anthropic text', () => {
   const msg = codexBodyToAnthropicMessage(assembled, 'gpt-6-astra')
   assert.equal(msg.content[0].text, 'Hello')
   assert.equal(msg.usage.output_tokens, 2)
+})
+
+test('kernel Responses frames are re-emitted under their payload type', () => {
+  const name = createResponsesSseEventNamer()
+  const lines = [
+    'event: response',
+    'data: {"type":"response.created","response":{"id":"resp_1"}}',
+    '',
+    'event: response',
+    'data: {"type":"response.output_text.delta","delta":"po"}',
+    '',
+    ': keepalive',
+    'event: response',
+    'data: not-json',
+    '',
+    'data: {"type":"response.completed","response":{"status":"completed"}}',
+  ]
+  assert.equal(
+    lines.map(name).join(''),
+    [
+      'event: response.created',
+      'data: {"type":"response.created","response":{"id":"resp_1"}}',
+      '',
+      'event: response.output_text.delta',
+      'data: {"type":"response.output_text.delta","delta":"po"}',
+      '',
+      ': keepalive',
+      'event: response',
+      'data: not-json',
+      '',
+      'event: response.completed',
+      'data: {"type":"response.completed","response":{"status":"completed"}}',
+      '',
+    ].join('\n'),
+  )
 })

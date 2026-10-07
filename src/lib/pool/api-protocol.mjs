@@ -2,6 +2,7 @@ import { officialMessagesBody } from '../protocol/anthropic-messages.mjs'
 import { prepareClassifierBody } from '../protocol/request-purpose.mjs'
 import { consumeClaudeSSEData } from '../protocol/convert.mjs'
 import { mapUpstreamError } from '../core/errors.mjs'
+import { isContentPolicyErrorCode } from '../core/refusal-guard.mjs'
 import { forwardApi, readApiJson } from '../transport/api-kernel-client.mjs'
 import { messagesUrl, normalizeProtocol, resolvePreset, responsesUrl, upstreamAuthHeaders } from './api-presets.mjs'
 import { claudeToOpenAIResponsesRequest } from './api-openai.mjs'
@@ -165,6 +166,8 @@ export async function runApiInference({
   if (status >= 400) {
     const payload = await readApiJson(upstream).catch(() => ({}))
     const message = payload?.error?.message || payload?.message || `upstream ${status}`
+    const upstreamCode = String(payload?.error?.code || payload?.code || '').trim()
+    const contentCode = isContentPolicyErrorCode(upstreamCode) ? upstreamCode.toLowerCase() : ''
     return {
       ...resultBase,
       ok: false,
@@ -173,6 +176,7 @@ export async function runApiInference({
         error: {
           ...(requestContext ? payload?.error : {}),
           ...(requestContext && payload?.error?.code ? { upstream_code: payload.error.code } : {}),
+          ...(!requestContext && contentCode ? { code: contentCode } : {}),
           type: requestContext ? payload?.error?.type || 'api_error' : 'api_error',
           message: String(message).slice(0, 300),
         },

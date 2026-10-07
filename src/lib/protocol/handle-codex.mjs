@@ -5,11 +5,13 @@ import path from 'node:path'
 import { getVm, listVms, persistCodexUsage, syncCodexQuotaSchedule } from '../vm/vm-registry.mjs'
 import { isValidVmId } from '../vm/vm-file.mjs'
 import { isCodexProtocolAllowed, isCodexVm, normalizeCodexRouting } from './codex-route.mjs'
+import { normalizeOpenAIQuotaPolicy } from '../pool/openai-quota-policy.mjs'
 import { restrictCodexClient } from './codex-restriction.mjs'
 import {
   responsesSseToChatChunk,
   responsesSseToAnthropicEvents,
   createAnthropicSseState,
+  createResponsesSseEventNamer,
   assembleCodexBodyFromSse,
   codexBodyToAnthropicMessage,
   toCodexResponses,
@@ -142,25 +144,32 @@ function pinnedVmId(req) {
 export function pickCodexCandidates(
   projectRoot,
   req,
-  { stickyRouter = null, sessions = null, body = null, excluded = null } = {},
+  { stickyRouter = null, sessions = null, body = null, excluded = null, routing = {} } = {},
 ) {
   const pin = pinnedVmId(req)
   const model = body?.model || null
+  const routingPolicy = normalizeCodexRouting(routing.codex || routing).quota
   if (pin) {
     const vm = getVm(projectRoot, pin)
     if (!vm || !isCodexVm(vm)) return { error: 'platform_mismatch', pin, ids: [] }
     if (!codexSlotAllowsModel(vm, model)) return { error: 'model_not_allowed', pin, ids: [] }
-    const ordered = orderCodexSessionSlots([vm], { pin, excluded })
+    const ordered = orderCodexSessionSlots([vm], {
+      pin,
+      excluded,
+      quotaPolicy: routingPolicy,
+    })
     return { ...ordered, pin, sticky: false, sessionKey: null, stickyKeys: [] }
   }
-  for (const item of listVms(projectRoot)) {
+  for (const item of listVms(projectRoot, { codex: { quota: routingPolicy } })) {
     if (!isCodexVm(item)) continue
-    syncCodexQuotaSchedule(projectRoot, getVm(projectRoot, item.id) || item)
+    syncCodexQuotaSchedule(projectRoot, getVm(projectRoot, item.id) || item, {
+      policy: routingPolicy,
+    })
   }
   const stickyKeys = stickyRouter?.collectPoolKeys?.(req, body || {}, { platform: 'openai' }) || []
   const sessionKey = stickyRouter?.extractPoolKey?.(req, body || {}, { platform: 'openai' }) || stickyKeys[0] || null
   const bound = sessionKey ? stickyRouter?.resolve?.(sessionKey) : null
-  const vms = listVms(projectRoot)
+  const vms = listVms(projectRoot, { codex: { quota: routingPolicy } })
   const continuesResponse = !!body?.previous_response_id && !!bound?.vmId
   const ordered = orderCodexSessionSlots(continuesResponse ? vms.filter((vm) => vm.id === bound.vmId) : vms, {
     boundVmId: bound?.vmId || null,
@@ -168,6 +177,7 @@ export function pickCodexCandidates(
     sessionLimit: sessions,
     model,
     excluded,
+    quotaPolicy: routingPolicy,
   })
   if (bound?.vmId && sessionKey && ordered.boundState === 'gone') {
     for (const key of stickyKeys.length ? stickyKeys : [sessionKey]) stickyRouter?.unbind?.(key)
@@ -181,7 +191,7 @@ export function pickCodexCandidates(
   return { ...ordered, sessionKey, stickyKeys }
 }
 
-function ingestCodexHop(projectRoot, vmId, result, now = Date.now()) {
+function ingestCodexHop(projectRoot, vmId, result, now = Date.now(), policy = null) {
   const headers = result?.headers || {}
   const extra = extraFromCodexHeaders(headers, now)
   let limitedUntil = null
@@ -193,7 +203,7 @@ function ingestCodexHop(projectRoot, vmId, result, now = Date.now()) {
     limitedUntil = park.until || now + CODEX_DEFAULT_PARK_MS
   }
   if (!extra && !limitedUntil) return null
-  return persistCodexUsage(projectRoot, vmId, { headers, extra, limitedUntil, now })
+  return persistCodexUsage(projectRoot, vmId, { headers, extra, limitedUntil, now, policy })
 }
 
 function execFor(projectRoot, vm) {
@@ -292,11 +302,13 @@ async function admitCodexCandidate(projectRoot, req, opts, { deadline, signal })
   let woken = false
   for (;;) {
     const picked = pickCodexCandidates(projectRoot, req, opts)
+    const livePolicy = normalizeCodexRouting(opts.routing?.codex || opts.routing).quota
     if (picked.error && picked.error !== 'capacity_unavailable') return { picked }
     for (const candidate of picked.candidates || []) {
       const lease = tryAcquireOpenAISlot(candidate.id, {
         concurrency: candidate.concurrency,
         maxRpm: candidate.maxRpm,
+        quotaPolicy: livePolicy,
       })
       if (lease) return { picked, vmId: candidate.id, lease }
     }
@@ -418,7 +430,13 @@ export async function handleCodexProtocol({
     protocol === 'openai.chat' || protocol === 'openai.completions'
       ? { id: 'codex', seq: 0, tools: new Map(), sawTool: false }
       : null
-  const pickOpts = { stickyRouter, sessions, body: body || converted.body || inbound, excluded: new Set() }
+  const pickOpts = {
+    stickyRouter,
+    sessions,
+    body: body || converted.body || inbound,
+    excluded: new Set(),
+    routing,
+  }
   const deadline = Date.now() + codexWaitTimeoutMs(routing)
   const gone = clientGoneSignal(req, res)
   logBag.via = 'codex-kernel'
@@ -507,6 +525,7 @@ export async function handleCodexProtocol({
         logBag.vm_id = vm.id
         logBag.attempt_count = hops
         const chunks = []
+        const nameSseEvent = createResponsesSseEventNamer()
         let responseServiceTier = null
         let streamedUsage = null
         const attemptStartedAt = Date.now()
@@ -572,10 +591,11 @@ export async function handleCodexProtocol({
               if (mapped) res.write(mapped)
               return
             }
-            res.write(line.endsWith('\n') ? `${line}\n` : `${line}\n`)
+            const named = nameSseEvent(line)
+            if (named) res.write(named)
           },
         })
-        ingestCodexHop(projectRoot, vm.id, result)
+        ingestCodexHop(projectRoot, vm.id, result, Date.now(), normalizeCodexRouting(routing.codex).quota)
         if (result?.transport_retried) logBag.transport_retried = true
         last = result
         const hopUsage = result.usage || result.body?.usage || result.body?.response?.usage || null
@@ -692,8 +712,10 @@ function rejectCodexAdmission({ res, json, stats, logBag, picked, model }) {
     picked.error === 'session_window_full' ||
     picked.error === 'pool_wait_queue_full'
   ) {
+    // Queue-full has no retryAt. Every Codex pool_overloaded 429 still advertises >= 1s.
     const waitMs = Number(picked.retryAt) - Date.now()
-    if (waitMs > 0) res.setHeader?.('retry-after', String(Math.ceil(waitMs / 1000)))
+    const retryAfterSec = Math.max(1, waitMs > 0 ? Math.ceil(waitMs / 1000) : 0)
+    res.setHeader?.('retry-after', String(retryAfterSec))
     return json(res, 429, {
       error: {
         type: 'rate_limit_error',

@@ -79,8 +79,6 @@ export function tierLimits(routingConfig, tier) {
     max_rpm: pickNumber(entry.max_rpm, base.max_rpm, concurrency.default_max_rpm) ?? 0,
     limit_5h: safety,
     limit_7d: weekly,
-    max_sessions: pickNumber(entry.max_sessions, base.max_sessions) ?? 0,
-    session_idle_min: pickNumber(entry.session_idle_min, base.session_idle_min) ?? 5,
     safety_ratio: safety,
     weekly_safety_ratio: weekly,
     warn_ratio: Math.min(warn, safety),
@@ -98,8 +96,6 @@ export function normalizeTiersConfig(input) {
     const warn = clampRatio(entry.warn_ratio)
     const conc = pickNumber(entry.max_concurrency)
     const rpm = pickNumber(entry.max_rpm)
-    const sess = pickNumber(entry.max_sessions)
-    const idle = pickNumber(entry.session_idle_min)
     const next = {}
     if (conc != null) next.max_concurrency = Math.min(256, Math.round(conc))
     if (rpm != null) next.max_rpm = Math.min(1e6, Math.round(rpm))
@@ -112,8 +108,6 @@ export function normalizeTiersConfig(input) {
       next.weekly_safety_ratio = weekly
     }
     if (warn != null) next.warn_ratio = safety != null ? Math.min(warn, safety) : warn
-    if (sess != null) next.max_sessions = Math.min(256, Math.round(sess))
-    if (idle != null) next.session_idle_min = Math.min(1440, Math.max(1, Math.round(idle)))
     if (Object.keys(next).length) out[key] = next
   }
   return out

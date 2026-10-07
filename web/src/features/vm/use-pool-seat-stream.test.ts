@@ -1,6 +1,10 @@
-import type { Vm } from '@/types/panel-vm'
+import type { PoolSeatSnapshot, Vm } from '@/types/panel-vm'
 import { describe, expect, it } from 'vitest'
-import { mergeSeatSnapshot, parseSseFrames } from './use-pool-seat-stream'
+import {
+  mergePoolQueue,
+  mergeSeatSnapshot,
+  parseSseFrames,
+} from './use-pool-seat-stream'
 
 describe('seat stream frames', () => {
   it('keeps a frame split across chunks until its blank line arrives', () => {
@@ -24,26 +28,76 @@ describe('seat snapshot merge', () => {
     id: 'vm-1',
     seats_max: 2,
     seats_used: 2,
+    seats_grace: 1,
     queue_depth: 3,
+    conc_waiting: 2,
   } as Vm
   const codex = { id: 'vm-2', seats_max: null, seats_used: null } as Vm
+  const snap = (seats: PoolSeatSnapshot['seats']): PoolSeatSnapshot => ({
+    seats,
+    global_queue_depth: 0,
+    queue_max: 50,
+    ts: 1,
+  })
 
   it('zeroes Claude rows absent from the snapshot and leaves Codex rows alone', () => {
-    const [nextClaude, nextCodex] = mergeSeatSnapshot([claude, codex], {
-      seats: {},
-      ts: 1,
+    const [nextClaude, nextCodex] = mergeSeatSnapshot([claude, codex], snap({}))
+    expect(nextClaude).toMatchObject({
+      seats_used: 0,
+      seats_max: 2,
+      seats_grace: 0,
+      queue_depth: 0,
+      conc_waiting: 0,
     })
-    expect(nextClaude.seats_used).toBe(0)
-    expect(nextClaude.queue_depth).toBe(0)
     expect(nextCodex).toBe(codex)
   })
 
-  it('applies live seat and queue counts', () => {
-    const [next] = mergeSeatSnapshot([claude], {
-      seats: { 'vm-1': { seats_used: 1, holds: 4, queue_depth: 0 } },
-      ts: 1,
+  it('applies live seat, grace and queue counts', () => {
+    const live = {
+      seats_used: 3,
+      seats_max: 4,
+      seats_grace: 1,
+      queue_depth: 2,
+      conc_waiting: 1,
+    }
+    const [next] = mergeSeatSnapshot([claude], snap({ 'vm-1': live }))
+    expect(next).toMatchObject(live)
+  })
+
+  it('keeps the row identity when nothing changed', () => {
+    const live = {
+      seats_used: 2,
+      seats_max: 2,
+      seats_grace: 1,
+      queue_depth: 3,
+      conc_waiting: 2,
+    }
+    const [next] = mergeSeatSnapshot([claude], snap({ 'vm-1': live }))
+    expect(next).toBe(claude)
+  })
+})
+
+describe('global queue merge', () => {
+  const frame = (depth: number, max: number): PoolSeatSnapshot => ({
+    seats: {},
+    global_queue_depth: depth,
+    queue_max: max,
+    ts: 1,
+  })
+
+  it('writes the global queue depth and cap from the frame', () => {
+    expect(mergePoolQueue(undefined, frame(4, 50))).toEqual({
+      global_queue_depth: 4,
+      queue_max: 50,
     })
-    expect(next.seats_used).toBe(1)
-    expect(next.queue_depth).toBe(0)
+  })
+
+  it('keeps the previous object when unchanged', () => {
+    const prev = { global_queue_depth: 4, queue_max: 50 }
+    expect(mergePoolQueue(prev, frame(4, 50))).toBe(prev)
+    expect(mergePoolQueue(prev, frame(0, 50))).toEqual({
+      global_queue_depth: 0,
+      queue_max: 50,
+    })
   })
 })

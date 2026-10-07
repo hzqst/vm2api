@@ -6,7 +6,6 @@ import {
   fableCardInfo,
   type ConcurrencyInfo,
   type RpmInfo,
-  type SessionCapacity,
   type VmCostSummary,
   type WeeklySplitSummary,
 } from '@/lib/fable-status'
@@ -31,7 +30,6 @@ import { SlotIdentity } from '@/components/platform-chip'
 import { StatusMark } from '@/components/status-mark'
 import { ClaudeResetActions } from '@/features/vm/claude-reset-actions'
 import { CodexKernelHealthFields } from '@/features/vm/codex-kernel-health-card'
-import { ConcRpmEditor } from '@/features/vm/conc-rpm-editor'
 import { dataplaneLabel } from '@/features/vm/dataplane-contract'
 import { CircuitField } from '@/features/vm/detail-circuit-field'
 import {
@@ -44,8 +42,7 @@ import { KernelFeatTags } from '@/features/vm/kernel-feat-tags'
 import { OpenaiPlanBadge } from '@/features/vm/openai-plan-badge'
 import { OpenaiQuotaPanel } from '@/features/vm/openai-quota-panel'
 import { proxyHealthOf } from '@/features/vm/proxy-health'
-import { SessionSlotsEditor } from '@/features/vm/session-slots-editor'
-import { VmQuotaField } from '@/features/vm/vm-quota-editor'
+import { VmSchedulingBlock } from '@/features/vm/vm-scheduling'
 import { telemetryStatusLabel } from './telemetry-status'
 
 type Props = {
@@ -60,7 +57,6 @@ type Props = {
   now: number
   cost: VmCostSummary
   split: WeeklySplitSummary | null
-  sess: SessionCapacity | null
   conc: ConcurrencyInfo
   rpm: RpmInfo | null
 }
@@ -168,7 +164,6 @@ export function VmStatusBoard(props: Props) {
     now,
     cost,
     split,
-    sess,
     conc,
     rpm,
   } = props
@@ -275,11 +270,17 @@ export function VmStatusBoard(props: Props) {
                 <Meter
                   label='5 小时已用'
                   value={u5}
+                  gate={
+                    vm.quota_policy ? vm.quota_policy.limit_5h * 100 : undefined
+                  }
                   hint={`${quotaWindowHint(u5, reset5, now)} · 合计 ${fmtUsd(cost5, 2)}`}
                 />
                 <Meter
                   label='7 天已用'
                   value={u7}
+                  gate={
+                    vm.quota_policy ? vm.quota_policy.limit_7d * 100 : undefined
+                  }
                   hint={`${quotaWindowHint(u7, reset7, now)} · 合计 ${fmtUsd(cost7, 2)}`}
                 />
                 {fable.usedPct != null ? (
@@ -307,13 +308,6 @@ export function VmStatusBoard(props: Props) {
                       hint={`周限 ${(split.fableUsed * 100).toFixed(1)}%`}
                     />
                   </div>
-                ) : null}
-                {sess ? (
-                  <Meter
-                    label='会话'
-                    value={sess.max > 0 ? (sess.active / sess.max) * 100 : 0}
-                    hint={`${sess.active}/${sess.max}`}
-                  />
                 ) : null}
                 <ClaudeResetActions vm={vm} now={now} />
               </>
@@ -352,29 +346,9 @@ export function VmStatusBoard(props: Props) {
                 {proxyNamedLabel(proxy)}
               </span>
             </Field>
-            <Field label='并发 / RPM' compact>
-              <div className='flex items-center gap-1'>
-                <span className='tabular-nums'>
-                  {conc.inf}/{conc.max}
-                  {' · '}
-                  {rpm ? `${rpm.n}/${rpm.max} rpm` : 'rpm 不限'}
-                </span>
-                <ConcRpmEditor vm={vm} />
-              </div>
-            </Field>
-            {isCodexVm(vm) ? null : (
-              <Field label='Session 槽位' compact>
-                <div className='flex items-center gap-1'>
-                  <span className='tabular-nums'>
-                    {Number(vm.session_slots ?? 20)}/20
-                  </span>
-                  <SessionSlotsEditor vm={vm} />
-                </div>
-              </Field>
-            )}
-            {isCodexVm(vm) || !vm.quota_policy ? null : (
-              <VmQuotaField vm={vm} />
-            )}
+            <div className='py-2'>
+              <VmSchedulingBlock vm={vm} conc={conc} rpm={rpm} />
+            </div>
             {isCodexVm(vm) ? null : (
               <>
                 <Field label='5h 重置' compact>

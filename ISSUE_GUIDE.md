@@ -62,7 +62,7 @@ curl -sS -D - http://127.0.0.1:8787/v1/messages \
 
 | 项 | 示例 |
 |---|---|
-| 云厂商 / 机房地区 | HostDzire 美西、Hetzner 德国、本地物理机 |
+| 云厂商 / 机房地区 | 例如 Hetzner 德国、本地物理机。不要填写公网 IP |
 | 规格 | 8C / 16G / 200G NVMe |
 | 系统 | Ubuntu 24.04 LTS，内核 6.8 |
 | 虚拟化 | KVM 母机 / OpenVZ / LXC / 物理机；`/dev/kvm` 是否存在 |

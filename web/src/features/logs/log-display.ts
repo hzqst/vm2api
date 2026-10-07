@@ -209,9 +209,14 @@ const SELECTION_REASON_LABELS: Record<string, string> = {
   'family-affinity': '家族亲和',
   'device-affinity': '设备亲和',
   'priority-load': '优先级负载',
+  'seat-held': '已占席位',
+  balanced: '平衡',
+  fill: '填充',
+  queued: '排队授予',
+  peek: '单候选',
+  // 预调度之前的轮询策略已删除，但 request_attempts 里的历史行仍带这两个值。
   'round-robin': '轮询',
   'weighted-round-robin': '加权轮询',
-  peek: '单候选',
 }
 
 export function selectionReasonLabel(reason: string | null): string | null {

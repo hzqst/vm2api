@@ -30,10 +30,17 @@ export function servePoolSeatStream({
   const send = () => {
     timer = null
     if (closed) return
-    const seats = scheduler?.seatSnapshot?.() || {}
+    const snap = scheduler?.seatSnapshot?.() || {}
+    const seats = snap.seats || {}
     const visible = visibleVmIds ? visibleVmIds() : null
     const scoped = visible ? Object.fromEntries(Object.entries(seats).filter(([id]) => visible.has(id))) : seats
-    res.write(`event: seats\ndata: ${JSON.stringify({ seats: scoped, ts: Date.now() })}\n\n`)
+    const frame = {
+      seats: scoped,
+      global_queue_depth: Number(snap.global_queue_depth) || 0,
+      queue_max: Number(snap.queue_max) || 0,
+      ts: Date.now(),
+    }
+    res.write(`event: seats\ndata: ${JSON.stringify(frame)}\n\n`)
   }
   // Runs inside the scheduler's acquire/release path: only arm a timer, never throw.
   const onChange = () => {

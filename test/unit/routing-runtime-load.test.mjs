@@ -200,3 +200,98 @@ test('persistRoutingPatch writes persona_preset into Claude kernel system_layout
     fs.rmSync(root, { recursive: true, force: true })
   }
 })
+
+test('OpenAI legacy migration preserves effective pins and resumes before canonical routing commit', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-openai-migration-'))
+  const vms = path.join(root, 'vms')
+  const routingFile = path.join(root, 'routing.json')
+  fs.mkdirSync(vms, { recursive: true })
+  const legacy = { concurrency: {}, tiers: {}, codex: { enabled: true } }
+  const records = [
+    {
+      id: 'vm-pinned',
+      platform: 'openai',
+      family: 'codex',
+      policy: { maxConcurrency: 1, maxRpm: 37, maxSessions: 999 },
+      codex: { extra: { codex_5h_used_percent: 45 } },
+      schedulable: false,
+      schedule_disabled_reason: 'operator',
+    },
+    {
+      id: 'vm-default',
+      platform: 'openai',
+      family: 'codex',
+      policy: { maxConcurrency: 0, maxRpm: null, maxSessions: '' },
+    },
+    { id: 'vm-claude', platform: 'anthropic', policy: { maxConcurrency: 8, maxSessions: 999 } },
+  ]
+  for (const vm of records) fs.writeFileSync(path.join(vms, `${vm.id}.json`), JSON.stringify(vm))
+  const read = (id) => JSON.parse(fs.readFileSync(path.join(vms, `${id}.json`), 'utf8'))
+  const runtime = () => createRoutingRuntime({ cfg: { paths: { project: root } }, routingConfigPath: routingFile })
+  try {
+    fs.writeFileSync(routingFile, JSON.stringify(legacy))
+    runtime().loadRoutingConfig()
+    const pinned = read('vm-pinned')
+    assert.deepEqual(pinned.policy, {
+      maxConcurrency: 1,
+      maxRpm: 37,
+      maxSessions: 999,
+      concurrencyOverride: true,
+      rpmOverride: true,
+      sessionsOverride: true,
+    })
+    assert.equal(pinned.schedulable, false)
+    assert.equal(pinned.schedule_disabled_reason, 'operator')
+    assert.deepEqual(pinned.codex, records[0].codex)
+    assert.deepEqual(read('vm-default').policy, {
+      maxConcurrency: 2,
+      maxRpm: 0,
+      maxSessions: 0,
+      concurrencyOverride: false,
+      rpmOverride: false,
+      sessionsOverride: false,
+    })
+    assert.deepEqual(read('vm-claude'), records[2])
+    const snapshot = records.map((vm) => fs.readFileSync(path.join(vms, `${vm.id}.json`), 'utf8'))
+    // Simulate interruption after VM writes but before the routing migration marker.
+    fs.writeFileSync(routingFile, JSON.stringify(legacy))
+    runtime().loadRoutingConfig()
+    assert.deepEqual(
+      records.map((vm) => fs.readFileSync(path.join(vms, `${vm.id}.json`), 'utf8')),
+      snapshot,
+    )
+    const canonical = JSON.parse(fs.readFileSync(routingFile, 'utf8'))
+    assert.equal(canonical.codex.quota.max_concurrency, 2)
+    runtime().loadRoutingConfig()
+    assert.deepEqual(
+      records.map((vm) => fs.readFileSync(path.join(vms, `${vm.id}.json`), 'utf8')),
+      snapshot,
+    )
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('OpenAI per-slot limit writes never invoke the Claude quota holder', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-openai-isolation-'))
+  fs.mkdirSync(path.join(root, 'vms'), { recursive: true })
+  const file = path.join(root, 'vms', 'vm-openai.json')
+  fs.writeFileSync(file, JSON.stringify({ id: 'vm-openai', platform: 'openai', family: 'codex', policy: {} }))
+  try {
+    const runtime = createRoutingRuntime({ cfg: { paths: { project: root } } })
+    runtime.applyVmConcurrency('vm-openai', 3)
+    runtime.applyVmRpm('vm-openai', 37)
+    runtime.applyVmMaxSessions('vm-openai', 4)
+    const vm = JSON.parse(fs.readFileSync(file, 'utf8'))
+    assert.deepEqual(vm.policy, {
+      maxConcurrency: 3,
+      concurrencyOverride: true,
+      maxRpm: 37,
+      rpmOverride: true,
+      maxSessions: 4,
+      sessionsOverride: true,
+    })
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})

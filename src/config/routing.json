@@ -30,8 +30,6 @@
       "max_rpm": 0,
       "limit_5h": 0.85,
       "limit_7d": 0.8,
-      "max_sessions": 0,
-      "session_idle_min": 5,
       "safety_ratio": 0.85,
       "weekly_safety_ratio": 0.8,
       "warn_ratio": 0.75
@@ -41,8 +39,6 @@
       "max_rpm": 0,
       "limit_5h": 0.85,
       "limit_7d": 0.8,
-      "max_sessions": 0,
-      "session_idle_min": 5,
       "safety_ratio": 0.85,
       "weekly_safety_ratio": 0.8,
       "warn_ratio": 0.75
@@ -52,8 +48,6 @@
       "max_rpm": 0,
       "limit_5h": 0.95,
       "limit_7d": 0.95,
-      "max_sessions": 0,
-      "session_idle_min": 5,
       "safety_ratio": 0.95,
       "weekly_safety_ratio": 0.95,
       "warn_ratio": 0.85
@@ -66,9 +60,11 @@
     "max_mb": 2048
   },
   "pool": {
-    "strategy": "weighted-round-robin",
+    "strategy": "balanced",
     "manual_schedule_wins": true,
-    "max_waiters_per_account": 100,
+    "queue_max": 50,
+    "seat_grace_ms": 30000,
+    "seat_budget_reserve_pct": 0.02,
     "fallback_wait_timeout_ms": 30000,
     "sticky_wait_timeout_ms": 45000,
     "worker_health_ttl_ms": 5000,
@@ -87,6 +83,15 @@
     "engine": "rust",
     "fallback_to_go": false,
     "session_slots": 20
+  },
+  "codex": {
+    "quota": {
+      "limit_5h": 1,
+      "limit_7d": 1,
+      "max_concurrency": 2,
+      "max_rpm": 0,
+      "max_sessions": 0
+    }
   },
 
   "compatibility": {

@@ -63,10 +63,79 @@ export type RefusalGuardItem = {
   preview: string | null
 }
 
+export type RefusalDeviceBlock = {
+  device_id: string
+  first_seen_at: string
+  last_seen_at: string
+  hit_count: number
+  source_request_id: string | null
+  fingerprint: string | null
+  reason: string | null
+}
+
 export type RefusalGuardConfig = {
   enabled: boolean
+  similarity_enabled: boolean
+  /** 80、85、90 或 95。 */
+  similarity: number
+  device_block_enabled: boolean
   count: number
   items: RefusalGuardItem[]
+  device_count: number
+  devices: RefusalDeviceBlock[]
+}
+
+export type PolicyQuestion = {
+  id: string
+  label: string
+  summary: string
+  instructions: string
+  enabled: boolean
+  builtin?: boolean
+}
+
+/** `GET/PUT /api/panel/jev-intercept`。决策模型与硬正则。密钥只回 api_key_set。 */
+export type JevInterceptConfig = {
+  enabled: boolean
+  hard_regex_enabled: boolean
+  provider: 'jev' | 'laya' | 'modernbert'
+  providers?: {
+    id: string
+    label: string
+    default_model: string
+    default_base_url?: string
+  }[]
+  defaults?: {
+    safety_instruction: string
+    question_ids: string[]
+    safety_threshold: number
+    block_if_below: boolean
+    fail_open: boolean
+    dedup_sec: number
+    max_state_chars: number
+    expand_base64: boolean
+    strip_reminders: boolean
+    timeout_ms: number
+  }
+  base_url: string
+  model: string
+  timeout_ms: number
+  api_key_set: boolean
+  api_key_count: number
+  safety_instruction: string
+  question_ids: string[]
+  question_bank?: PolicyQuestion[]
+  builtin_questions?: PolicyQuestion[]
+  safety_threshold: number
+  block_if_below: boolean
+  fail_open: boolean
+  dedup_sec: number
+  max_state_chars: number
+  expand_base64: boolean
+  strip_reminders: boolean
+  categories: string[]
+  builtin_patterns: string[]
+  patterns: string[]
 }
 
 export type NotifyEvents = {

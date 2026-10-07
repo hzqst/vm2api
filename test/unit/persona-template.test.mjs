@@ -512,6 +512,43 @@ test('agent standing: default off, explicit per-preset on, and custom text repla
   })
 })
 
+test('each preset switch injects standing even if that template dropped the placeholder', () => {
+  const zwsp = '\u200b'
+  const zeroTemplate = [
+    { id: 'billing_zero', type: 'text', text: '{{billing_semi}}' },
+    { id: 'identity_slot', type: 'text', text: zwsp },
+    { id: 'agent_slot', type: 'text', text: zwsp },
+    { id: 'caller_system', type: 'text', text: '{{caller_system}}', drop_if_empty: true },
+  ]
+  withRoutingFile(
+    {
+      persona_preset: 'zero',
+      agent_standing: 'Stay terse.',
+      agent_standing_presets: { zero: true },
+      persona_templates: { zero: zeroTemplate },
+    },
+    (file) => {
+      const out = applyCrsUnofficialPersona({ messages: [{ role: 'user', content: 'hi' }] }, { routingFile: file })
+      assert.equal(out.system.find((block) => String(block.text || '').startsWith('Stay terse.')).text, 'Stay terse.\n')
+    },
+  )
+  withRoutingFile(
+    {
+      persona_preset: 'zero',
+      agent_standing: 'Stay terse.',
+      agent_standing_presets: { zero: false, official_full: true },
+      persona_templates: { zero: zeroTemplate },
+    },
+    (file) => {
+      const out = applyCrsUnofficialPersona({ messages: [{ role: 'user', content: 'hi' }] }, { routingFile: file })
+      assert.equal(
+        out.system.some((block) => String(block.text || '').includes('Stay terse.')),
+        false,
+      )
+    },
+  )
+})
+
 test('official env block carries the slot timezone and is switchable per preset', () => {
   const identity = { timezone: 'Asia/Tokyo' }
   const body = () => ({ messages: [{ role: 'user', content: 'hi' }] })

@@ -109,6 +109,36 @@ test('cli-hop envelope keeps role=system turns that the VM betas do not declare'
   assert.deepEqual(out.body.system, body.system)
 })
 
+test('setup-token cli-hop downgrades thinking.display updates and keeps summarized', () => {
+  const exec = { homeDir: '', vm: { claude: { mode: 'setup-token', scope: 'user:inference' } } }
+  const updates = finalizeWorkerPayload({
+    body: {
+      model: 'claude-opus-5-5',
+      thinking: { type: 'adaptive', display: ' Updates ' },
+      messages: [{ role: 'user', content: 'hi' }],
+    },
+    reqHeaders: {},
+    exec,
+    identity: null,
+    cliHop: true,
+  })
+  assert.equal(updates.body.thinking.type, 'adaptive')
+  assert.equal(updates.body.thinking.display, 'omitted')
+  assert.doesNotMatch(String(updates.headers['anthropic-beta'] || ''), /thinking-display-updates/)
+  const summarized = finalizeWorkerPayload({
+    body: {
+      model: 'claude-opus-5-5',
+      thinking: { type: 'adaptive', display: 'summarized' },
+      messages: [{ role: 'user', content: 'hi' }],
+    },
+    reqHeaders: {},
+    exec,
+    identity: null,
+    cliHop: true,
+  })
+  assert.equal(summarized.body.thinking.display, 'summarized')
+})
+
 const unix = process.platform !== 'win32'
 const unixTest = unix ? test : test.skip
 

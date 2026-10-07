@@ -507,7 +507,7 @@ export class AccountQuota {
     for (const vm of vms || []) this.setVmQuotaOverride(vm?.id, vm?.quota_override || null)
   }
 
-  canAccept(accountId, { sessionKey = null, tier = null } = {}) {
+  canAccept(accountId, { tier = null } = {}) {
     const acc = this.ensure({ account_id: accountId })
     const policy = this.policyFor(acc, { tier })
     const ratio = Number(policy.limit_5h ?? policy.safety_ratio ?? this.config.safety_ratio ?? 0.85)
@@ -592,21 +592,6 @@ export class AccountQuota {
           reset: w7.reset,
           message: `7d usage ${(u7 * 100).toFixed(1)}% ≥ weekly ${(weeklyRatio * 100).toFixed(0)}%; request blocked to protect weekly quota`,
         },
-      }
-    }
-
-    const maxSessions = Number(policy.max_sessions ?? acc.max_sessions ?? 0)
-    if (maxSessions > 0 && sessionKey) {
-      const sess = this.sessions.canAccept(accountId, sessionKey, {
-        max: maxSessions,
-        idleMin: policy.session_idle_min,
-      })
-      if (!sess.ok) {
-        return {
-          ok: false,
-          reason: 'session_limit',
-          detail: sess.detail,
-        }
       }
     }
 

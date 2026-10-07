@@ -25,7 +25,7 @@ afterEach(() => vi.unstubAllGlobals())
 
 describe('panel session storage', () => {
   it('stores the bearer token even on same-origin deployments', () => {
-    const values = installBrowser('kin.fkcodex.com')
+    const values = installBrowser('console.example')
 
     setSession('secret-token', 'admin')
 
@@ -35,7 +35,7 @@ describe('panel session storage', () => {
   })
 
   it('stores the bearer token when apiBase is empty (HTTP IP install)', () => {
-    const values = installBrowser('172.99.137.29')
+    const values = installBrowser('203.0.113.10')
 
     setSession('secret-token', 'admin')
 
@@ -44,7 +44,7 @@ describe('panel session storage', () => {
   })
 
   it('does not treat a leftover username as a session', () => {
-    const values = installBrowser('172.99.137.29')
+    const values = installBrowser('203.0.113.10')
     values.set(LS_USER, 'admin')
 
     expect(hasSession()).toBe(false)
@@ -61,7 +61,7 @@ describe('panel session storage', () => {
   })
 
   it('calls the server logout endpoint without a readable bearer token', async () => {
-    installBrowser('kin.fkcodex.com')
+    installBrowser('console.example')
     const fetchMock = vi
       .fn()
       .mockResolvedValue(new Response('{}', { status: 200 }))

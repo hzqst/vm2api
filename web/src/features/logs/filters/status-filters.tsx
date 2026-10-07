@@ -19,6 +19,8 @@ const COMMON_STATUS_CODES: [number, string][] = [
   [401, '401 (未授权)'],
   [429, '429 (限流)'],
   [500, '500 (服务器错误)'],
+  [503, '503 (无可用账号)'],
+  [529, '529 (过载)'],
 ]
 
 export function StatusFilters({

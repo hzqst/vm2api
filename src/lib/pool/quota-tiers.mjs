@@ -1,9 +1,9 @@
 /**
- * Per-tier quota + concurrency + session policy.
+ * Per-tier quota + concurrency policy.
  * default / pro / max are independent. Missing keys fill product defaults.
  *
- *   default / pro: 2 conc · 5h 85% · 7d 80% · sessions off
- *   max:           4 conc · 5h 95% · 7d 95% · sessions off
+ *   default / pro: 2 conc · 5h 85% · 7d 80%
+ *   max:           4 conc · 5h 95% · 7d 95%
  *
  * Canonical names: limit_5h / limit_7d. Disk may still have safety_ratio /
  * weekly_safety_ratio; both are written back so old readers keep working.
@@ -17,8 +17,6 @@ export const DEFAULT_TIER_POLICIES = {
     max_rpm: 0,
     limit_5h: 0.85,
     limit_7d: 0.8,
-    max_sessions: 0,
-    session_idle_min: 5,
     safety_ratio: 0.85,
     weekly_safety_ratio: 0.8,
     warn_ratio: 0.75,
@@ -28,8 +26,6 @@ export const DEFAULT_TIER_POLICIES = {
     max_rpm: 0,
     limit_5h: 0.85,
     limit_7d: 0.8,
-    max_sessions: 0,
-    session_idle_min: 5,
     safety_ratio: 0.85,
     weekly_safety_ratio: 0.8,
     warn_ratio: 0.75,
@@ -39,8 +35,6 @@ export const DEFAULT_TIER_POLICIES = {
     max_rpm: 0,
     limit_5h: 0.95,
     limit_7d: 0.95,
-    max_sessions: 0,
-    session_idle_min: 5,
     safety_ratio: 0.95,
     weekly_safety_ratio: 0.95,
     warn_ratio: 0.85,
@@ -64,18 +58,6 @@ export function clampRpm(n, fallback = 0) {
   const v = Number(n)
   if (!Number.isFinite(v) || v < 0) return fallback
   return Math.min(1e6, Math.round(v))
-}
-
-export function clampSessions(n, fallback = 0) {
-  const v = Number(n)
-  if (!Number.isFinite(v) || v < 0) return fallback
-  return Math.min(256, Math.round(v))
-}
-
-export function clampIdleMin(n, fallback = 5) {
-  const v = Number(n)
-  if (!Number.isFinite(v) || v < 1) return fallback
-  return Math.min(1440, Math.round(v))
 }
 
 export function resolveTierKey(tier) {
@@ -117,8 +99,6 @@ export function normalizeTiers(raw = {}, _quota = {}, _concurrency = {}) {
       max_rpm: clampRpm(t.max_rpm, base.max_rpm),
       limit_5h: limit5,
       limit_7d: limit7,
-      max_sessions: clampSessions(t.max_sessions, base.max_sessions),
-      session_idle_min: clampIdleMin(t.session_idle_min, base.session_idle_min),
       safety_ratio: limit5,
       weekly_safety_ratio: limit7,
       warn_ratio: warn,

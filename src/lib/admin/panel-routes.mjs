@@ -15,8 +15,15 @@ import {
   revokePanelSessionsForUser,
 } from '../core/security.mjs'
 import { loadDistillRules, saveDistillRules, validateDistillPatch } from '../core/distill-detect.mjs'
-import { isRefusalGuardEnabled, REFUSAL_GUARD_SETTING } from '../core/refusal-guard.mjs'
+import { applyRefusalGuardPatch, refusalGuardPolicy } from '../core/refusal-guard.mjs'
+import {
+  applyJevPatch,
+  listPolicyModels as listDecisionModels,
+  publicJevConfig,
+  readJevConfig,
+} from '../protocol/jev-intercept.mjs'
 import { RefusalGuardsRepo } from '../db/repos/refusal-guards-repo.mjs'
+import { RefusalDeviceBlocksRepo } from '../db/repos/refusal-device-blocks-repo.mjs'
 import { SettingsRepo } from '../db/repos/settings-repo.mjs'
 import { parseCodexImportPayload, upsertCodexAccount, readCodexAccounts } from '../vm/codex-slot.mjs'
 import { generateAuthUrl, exchangeAuthCode, normalizeOauthFlavor } from '../oauth/oauth-auth-url.mjs'
@@ -107,6 +114,7 @@ import { stampVmKind, isCodexVm } from '../vm/vm-kind.mjs'
 import { parseAllowedModelsPatch } from '../pool/slot-model-gate.mjs'
 import { parseScheduleLevelInput } from '../pool/credential-weight.mjs'
 import { parseVmQuotaOverride } from '../pool/vm-quota-override.mjs'
+import { validateOpenAIQuotaPatch, normalizeOpenAIQuotaPolicy } from '../pool/openai-quota-policy.mjs'
 import {
   normalizeInferenceConfig,
   normalizeSessionSlots,
@@ -260,7 +268,16 @@ function statsParams(req, u, dimensionKey) {
   return { range, dimension, tz: u.searchParams.get('tz') || 'UTC', owner_user_id: logsOwner(req, u) }
 }
 
-async function commitImportedCodexVm({ cfg, vmPath, existing, account, catalogClientVersion = 'auto' }) {
+async function commitImportedCodexVm({
+  cfg,
+  vmPath,
+  existing,
+  account,
+  catalogClientVersion = 'auto',
+  routingConfig = {},
+}) {
+  const wasCodex = isCodexVm(existing)
+  const previousPolicy = existing.policy && typeof existing.policy === 'object' ? existing.policy : {}
   const saved = upsertCodexAccount(cfg.paths.project, existing.id, account)
   existing.platform = 'openai'
   existing.family = 'codex'
@@ -279,6 +296,25 @@ async function commitImportedCodexVm({ cfg, vmPath, existing, account, catalogCl
     existing.schedulable = true
     existing.schedule_disabled_reason = null
   }
+  const global = normalizeOpenAIQuotaPolicy(routingConfig.codex?.quota || {})
+  const preservePin = (value, override) =>
+    previousPolicy[override] === true &&
+    typeof previousPolicy[value] === 'number' &&
+    Number.isInteger(previousPolicy[value]) &&
+    previousPolicy[value] >= 0
+  existing.policy = {
+    ...previousPolicy,
+    maxConcurrency:
+      wasCodex && preservePin('maxConcurrency', 'concurrencyOverride')
+        ? previousPolicy.maxConcurrency
+        : global.max_concurrency,
+    concurrencyOverride: wasCodex && preservePin('maxConcurrency', 'concurrencyOverride'),
+    maxRpm: wasCodex && preservePin('maxRpm', 'rpmOverride') ? previousPolicy.maxRpm : global.max_rpm,
+    rpmOverride: wasCodex && preservePin('maxRpm', 'rpmOverride'),
+    maxSessions:
+      wasCodex && preservePin('maxSessions', 'sessionsOverride') ? previousPolicy.maxSessions : global.max_sessions,
+    sessionsOverride: wasCodex && preservePin('maxSessions', 'sessionsOverride'),
+  }
   stampVmKind(existing)
   atomicWriteJson(vmPath, existing, { mode: 0o600 })
   let catalog = null
@@ -293,7 +329,7 @@ async function commitImportedCodexVm({ cfg, vmPath, existing, account, catalogCl
     catalog = null
   }
   return {
-    vm: summarizeVm(existing, cfg.paths.project),
+    vm: summarizeVm(existing, cfg.paths.project, routingConfig),
     platform: 'openai',
     catalog: catalog && catalog.ok ? { synced: catalog.synced, ids: catalog.ids } : catalog,
   }
@@ -370,6 +406,7 @@ export function createPanelHandler(ctx) {
   const applyVmConcurrency = (...args) => ctx.applyVmConcurrency(...args)
   const applyVmRpm = (...args) => ctx.applyVmRpm(...args)
   const applyVmSessionSlots = (...args) => ctx.applyVmSessionSlots(...args)
+  const inheritVmScheduling = (...args) => ctx.inheritVmScheduling(...args)
   const applyVmQuotaOverride = (...args) => ctx.applyVmQuotaOverride(...args)
   const initPoolRuntime = (...args) => ctx.initPoolRuntime(...args)
   const poolSchedulerConfig = (...args) => ctx.poolSchedulerConfig(...args)
@@ -428,10 +465,23 @@ export function createPanelHandler(ctx) {
   function refusalGuardSnapshot() {
     const settings = new SettingsRepo()
     const repo = new RefusalGuardsRepo()
+    const devices = new RefusalDeviceBlocksRepo()
+    const read = (key, fallback) => settings.get(key, fallback)
     return {
-      enabled: isRefusalGuardEnabled((key, fallback) => settings.get(key, fallback)),
+      ...refusalGuardPolicy(read),
       count: repo.count(),
       items: repo.list(),
+      device_count: devices.count(),
+      devices: devices.list(),
+    }
+  }
+
+  function jevInterceptSnapshot() {
+    try {
+      const settings = new SettingsRepo()
+      return publicJevConfig(readJevConfig((key, fallback) => settings.get(key, fallback)))
+    } catch {
+      return publicJevConfig(null)
     }
   }
 
@@ -678,7 +728,18 @@ export function createPanelHandler(ctx) {
     if (p === '/admin/routing' && (req.method === 'PUT' || req.method === 'POST')) {
       if (!requireAuth(req, res)) return
       const body = await readBody(req, cfg.limits.max_body_bytes)
-      const applied = persistRoutingPatch(body)
+      let applied
+      try {
+        applied = persistRoutingPatch(body)
+      } catch (error) {
+        if (error instanceof TypeError || error instanceof RangeError) {
+          return json(res, 400, {
+            ok: false,
+            error: { type: 'invalid_request_error', code: 'invalid_openai_quota', message: error.message },
+          })
+        }
+        throw error
+      }
       return json(res, 200, {
         ok: true,
         routing: publicRoutingNotify(ctx.routingConfig),
@@ -695,7 +756,7 @@ export function createPanelHandler(ctx) {
     if (req.method === 'GET' && p === '/admin/vms') {
       if (!requireAuth(req, res)) return
       const active = getActiveVmId(cfg.paths.project)
-      const vms = listVms(cfg.paths.project).map((v) => ({ ...v, active: v.id === active }))
+      const vms = listVms(cfg.paths.project, ctx.routingConfig).map((v) => ({ ...v, active: v.id === active }))
       return json(res, 200, { vms, active_vm: active, total: vms.length })
     }
     if (req.method === 'GET' && p.startsWith('/admin/vms/') && !p.includes('/probe') && !p.endsWith('/activate')) {
@@ -703,7 +764,10 @@ export function createPanelHandler(ctx) {
       const id = p.split('/')[3]
       const vm = getVm(cfg.paths.project, id)
       if (!vm) return json(res, 404, { error: { message: 'vm not found' } })
-      return json(res, 200, { vm: summarizeVm(vm), active: getActiveVmId(cfg.paths.project) === id })
+      return json(res, 200, {
+        vm: summarizeVm(vm, cfg.paths.project, ctx.routingConfig),
+        active: getActiveVmId(cfg.paths.project) === id,
+      })
     }
     if (req.method === 'POST' && /^\/admin\/vms\/[^/]+\/activate$/.test(p)) {
       if (!requireAuth(req, res)) return
@@ -715,20 +779,20 @@ export function createPanelHandler(ctx) {
       if (!requireAuth(req, res)) return
       const id = p.split('/')[3]
       const hop = (await readBody(req, 4096).catch(() => ({})))?.hop !== false
-      const result = await panel.buildProbeOne({ cfg, accountQuota, id, hop })
+      const result = await panel.buildProbeOne({ cfg, accountQuota, id, hop, routingConfig: ctx.routingConfig })
       if (result.status) return json(res, result.status, result.body)
       return json(res, 200, { vm_id: id, account_uuid: result.data?.account_uuid, probe: result.data })
     }
     if (req.method === 'POST' && p === '/admin/vms/probe-all') {
       if (!requireAuth(req, res)) return
       const hop = (await readBody(req, 4096).catch(() => ({})))?.hop === true
-      const result = await panel.buildProbeAll({ cfg, accountQuota, hop })
+      const result = await panel.buildProbeAll({ cfg, accountQuota, hop, routingConfig: ctx.routingConfig })
       return json(res, 200, result)
     }
     if (req.method === 'GET' && p === '/admin/usage/summary') {
       if (!requireAuth(req, res)) return
       const snap = accountQuota.snapshot()
-      const vms = listVms(cfg.paths.project)
+      const vms = listVms(cfg.paths.project, ctx.routingConfig)
       const accounts = snap.accounts || []
       const max5 = Math.max(0, ...accounts.map((a) => Number(a.unified?.['5h']?.utilization || 0)))
       const max7 = Math.max(0, ...accounts.map((a) => Number(a.unified?.['7d']?.utilization || 0)))
@@ -1493,9 +1557,10 @@ export function createPanelHandler(ctx) {
             ident.role === 'user'
               ? () =>
                   new Set(
-                    filterVmsForPanel(listVms(cfg.paths.project), { role: ident.role, userId: ownerUserId }).map(
-                      (vm) => vm.id,
-                    ),
+                    filterVmsForPanel(listVms(cfg.paths.project, ctx.routingConfig), {
+                      role: ident.role,
+                      userId: ownerUserId,
+                    }).map((vm) => vm.id),
                   )
               : null,
         })
@@ -1710,7 +1775,9 @@ export function createPanelHandler(ctx) {
           updated: results.length - failed.length,
           missing: failed.filter((item) => item.code === 'vm_not_found').map((item) => item.id),
           failed: failed.map(({ id, code, error }) => ({ id, code, error })),
-          items: results.filter((item) => item.ok).map((item) => summarizeVm(item.vm)),
+          items: results
+            .filter((item) => item.ok)
+            .map((item) => summarizeVm(item.vm, cfg.paths.project, ctx.routingConfig)),
         }
         return json(res, 200, panel.ok(report))
       }
@@ -1770,7 +1837,7 @@ export function createPanelHandler(ctx) {
         }
         const origin = assignOriginForOwner(nextOwner, { previousOrigin: currentOrigin, actorRole: 'admin' })
         const saved = persistVmOwner(cfg.paths.project, id, { ownerUserId: nextOwner, origin })
-        return json(res, 200, panel.ok({ vm: summarizeVm(saved) }))
+        return json(res, 200, panel.ok({ vm: summarizeVm(saved, cfg.paths.project, ctx.routingConfig) }))
       }
 
       // GET /api/panel/vms/:id
@@ -1793,8 +1860,30 @@ export function createPanelHandler(ctx) {
       if (req.method === 'PATCH' && /^\/api\/panel\/vms\/[^/]+$/.test(p)) {
         const id = p.split('/').pop()
         const body = await readBody(req, 8192).catch(() => ({}))
-        const next = body?.max_concurrency ?? body?.maxConcurrency
-        const nextRpm = body?.max_rpm ?? body?.maxRpm
+        const currentVm = getVm(cfg.paths.project, id)
+        if (!currentVm) return json(res, 404, { ok: false, error: { message: 'vm not found' } })
+        const strictInteger = (value, min, max, label, { nullable = false } = {}) => {
+          if (nullable && value === null) return null
+          if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isInteger(value)) {
+            throw new TypeError(`${label} must be an integer`)
+          }
+          if (value < min || value > max) throw new RangeError(`${label} must be between ${min} and ${max}`)
+          return value
+        }
+        const hasConcurrency =
+          Object.prototype.hasOwnProperty.call(body || {}, 'max_concurrency') ||
+          Object.prototype.hasOwnProperty.call(body || {}, 'maxConcurrency')
+        const hasRpm =
+          Object.prototype.hasOwnProperty.call(body || {}, 'max_rpm') ||
+          Object.prototype.hasOwnProperty.call(body || {}, 'maxRpm')
+        const next = Object.prototype.hasOwnProperty.call(body || {}, 'max_concurrency')
+          ? body.max_concurrency
+          : body.maxConcurrency
+        const nextRpm = Object.prototype.hasOwnProperty.call(body || {}, 'max_rpm') ? body.max_rpm : body.maxRpm
+        const hasMaxSessions = body && Object.prototype.hasOwnProperty.call(body, 'max_sessions')
+        // Explicit null = drop the slot's pin and follow its tier / global default again.
+        const inheritConc = body?.max_concurrency === null
+        const inheritRpm = body?.max_rpm === null
         const hasSessionSlots = body && Object.prototype.hasOwnProperty.call(body, 'session_slots')
         const hasQuotaOverride = body && Object.prototype.hasOwnProperty.call(body, 'quota_override')
         const hasModels = body && Object.prototype.hasOwnProperty.call(body, 'allowed_models')
@@ -1809,9 +1898,12 @@ export function createPanelHandler(ctx) {
           (Object.prototype.hasOwnProperty.call(body, 'inference_engine') ||
             Object.prototype.hasOwnProperty.call(body, 'persona_preset'))
         if (
-          next == null &&
-          nextRpm == null &&
+          !hasConcurrency &&
+          !hasRpm &&
+          !inheritConc &&
+          !inheritRpm &&
           !hasSessionSlots &&
+          !hasMaxSessions &&
           !hasQuotaOverride &&
           !hasModels &&
           !hasAuthScheme &&
@@ -1824,8 +1916,20 @@ export function createPanelHandler(ctx) {
             ok: false,
             error: {
               message:
-                'max_concurrency, max_rpm, session_slots, quota_override, allowed_models, auth_scheme, inference_engine, persona_preset, schedule_level, timezone or timezone_follow_proxy required',
+                'max_concurrency, max_rpm, max_sessions, session_slots, quota_override, allowed_models, auth_scheme, inference_engine, persona_preset, schedule_level, timezone or timezone_follow_proxy required',
             },
+          })
+        }
+        try {
+          if (hasConcurrency && next !== null) strictInteger(next, 1, 256, 'max_concurrency')
+          if (hasRpm && nextRpm !== null) strictInteger(nextRpm, 0, 1_000_000, 'max_rpm')
+          if (hasSessionSlots && body.session_slots !== null)
+            strictInteger(body.session_slots, SESSION_SLOT_MIN, SESSION_SLOT_MAX, 'session_slots')
+          if (hasMaxSessions && body.max_sessions !== null) strictInteger(body.max_sessions, 0, 256, 'max_sessions')
+        } catch (error) {
+          return json(res, 400, {
+            ok: false,
+            error: { code: 'invalid_scheduling_value', message: error.message },
           })
         }
         const parsedScheduleLevel = hasScheduleLevel ? parseScheduleLevelInput(body.schedule_level) : null
@@ -1837,14 +1941,46 @@ export function createPanelHandler(ctx) {
           return json(res, 400, { ok: false, error: { message: parsedQuotaOverride.error } })
         }
         if (parsedQuotaOverride) {
-          const currentVm = getVm(cfg.paths.project, id)
-          if (!currentVm) return json(res, 404, { ok: false, error: { message: 'vm not found' } })
           if (isCodexVm(currentVm)) {
             return json(res, 400, {
               ok: false,
               error: { code: 'gpt_quota_override_forbidden', message: 'GPT slots do not use Claude quota tiers' },
             })
           }
+        }
+        if (hasSessionSlots && isCodexVm(currentVm)) {
+          return json(res, 400, {
+            ok: false,
+            error: { code: 'gpt_session_slots_forbidden', message: 'GPT slots do not use native session slots' },
+          })
+        }
+        if (hasMaxSessions && !isCodexVm(currentVm)) {
+          return json(res, 400, {
+            ok: false,
+            error: { code: 'claude_max_sessions_forbidden', message: 'Claude 槽不使用 OpenAI 会话容量上限' },
+          })
+        }
+        if (hasAuthScheme && hostUnsupported(res, currentVm, 'auth_scheme')) return
+        if (
+          hasSlotPolicy &&
+          Object.prototype.hasOwnProperty.call(body, 'inference_engine') &&
+          (isCodexVm(currentVm) || hostUnsupported(res, currentVm, 'engine_switch'))
+        ) {
+          if (isCodexVm(currentVm)) {
+            return json(res, 400, {
+              ok: false,
+              error: { code: 'gpt_engine_forbidden', message: 'GPT slots do not use go or rust inference engines' },
+            })
+          }
+          return
+        }
+        if (hasModels) {
+          const parsed = parseAllowedModelsPatch(body.allowed_models, { vm: currentVm })
+          if (!parsed.ok) return json(res, 400, { ok: false, error: { message: parsed.error } })
+        }
+        if (hasSlotPolicy) {
+          const parsed = parseSlotEnginePolicyPatch(body)
+          if (!parsed.ok) return json(res, 400, { ok: false, error: { message: parsed.error } })
         }
         let timezoneSync = null
         if (hasTimezone) {
@@ -1863,17 +1999,12 @@ export function createPanelHandler(ctx) {
               },
             })
           }
-          const vm = persistVmTimezone(cfg.paths.project, id, zone, { source: 'manual' })
-          if (!vm) return json(res, 404, { ok: false, error: { message: 'vm not found' } })
-          const kernel = projectSlotKernelConfig(vm)
-          timezoneSync = {
-            applied: true,
-            timezone: zone,
-            source: 'manual',
-            kernel_hot: kernel?.changed === true,
-          }
+          timezoneSync = { timezone: zone, source: 'manual' }
         } else if (followProxyTz) {
-          const synced = await syncVmTimezoneFromProxy(cfg.paths.project, proxyPool, id, { force: true })
+          const synced = await syncVmTimezoneFromProxy(cfg.paths.project, proxyPool, id, {
+            force: true,
+            persist: false,
+          })
           if (!synced.ok) {
             return json(res, 400, {
               ok: false,
@@ -1884,72 +2015,56 @@ export function createPanelHandler(ctx) {
               },
             })
           }
-          timezoneSync = { applied: synced.applied, timezone: synced.timezone, source: 'proxy_geo' }
-          if (synced.applied) {
-            const kernel = projectSlotKernelConfig({ id })
-            timezoneSync.kernel_hot = kernel?.changed === true
-          }
+          timezoneSync = { applied: false, timezone: synced.timezone, source: 'proxy_geo' }
         }
-        if (next != null) {
+        if (hasConcurrency && next !== null) {
           const vm = applyVmConcurrency(id, next, { override: true })
           if (!vm) return json(res, 404, { ok: false, error: { message: 'vm not found' } })
         }
-        if (nextRpm != null) {
+        if (hasRpm && nextRpm !== null) {
           const vm = applyVmRpm(id, nextRpm, { override: true })
           if (!vm) return json(res, 404, { ok: false, error: { message: 'vm not found' } })
         }
-        if (hasSessionSlots) {
-          const currentVm = getVm(cfg.paths.project, id)
-          if (!currentVm) return json(res, 404, { ok: false, error: { message: 'vm not found' } })
-          if (isCodexVm(currentVm)) {
-            return json(res, 400, {
-              ok: false,
-              error: { code: 'gpt_session_slots_forbidden', message: 'GPT slots do not use native session slots' },
-            })
-          }
-          const raw = Number(body.session_slots)
-          if (!Number.isInteger(raw) || raw < SESSION_SLOT_MIN || raw > SESSION_SLOT_MAX) {
-            return json(res, 400, {
-              ok: false,
-              error: { message: `session_slots must be an integer from ${SESSION_SLOT_MIN} to ${SESSION_SLOT_MAX}` },
-            })
-          }
-          const vm = applyVmSessionSlots(id, normalizeSessionSlots(raw), { override: true })
+        if ((hasConcurrency && next === null) || (hasRpm && nextRpm === null)) {
+          const vm = inheritVmScheduling(id, {
+            concurrency: hasConcurrency && next === null,
+            rpm: hasRpm && nextRpm === null,
+          })
           if (!vm) return json(res, 404, { ok: false, error: { message: 'vm not found' } })
+        }
+        if (hasSessionSlots) {
+          if (body.session_slots === null) {
+            inheritVmScheduling(id, { sessionSlots: true })
+          } else {
+            const vm = applyVmSessionSlots(id, normalizeSessionSlots(body.session_slots), { override: true })
+            if (!vm) return json(res, 404, { ok: false, error: { message: 'vm not found' } })
+          }
+        }
+        if (hasMaxSessions) {
+          if (body.max_sessions === null) {
+            const vm = inheritVmScheduling(id, { maxSessions: true })
+            if (!vm) return json(res, 404, { ok: false, error: { message: 'vm not found' } })
+          } else {
+            const vm = ctx.applyVmMaxSessions(id, body.max_sessions, { override: true })
+            if (!vm) return json(res, 404, { ok: false, error: { message: 'vm not found' } })
+          }
         }
         if (parsedQuotaOverride) {
           const vm = applyVmQuotaOverride(id, parsedQuotaOverride.value)
           if (!vm) return json(res, 404, { ok: false, error: { message: 'vm not found' } })
         }
         if (hasModels) {
-          const currentVm = getVm(cfg.paths.project, id)
           const parsed = parseAllowedModelsPatch(body.allowed_models, { vm: currentVm })
-          if (!parsed.ok) return json(res, 400, { ok: false, error: { message: parsed.error } })
           const vm = persistAllowedModels(cfg.paths.project, id, parsed.value)
           if (!vm) return json(res, 404, { ok: false, error: { message: 'vm not found' } })
         }
         if (hasAuthScheme) {
-          if (hostUnsupported(res, getVm(cfg.paths.project, id), 'auth_scheme')) return
           const vm = persistSlotAuthScheme(cfg.paths.project, id, body.auth_scheme || body.authScheme)
           if (!vm) return json(res, 404, { ok: false, error: { message: 'vm not found' } })
         }
         let slotPolicyResult = null
         if (hasSlotPolicy) {
-          const currentVm = getVm(cfg.paths.project, id)
-          if (Object.prototype.hasOwnProperty.call(body, 'inference_engine')) {
-            if (hostUnsupported(res, currentVm, 'engine_switch')) return
-          }
-          if (currentVm && isCodexVm(currentVm) && Object.prototype.hasOwnProperty.call(body, 'inference_engine')) {
-            return json(res, 400, {
-              ok: false,
-              error: {
-                code: 'gpt_engine_forbidden',
-                message: 'GPT slots do not use go or rust inference engines',
-              },
-            })
-          }
           const parsed = parseSlotEnginePolicyPatch(body)
-          if (!parsed.ok) return json(res, 400, { ok: false, error: { message: parsed.error } })
           slotPolicyResult = await applySlotPolicyWithRuntime(id, parsed.patch)
           if (!slotPolicyResult.ok) {
             const status =
@@ -1970,6 +2085,20 @@ export function createPanelHandler(ctx) {
         if (parsedScheduleLevel) {
           const vm = persistVmScheduleLevel(cfg.paths.project, id, parsedScheduleLevel.value)
           if (!vm) return json(res, 404, { ok: false, error: { message: 'vm not found' } })
+        }
+        if (hasTimezone) {
+          const vm = persistVmTimezone(cfg.paths.project, id, timezoneSync.timezone, { source: 'manual' })
+          if (!vm) return json(res, 404, { ok: false, error: { message: 'vm not found' } })
+          const kernel = projectSlotKernelConfig(vm)
+          timezoneSync.applied = true
+          timezoneSync.kernel_hot = kernel?.changed === true
+        } else if (followProxyTz) {
+          const synced = await syncVmTimezoneFromProxy(cfg.paths.project, proxyPool, id, { force: true })
+          timezoneSync = { applied: synced.applied, timezone: synced.timezone, source: 'proxy_geo' }
+          if (synced.applied) {
+            const kernel = projectSlotKernelConfig({ id })
+            timezoneSync.kernel_hot = kernel?.changed === true
+          }
         }
         const detail = await panel.buildVmDetail({
           cfg,
@@ -1995,19 +2124,26 @@ export function createPanelHandler(ctx) {
       // POST /api/panel/vms/:id/probe
       if (req.method === 'POST' && /^\/api\/panel\/vms\/[^/]+\/probe$/.test(p)) {
         const id = p.split('/')[4]
-        const result = await panel.buildProbeOne({ cfg, accountQuota, id, hop: true, force: true })
+        const result = await panel.buildProbeOne({
+          cfg,
+          accountQuota,
+          id,
+          hop: true,
+          force: true,
+          routingConfig: ctx.routingConfig,
+        })
         if (result.status) return json(res, result.status, result.body)
         return json(res, 200, result)
       }
       if (req.method === 'POST' && /^\/api\/panel\/vms\/[^/]+\/openai-quota\/refresh$/.test(p)) {
         const id = p.split('/')[4]
-        const result = await panel.buildOpenaiQuotaRefresh({ cfg, id })
+        const result = await panel.buildOpenaiQuotaRefresh({ cfg, id, routingConfig: ctx.routingConfig })
         if (result.status) return json(res, result.status, result.body)
         return json(res, 200, result)
       }
       if (req.method === 'POST' && /^\/api\/panel\/vms\/[^/]+\/openai-quota\/reset$/.test(p)) {
         const id = p.split('/')[4]
-        const result = await panel.buildOpenaiQuotaReset({ cfg, id })
+        const result = await panel.buildOpenaiQuotaReset({ cfg, id, routingConfig: ctx.routingConfig })
         if (result.status) return json(res, result.status, result.body)
         return json(res, 200, result)
       }
@@ -2292,7 +2428,7 @@ export function createPanelHandler(ctx) {
             return json(res, 409, {
               ok: false,
               error: { code: 'proxy_required', message: 'No healthy SOCKS5 is available for this VM' },
-              vm: summarizeVm(vm),
+              vm: summarizeVm(vm, cfg.paths.project, ctx.routingConfig),
               destroyed: gone.action,
             })
           }
@@ -2307,7 +2443,7 @@ export function createPanelHandler(ctx) {
               return json(res, 500, {
                 ok: false,
                 error: { message: boot.error || 'runtime start failed', code: boot.code },
-                vm: summarizeVm(vm),
+                vm: summarizeVm(vm, cfg.paths.project, ctx.routingConfig),
                 destroyed: gone.action,
               })
             }
@@ -2315,7 +2451,7 @@ export function createPanelHandler(ctx) {
               res,
               200,
               panel.ok({
-                vm: summarizeVm(vm),
+                vm: summarizeVm(vm, cfg.paths.project, ctx.routingConfig),
                 destroyed: gone.action,
                 recreated: true,
                 runtime: panel.publicSlotBoot(boot),
@@ -2620,16 +2756,12 @@ export function createPanelHandler(ctx) {
           note: body.note || `${(OS_CATALOG[wantKernel] || {}).pretty || wantKernel} · Go slot worker`,
           proxy: null,
           policy: {
-            maxConcurrency: (() => {
-              const raw = Number(
-                body.max_concurrency ?? body.maxConcurrency ?? ctx.routingConfig?.concurrency?.default_max_per_account,
-              )
-              return Number.isFinite(raw) ? Math.max(0, Math.min(128, raw)) : 20
-            })(),
-            maxRpm: (() => {
-              const raw = Number(body.max_rpm ?? body.maxRpm ?? ctx.routingConfig?.concurrency?.default_max_rpm)
-              return Number.isFinite(raw) ? Math.max(0, Math.min(1e6, raw)) : 0
-            })(),
+            maxConcurrency: 0,
+            concurrencyOverride: false,
+            maxRpm: 0,
+            rpmOverride: false,
+            maxSessions: 0,
+            sessionsOverride: false,
             weight: Math.max(1, Math.min(100, Number(body.weight ?? 1))),
             inflight: 0,
           },
@@ -2654,6 +2786,65 @@ export function createPanelHandler(ctx) {
         }
         if (nodeId) vm.node_id = nodeId
         stampVmKind(vm, body)
+        const openaiPolicy = normalizeOpenAIQuotaPolicy(ctx.routingConfig?.codex?.quota)
+        const explicitConcurrency =
+          Object.prototype.hasOwnProperty.call(body, 'max_concurrency') ||
+          Object.prototype.hasOwnProperty.call(body, 'maxConcurrency')
+        const explicitRpm =
+          Object.prototype.hasOwnProperty.call(body, 'max_rpm') || Object.prototype.hasOwnProperty.call(body, 'maxRpm')
+        const explicitSessions = Object.prototype.hasOwnProperty.call(body, 'max_sessions')
+        const readField = (snake, camel) =>
+          Object.prototype.hasOwnProperty.call(body, snake) ? body[snake] : body[camel]
+        const hasField = (snake, camel) =>
+          Object.prototype.hasOwnProperty.call(body, snake) || Object.prototype.hasOwnProperty.call(body, camel)
+        const rawConcurrency = readField('max_concurrency', 'maxConcurrency')
+        const rawRpm = readField('max_rpm', 'maxRpm')
+        const rawSessions = body.max_sessions
+        const validInteger = (value, min, max) =>
+          typeof value === 'number' && Number.isFinite(value) && Number.isInteger(value) && value >= min && value <= max
+        const invalidCreate = (value, min, max) => value !== null && !validInteger(value, min, max)
+        if (isCodexVm(vm)) {
+          if (
+            (explicitConcurrency && invalidCreate(rawConcurrency, 1, 256)) ||
+            (explicitRpm && invalidCreate(rawRpm, 0, 1e6)) ||
+            (explicitSessions && invalidCreate(rawSessions, 0, 256))
+          ) {
+            return json(res, 400, {
+              ok: false,
+              error: {
+                code: 'invalid_create_schedule',
+                message: 'OpenAI scheduling values must be finite integers in range',
+              },
+            })
+          }
+          vm.policy.maxConcurrency =
+            explicitConcurrency && rawConcurrency !== null ? rawConcurrency : openaiPolicy.max_concurrency
+          vm.policy.concurrencyOverride = explicitConcurrency && rawConcurrency !== null
+          vm.policy.maxRpm = explicitRpm && rawRpm !== null ? rawRpm : openaiPolicy.max_rpm
+          vm.policy.rpmOverride = explicitRpm && rawRpm !== null
+          vm.policy.maxSessions = explicitSessions && rawSessions !== null ? rawSessions : openaiPolicy.max_sessions
+          vm.policy.sessionsOverride = explicitSessions && rawSessions !== null
+        } else {
+          if (
+            (explicitConcurrency && invalidCreate(rawConcurrency, 0, 256)) ||
+            (explicitRpm && invalidCreate(rawRpm, 0, 1e6)) ||
+            explicitSessions
+          ) {
+            return json(res, 400, {
+              ok: false,
+              error: {
+                code: 'invalid_create_schedule',
+                message: 'Claude scheduling values are invalid or unsupported',
+              },
+            })
+          }
+          vm.policy.maxConcurrency = explicitConcurrency
+            ? rawConcurrency
+            : Number(ctx.routingConfig?.concurrency?.default_max_per_account ?? 2)
+          vm.policy.concurrencyOverride = explicitConcurrency
+          vm.policy.maxRpm = explicitRpm ? rawRpm : Number(ctx.routingConfig?.concurrency?.default_max_rpm ?? 0)
+          vm.policy.rpmOverride = explicitRpm
+        }
         atomicWriteJson(vmPath, vm, { mode: 0o600 })
         writeGuestMachineIdFile(cfg.paths.project, id, generated.guest_machine_id)
         try {
@@ -2707,7 +2898,7 @@ export function createPanelHandler(ctx) {
           res,
           200,
           panel.ok({
-            vm: panel.publicVmBootView(summarizeVm(saved)),
+            vm: panel.publicVmBootView(summarizeVm(saved, cfg.paths.project, ctx.routingConfig)),
             allocated_proxy: panel.publicAllocatedProxy(proxyPool, allocated),
             ...(startError ? { start_error: startError } : {}),
           }),
@@ -2744,7 +2935,7 @@ export function createPanelHandler(ctx) {
           res,
           200,
           panel.ok({
-            vm: panel.publicVmBootView(summarizeVm(vm)),
+            vm: panel.publicVmBootView(summarizeVm(vm, cfg.paths.project, ctx.routingConfig)),
             allocated_proxy: panel.publicAllocatedProxy(proxyPool, bound),
             runtime: panel.publicRuntimeView(vm.runtime) || GATEWAY_CAPABILITIES.runtime,
             kernel: GATEWAY_CAPABILITIES.kernel,
@@ -2769,7 +2960,7 @@ export function createPanelHandler(ctx) {
           res,
           200,
           panel.ok({
-            vm: summarizeVm(vm),
+            vm: summarizeVm(vm, cfg.paths.project, ctx.routingConfig),
             runtime: panel.publicRuntimeView(vm.runtime) || GATEWAY_CAPABILITIES.runtime,
             kernel: GATEWAY_CAPABILITIES.kernel,
             halt: panel.publicSlotBoot(halt),
@@ -2838,6 +3029,7 @@ export function createPanelHandler(ctx) {
               existing,
               account,
               catalogClientVersion: ctx.routingConfig.codex?.catalog_client_version,
+              routingConfig: ctx.routingConfig,
             })
             return json(res, 200, panel.ok(committed))
           }
@@ -2931,7 +3123,7 @@ export function createPanelHandler(ctx) {
             res,
             200,
             panel.ok({
-              vm: summarizeVm(existing),
+              vm: summarizeVm(existing, cfg.paths.project, ctx.routingConfig),
               proxy_used: !!proxyUrl,
               oauth_email: existing.claude.email,
               has_refresh: existing.claude.has_refresh,
@@ -3053,6 +3245,7 @@ export function createPanelHandler(ctx) {
               vmPath,
               existing,
               catalogClientVersion: ctx.routingConfig.codex?.catalog_client_version,
+              routingConfig: ctx.routingConfig,
               account: {
                 access_token: oauth.access_token,
                 refresh_token: oauth.refresh_token,
@@ -3107,7 +3300,7 @@ export function createPanelHandler(ctx) {
             res,
             200,
             panel.ok({
-              vm: summarizeVm(existing),
+              vm: summarizeVm(existing, cfg.paths.project, ctx.routingConfig),
               proxy_used: !!slotProxy.proxyUrl,
               oauth_email: existing.claude?.email,
               has_refresh: existing.claude?.has_refresh,
@@ -3186,7 +3379,7 @@ export function createPanelHandler(ctx) {
           res,
           200,
           panel.ok({
-            vm: summarizeVm(existing),
+            vm: summarizeVm(existing, cfg.paths.project, ctx.routingConfig),
             oauth_email: existing.claude?.email || null,
             has_refresh: existing.claude?.has_refresh,
             official_cc_bootstrap: committed.official_cc_bootstrap || null,
@@ -3232,7 +3425,7 @@ export function createPanelHandler(ctx) {
             res,
             200,
             panel.ok({
-              vm: summarizeVm(existing),
+              vm: summarizeVm(existing, cfg.paths.project, ctx.routingConfig),
               oauth_email: existing.claude?.email || null,
               has_refresh: existing.claude?.has_refresh,
               official_cc_bootstrap: { scheduled: false, reason: 'already_setup_token' },
@@ -3266,7 +3459,7 @@ export function createPanelHandler(ctx) {
           res,
           200,
           panel.ok({
-            vm: summarizeVm(existing),
+            vm: summarizeVm(existing, cfg.paths.project, ctx.routingConfig),
             oauth_email: existing.claude?.email || null,
             has_refresh: existing.claude?.has_refresh,
             official_cc_bootstrap: committed.official_cc_bootstrap || null,
@@ -3546,6 +3739,19 @@ export function createPanelHandler(ctx) {
       if (req.method === 'PUT' && p === '/api/panel/routing') {
         const body = await readBody(req, cfg.limits.max_body_bytes)
         const previousRoutingConfig = structuredClone(ctx.routingConfig)
+        try {
+          if (body?.codex && Object.prototype.hasOwnProperty.call(body.codex, 'quota')) {
+            validateOpenAIQuotaPatch(body.codex.quota)
+          }
+        } catch (error) {
+          if (error instanceof TypeError || error instanceof RangeError) {
+            return json(res, 400, {
+              ok: false,
+              error: { type: 'invalid_request_error', code: 'invalid_openai_quota', message: error.message },
+            })
+          }
+          throw error
+        }
         const personaProblems = [...panel.validatePersonaRoutingPatch(body), ...validateInferenceRoutingPatch(body)]
         if (personaProblems.length) {
           return json(res, 400, {
@@ -3618,18 +3824,16 @@ export function createPanelHandler(ctx) {
       }
       if (req.method === 'PUT' && p === '/api/panel/refusal-guards') {
         const body = await readBody(req, 8 * 1024).catch(() => ({}))
-        if (body && Object.prototype.hasOwnProperty.call(body, 'enabled') && typeof body.enabled !== 'boolean') {
+        const patched = applyRefusalGuardPatch(new SettingsRepo(), body || {})
+        if (!patched.ok) {
           return json(res, 400, {
             ok: false,
             error: {
               type: 'invalid_request_error',
               code: 'invalid_refusal_guard',
-              message: 'enabled 必须是布尔',
+              message: patched.problems.join('；'),
             },
           })
-        }
-        if (body && Object.prototype.hasOwnProperty.call(body, 'enabled')) {
-          new SettingsRepo().set(REFUSAL_GUARD_SETTING, body.enabled !== false)
         }
         return json(res, 200, panel.ok(refusalGuardSnapshot()))
       }
@@ -3658,6 +3862,71 @@ export function createPanelHandler(ctx) {
         }
         new RefusalGuardsRepo().clear()
         return json(res, 200, panel.ok(refusalGuardSnapshot()))
+      }
+      if (req.method === 'DELETE' && p === '/api/panel/refusal-device-blocks') {
+        const body = await readBody(req, 8 * 1024).catch(() => ({}))
+        const repo = new RefusalDeviceBlocksRepo()
+        const deviceId = String(body?.device_id || '').trim()
+        if (deviceId) {
+          if (!repo.remove(deviceId)) {
+            return json(res, 404, {
+              ok: false,
+              error: { type: 'not_found_error', code: 'refusal_device_not_found', message: 'device 不存在' },
+            })
+          }
+          return json(res, 200, panel.ok(refusalGuardSnapshot()))
+        }
+        if (body?.confirm !== true) {
+          return json(res, 400, {
+            ok: false,
+            error: {
+              type: 'invalid_request_error',
+              code: 'confirm_required',
+              message: '清空 device 封禁须 confirm: true，或传 device_id',
+            },
+          })
+        }
+        repo.clear()
+        return json(res, 200, panel.ok(refusalGuardSnapshot()))
+      }
+      if (req.method === 'GET' && p === '/api/panel/jev-intercept') {
+        return json(res, 200, panel.ok(jevInterceptSnapshot()))
+      }
+      if (req.method === 'PUT' && p === '/api/panel/jev-intercept') {
+        const body = await readBody(req, 64 * 1024).catch(() => ({}))
+        const patched = applyJevPatch(new SettingsRepo(), body || {})
+        if (!patched.ok) {
+          return json(res, 400, {
+            ok: false,
+            error: {
+              type: 'invalid_request_error',
+              code: 'invalid_jev_intercept',
+              message: patched.problems.join('；'),
+            },
+          })
+        }
+        return json(res, 200, panel.ok(patched.config))
+      }
+      if (req.method === 'POST' && p === '/api/panel/jev-intercept/models') {
+        const body = await readBody(req, 8192).catch(() => ({}))
+        const current = jevInterceptSnapshot()
+        const baseUrl = String(body?.base_url || current.base_url || '').trim()
+        const typedKey = String(body?.api_key || '').trim()
+        const stored = readJevConfig((key, fallback) => new SettingsRepo().get(key, fallback))
+        const apiKey = typedKey || stored.api_keys[0] || ''
+        try {
+          const listed = await listDecisionModels(baseUrl, apiKey, Number(body?.timeout_ms) || current.timeout_ms)
+          return json(res, 200, panel.ok({ models: listed.models, url: listed.url }))
+        } catch (error) {
+          return json(res, 502, {
+            ok: false,
+            error: {
+              type: 'api_error',
+              code: error?.code || 'fetch_models_failed',
+              message: error?.message || '获取模型失败',
+            },
+          })
+        }
       }
       if (req.method === 'GET' && p === '/api/panel/notify') {
         return json(

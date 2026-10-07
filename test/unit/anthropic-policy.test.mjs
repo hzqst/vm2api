@@ -424,6 +424,23 @@ test('unofficial fills omitted when caller thinking has no display', () => {
   assert.deepEqual(body.thinking, { type: 'adaptive', display: 'omitted' })
 })
 
+test('beta sanitize rewrites thinking.display updates only without the gate token', () => {
+  const updates = { model: 'claude-opus-5-5', thinking: { type: 'adaptive', display: 'updates' } }
+  const dropped = sanitizeAnthropicBodyForBetaTokens(updates, 'oauth-2025-04-20,interleaved-thinking-2025-05-14')
+  assert.deepEqual(dropped.thinking, { type: 'adaptive', display: 'omitted' })
+  const kept = sanitizeAnthropicBodyForBetaTokens(updates, 'oauth-2025-04-20,thinking-display-updates-2026-08-18')
+  assert.equal(kept.thinking.display, 'updates')
+  const summarized = sanitizeAnthropicBodyForBetaTokens(
+    { thinking: { type: 'adaptive', display: 'summarized' } },
+    'oauth-2025-04-20',
+  )
+  assert.equal(summarized.thinking.display, 'summarized')
+  const omitted = sanitizeAnthropicBodyForBetaTokens({ thinking: { type: 'adaptive', display: 'omitted' } }, '')
+  assert.equal(omitted.thinking.display, 'omitted')
+  const spaced = sanitizeAnthropicBodyForBetaTokens(updates, 'oauth-2025-04-20, thinking-display-updates-2026-08-18 ')
+  assert.equal(spaced.thinking.display, 'updates')
+})
+
 test('unofficial does not overwrite caller thinking display, effort, or max_tokens', () => {
   const body = prepareAnthropicRequest(
     {

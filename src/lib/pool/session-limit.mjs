@@ -1,9 +1,10 @@
 /**
- * Per-account sticky-session cap (sub2api-style, in-memory).
+ * Per-slot conversation window for the Codex/GPT pool (sub2api-style,
+ * in-memory). The Claude pool uses the seat planner instead.
  * Existing keys renew; a new key is refused once active >= max.
  * max_sessions = 0 means off.
  *
- * Occupancy is a conversation window: PoolScheduler.reserve() touches,
+ * Occupancy is a conversation window: the Codex slot pick touches,
  * release() drops inflight refs but keeps the key until idle prune.
  * A window with live refs is never idle: a long stream must not lose its
  * window mid-flight. Every touch hands back a generation; drop() retires it

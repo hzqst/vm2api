@@ -6,9 +6,11 @@ import {
   isCompleteAssistantMessage,
   isClientCancelledResult,
   isIncompleteAssistantMessage,
+  isUsagePolicyErrorMessage,
   isWrapConnectionError,
   ErrorCode,
 } from '../core/errors.mjs'
+import { isContentPolicyErrorCode } from '../core/refusal-guard.mjs'
 import { isPlanLimitMessage, parseLimitResetFromMessage, parseResetMs } from './quota-window.mjs'
 import { attachFailureDecision } from './unit-decision.mjs'
 
@@ -101,10 +103,6 @@ function usageWindowReset(usage, now = Date.now()) {
 
 function accountLimitUntil(reset, usage, now, message = '') {
   return reset || parseLimitResetFromMessage(message, now) || usageWindowReset(usage, now) || now + 30 * 60_000
-}
-
-function isUsagePolicyMessage(message) {
-  return /usage policy|violate our usage policy/i.test(String(message || ''))
 }
 
 export const FABLE_FAMILY_KEY = 'fable'
@@ -340,6 +338,29 @@ function classifyUpstreamResultRaw(
   const reset = resetFromHeaders(result.headers, now)
 
   const hay = `${code} ${message} ${workerCode}`
+  // Claude Code wraps an AUP refusal as "API Error" and the kernel often
+  // surfaces it as HTTP 400. That is the prompt, not a repairable request
+  // and not an account failure: stop, do not hop again, cache forever.
+  if (isUsagePolicyErrorMessage(message) || isUsagePolicyErrorMessage(hay)) {
+    return {
+      scope: 'request',
+      action: 'stop',
+      reason: 'usage_policy_refusal',
+      cooldownUntil: null,
+      retrySameAccount: false,
+      rememberRefusal: true,
+      refusalTtlMs: 0,
+    }
+  }
+  if (isContentPolicyErrorCode(code) || isContentPolicyErrorCode(workerCode)) {
+    return {
+      scope: 'request',
+      action: 'stop',
+      reason: 'content_policy_refusal',
+      cooldownUntil: null,
+      retrySameAccount: false,
+    }
+  }
   if (/token has been revoked|oauth_revoked|invalid_grant|authentication_error/i.test(hay) || status === 401) {
     if (isUnconfirmedAuthFailure(result)) {
       return {
@@ -601,25 +622,10 @@ function classifyUpstreamResultRaw(
         reason: 'provider_timeout',
       })
     }
-    if (isUsagePolicyMessage(message)) {
-      return {
-        scope: 'account',
-        action: 'pause',
-        reason: 'provider_pause',
-        cooldownUntil: now + PROVIDER_PAUSE_MS,
-        retrySameAccount: false,
-        rememberRefusal: true,
-        refusalTtlMs: PROVIDER_PAUSE_MS,
-      }
-    }
+
     // A 2xx stream that died before visible output used to be rewritten to 502.
     // Kernel may also send that 502 with terminal incomplete. Neither is overload.
-    if (
-      result.terminalState === 'incomplete' &&
-      !result.committed &&
-      !isUsagePolicyMessage(message) &&
-      !/overload/i.test(message)
-    ) {
+    if (result.terminalState === 'incomplete' && !result.committed && !/overload/i.test(message)) {
       return continueWithoutCooldown({
         scope: 'stream',
         reason: 'empty_response',

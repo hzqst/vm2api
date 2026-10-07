@@ -156,7 +156,7 @@ export function TrafficOps({
     {
       label: '错误率',
       value: err == null ? '—' : `${err.toFixed(1)}%`,
-      hint: `429 ${fmtNum(o.status_429 || 0)} · 503 ${fmtNum(o.status_503 || 0)}`,
+      hint: `429 ${fmtNum(o.status_429 || 0)} · 503 ${fmtNum(o.status_503 || 0)} · 529 ${fmtNum(o.status_529 || 0)}`,
       tone: errTone(o.error_rate),
     },
     {

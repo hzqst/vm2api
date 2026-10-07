@@ -22,6 +22,7 @@
  */
 import crypto from 'node:crypto'
 import { formatMetadataUserId } from './vm-identity.mjs'
+import { isShortProbeRequest } from '../pool/sticky-router.mjs'
 
 export const IDENTITY_REPLACE = Object.freeze([
   'device_id',
@@ -233,6 +234,64 @@ export function resolveInboundIdentity({ inbound = {}, body = {}, headers = {} }
   // A metadata session_id without any device still pins its own session.
   if (sessionId) return { sessionId, deviceId: '', source: 'metadata' }
   return { sessionId: '', deviceId: '', source: 'none' }
+}
+
+function seatHash(parts) {
+  const hash = crypto.createHash('sha256')
+  for (const part of parts) hash.update(`${String(part ?? '')}\u0000`)
+  return hash.digest('hex')
+}
+
+function blockText(block) {
+  if (typeof block === 'string') return block
+  if (block?.type === 'text' && typeof block.text === 'string') return block.text
+  return ''
+}
+
+function contentBlocks(content) {
+  if (Array.isArray(content)) return content
+  return content == null ? [] : [content]
+}
+
+function systemText(system) {
+  return contentBlocks(system).map(blockText).filter(Boolean).join('\n')
+}
+
+/** Text of every system / message block the client marked `cache_control: { type: 'ephemeral' }`. */
+function ephemeralCacheText(body = {}) {
+  const marked = (block) =>
+    block && typeof block === 'object' && String(block.cache_control?.type || '') === 'ephemeral'
+  const parts = []
+  for (const block of contentBlocks(body?.system)) if (marked(block)) parts.push(blockText(block))
+  for (const message of Array.isArray(body?.messages) ? body.messages : []) {
+    for (const block of contentBlocks(message?.content)) if (marked(block)) parts.push(blockText(block))
+  }
+  return parts.filter(Boolean).join('\n')
+}
+
+/**
+ * Pool seat identity: one key per inbound device; every request of it shares
+ * one seat. Precedence (sub2api GenerateSessionHash without the API key):
+ * device id → metadata session_id → short one-shot probe (no seat) →
+ * hash of `cache_control: ephemeral` content → hash of client IP +
+ * normalized UA + system + first user turn. The API key never takes part.
+ * @returns {{ key: string|null, source: 'device'|'session'|'probe'|'cache'|'fingerprint' }}
+ */
+export function resolveSeatIdentity({ inbound = {}, body = {}, headers = {}, clientIp = '' } = {}) {
+  const identity = resolveInboundIdentity({ inbound, body, headers })
+  if (identity.deviceId) return { key: `seat:dev:${identity.deviceId}`, source: 'device' }
+  if (identity.sessionId) return { key: `seat:sess:${identity.sessionId}`, source: 'session' }
+  if (isShortProbeRequest(inbound)) return { key: null, source: 'probe' }
+  const cached = ephemeralCacheText(inbound)
+  if (cached) return { key: `seat:h:${seatHash(['cache', cached])}`, source: 'cache' }
+  const fingerprint = seatHash([
+    'fingerprint',
+    String(clientIp || '').trim(),
+    normalizeSessionUserAgent(headerValue(headers, 'user-agent')),
+    systemText(inbound?.system),
+    extractFirstUserIdentity(inbound?.messages),
+  ])
+  return { key: `seat:h:${fingerprint}`, source: 'fingerprint' }
 }
 
 /**

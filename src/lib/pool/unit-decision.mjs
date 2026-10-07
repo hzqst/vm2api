@@ -38,7 +38,12 @@ export function decisionScope(policy = {}) {
 }
 
 export function decisionOrigin(policy = {}) {
-  if (policy.reason === 'content_filter_refusal' || policy.reason === 'client_cancelled') return 'client'
+  if (
+    policy.reason === 'content_filter_refusal' ||
+    policy.reason === 'usage_policy_refusal' ||
+    policy.reason === 'client_cancelled'
+  )
+    return 'client'
   if (policy.reason === 'pool_wait_queue_full' || (policy.scope === 'worker' && policy.reason === 'slot_busy')) {
     return 'local'
   }

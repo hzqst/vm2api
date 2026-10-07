@@ -27,7 +27,13 @@ const RECENT_SCAN = 5000
 const OPTION_LIMIT = 200
 const DEFAULT_VIA = 'go-worker-pool'
 
-const BLOCKED_STATES = { distill_blocked: 'distill', refusal_guard: 'refusal_guard' }
+const BLOCKED_STATES = {
+  distill_blocked: 'distill',
+  refusal_guard: 'refusal_guard',
+  refusal_similar: 'refusal_guard',
+  refusal_device: 'refusal_guard',
+  policy_blocked: 'policy',
+}
 
 function num(v) {
   const n = Number(v)

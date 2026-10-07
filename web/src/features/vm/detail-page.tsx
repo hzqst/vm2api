@@ -13,7 +13,6 @@ import {
   concInfo,
   fableCap,
   rpmInfo,
-  sessionCapOf,
   vmCost,
   weeklySplitInfo,
 } from '@/lib/fable-status'
@@ -199,7 +198,6 @@ export function VmDetailPage() {
   const split = weeklySplitInfo(
     (acc.weekly_split ? acc : vm) as Record<string, unknown>
   )
-  const sess = sessionCapOf(vm)
   const conc = concInfo(vm, dash.data?.routing?.tiers, fableCap(dash.data))
   const rpm = rpmInfo(vm, acc)
   const todayReadCache = Number(
@@ -331,7 +329,6 @@ export function VmDetailPage() {
             now={now}
             cost={cost}
             split={split}
-            sess={sess}
             conc={conc}
             rpm={rpm}
             costByModel={data.billing?.by_model}

@@ -137,18 +137,49 @@ function quotaWindows(quota = {}, account = {}) {
   }
 }
 
+/** Effective 5h/7d windows and utilization ratios, the one reading admission and the seat budget share. */
+function usageWindows(quota = {}, account = {}, now = Date.now()) {
+  const q = quotaWindows(quota, account)
+  const lastUsedAt = account.last_used_at || quota.last_used_at || q.last_used_at || null
+  const w5 = effectiveRateWindow(
+    {
+      utilization: q.utilization_5h,
+      status: q.status_5h,
+      reset: q.reset_5h,
+    },
+    { lastUsedAt, source: 'headers', durationMs: WINDOW_5H_MS, now },
+  )
+  const w7 = effectiveRateWindow(
+    {
+      utilization: q.utilization_7d,
+      status: q.status_7d,
+      reset: q.reset_7d,
+    },
+    { lastUsedAt, source: 'headers', durationMs: WINDOW_7D_MS, now },
+  )
+  return { q, w5, w7, u5: utilRatio(w5.utilization), u7: utilRatio(w7.utilization) }
+}
+
+/**
+ * Seat budget headroom: min(limit_5h − u5, limit_7d − u7) with the same
+ * windows and safety lines evaluateAccount admits against.
+ */
+export function budgetHeadroom({ account = {}, quota = {}, policy = null, now = Date.now() } = {}) {
+  const pol = policyOf({ policy })
+  const { u5, u7 } = usageWindows(quota || {}, account || {}, now)
+  return Math.min(pol.limit_5h - u5, pol.limit_7d - u7)
+}
+
 function policyOf(input = {}) {
   const p = input.policy || {}
   const fallback = DEFAULT_TIER_POLICIES.default
   return {
     limit_5h: Number(p.limit_5h ?? p.safety_ratio ?? fallback.limit_5h),
     limit_7d: Number(p.limit_7d ?? p.weekly_safety_ratio ?? fallback.limit_7d),
-    max_sessions: Number(p.max_sessions ?? 0),
-    session_idle_min: Number(p.session_idle_min ?? 5),
   }
 }
 
-function finish(base, { key, text, accept, usable, reason = null, window = null, sessions = null, until = null } = {}) {
+function finish(base, { key, text, accept, usable, reason = null, window = null, until = null } = {}) {
   return {
     ...base,
     key,
@@ -157,7 +188,6 @@ function finish(base, { key, text, accept, usable, reason = null, window = null,
     usable,
     reason,
     window,
-    sessions,
     until,
   }
 }
@@ -194,8 +224,6 @@ export function evaluateAccount({
   workerCredential = null,
   quota = {},
   policy = null,
-  sessionKey = null,
-  sessionLimit = null,
   hardBlock = null,
   cooldownUntil = null,
   cooldownReason = null,
@@ -321,26 +349,7 @@ export function evaluateAccount({
     })
   }
 
-  const q = quotaWindows(quota, account)
-  const lastUsedAt = account.last_used_at || quota.last_used_at || q.last_used_at || null
-  const w5 = effectiveRateWindow(
-    {
-      utilization: q.utilization_5h,
-      status: q.status_5h,
-      reset: q.reset_5h,
-    },
-    { lastUsedAt, source: 'headers', durationMs: WINDOW_5H_MS, now },
-  )
-  const w7 = effectiveRateWindow(
-    {
-      utilization: q.utilization_7d,
-      status: q.status_7d,
-      reset: q.reset_7d,
-    },
-    { lastUsedAt, source: 'headers', durationMs: WINDOW_7D_MS, now },
-  )
-  const u5 = utilRatio(w5.utilization)
-  const u7 = utilRatio(w7.utilization)
+  const { q, u5, u7, w5, w7 } = usageWindows(quota, account, now)
 
   if (u5 >= 1) {
     return finish(base, {
@@ -399,31 +408,6 @@ export function evaluateAccount({
     })
   }
 
-  const accountId = account.account_id || account.accountId || vm.id || null
-  const maxSessions = Number(pol.max_sessions ?? account.max_sessions ?? 0)
-  const idleMin = Number(pol.session_idle_min ?? account.session_idle_min ?? 5)
-  let sessions = null
-  if (sessionLimit && typeof sessionLimit.snapshot === 'function') {
-    sessions = sessionLimit.snapshot(accountId, { max: maxSessions, idleMin, now })
-  }
-  if (maxSessions > 0 && sessionLimit) {
-    const gate =
-      typeof sessionLimit.canAccept === 'function'
-        ? sessionLimit.canAccept(accountId, sessionKey, { max: maxSessions, idleMin, now })
-        : { ok: !(sessions && sessions.active >= maxSessions) }
-    const atCap = sessions && sessions.active >= maxSessions && !sessionKey
-    if (!gate.ok || atCap) {
-      return finish(base, {
-        key: 'sessions',
-        text: '会话已满',
-        accept: false,
-        usable: true,
-        reason: 'session_limit',
-        sessions: gate.detail || sessions,
-      })
-    }
-  }
-
   const tempUntil = Number(claude.temp_unschedulable_until || vm.temp_unschedulable_until || 0)
   const coolUntil = Math.max(
     Number(cooldownUntil || account.cooldown_until || vm.cooldown_until || 0),
@@ -472,7 +456,6 @@ export function evaluateAccount({
     accept: true,
     usable: true,
     reason: null,
-    sessions,
   })
 }
 
@@ -564,7 +547,7 @@ export function credStatusFromAvailability(av = {}) {
   const tone =
     key === 'ok'
       ? 'ok'
-      : key === 'quota' || key === 'sessions' || key === 'warn'
+      : key === 'quota' || key === 'warn'
         ? 'warn'
         : key === 'cool' || key === 'caution'
           ? 'caution'
@@ -585,15 +568,13 @@ export function credStatusFromAvailability(av = {}) {
             ? '5h 限制'
             : key === 'warn'
               ? '5h 警告'
-              : key === 'sessions'
-                ? '会话已满'
-                : key === 'cool'
-                  ? av.reason === 'auth_cooldown'
-                    ? AUTH_COOLDOWN_TEXT
-                    : '冷却中'
-                  : av.reason === 'oauth_revoked'
-                    ? REVOKE_TEXT
-                    : INVALID_CREDENTIAL_TEXT)
+              : key === 'cool'
+                ? av.reason === 'auth_cooldown'
+                  ? AUTH_COOLDOWN_TEXT
+                  : '冷却中'
+                : av.reason === 'oauth_revoked'
+                  ? REVOKE_TEXT
+                  : INVALID_CREDENTIAL_TEXT)
   return {
     key,
     text,

@@ -173,7 +173,7 @@ location / {
 }
 ```
 
-`Connection ""` 会剥掉 Upgrade，终端握手拿不到 101，面板里一直连不上；所以 shell 路径单独放在前面。HostDzire 的 Go 前门在 `:8787`、Node 在 `:8788`，这条 location 必须 `proxy_pass` 到 Node。症状和核对命令见 [nginx-shell.md](nginx-shell.md)。
+`Connection ""` 会剥掉 Upgrade，终端握手拿不到 101，面板里一直连不上；所以 shell 路径单独放在前面。生产机的 Go 前门在 `:8787`、Node 在 `:8788`，这条 location 必须 `proxy_pass` 到 Node。症状和核对命令见 [nginx-shell.md](nginx-shell.md)。
 
 ## 本机 Node（备选）
 

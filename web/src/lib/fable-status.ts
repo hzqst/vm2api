@@ -228,7 +228,6 @@ export type ConcurrencyInfo = {
   fin: number
   cooling: boolean
   hot: boolean
-  sess: SessionCapacity | null
   title: string
 }
 
@@ -256,7 +255,7 @@ export type WeeklySplitSummary = {
   fableFill: number
 }
 
-/** 会话上限快照。对齐 `sessionCapOf`。 */
+/** Codex 会话上限快照（Claude 行不带会话字段，返回 null）。对齐 `sessionCapOf`。 */
 export function sessionCapOf(subject: FableSubject): SessionCapacity | null {
   const sessions = subject.sessions as
     { active?: number; max?: number } | undefined
@@ -285,7 +284,7 @@ export function concInfo(
   const title = cooling
     ? `Fable 冷却${subject.fable_cooldown_reason ? ' · ' + String(subject.fable_cooldown_reason) : ''}`
     : `账号 ${inf}/${max} · Fable ${fin}/${fmax}${sess ? ` · 会话 ${sess.active}/${sess.max}` : ''}`
-  return { max, inf, fmax, fin, cooling, hot, sess, title }
+  return { max, inf, fmax, fin, cooling, hot, title }
 }
 
 /** RPM 徽标信息。对齐 `rpmChip`。 */

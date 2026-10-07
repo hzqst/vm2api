@@ -196,7 +196,7 @@ export function SystemPromptWorkspace({
             server={server}
             preset={viewing}
             blocks={blocks}
-            standing={templateSlotState(blocks, 'agent_standing')}
+            standing='switch'
             env={templateSlotState(blocks, 'env', [
               'env_official',
               'env_timezone_only',

@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import type { PoolSeatSnapshot, Vm } from '@/types/panel-vm'
+import type { PoolQueueSummary, PoolSeatSnapshot, Vm } from '@/types/panel-vm'
 import { panelFetch } from '@/lib/api'
 import { hasSession } from '@/lib/session'
 import { vmsListQueryOptions } from '@/features/vm/queries'
@@ -33,16 +33,47 @@ export function parseSseFrames(buffer: string): {
   return { frames, rest }
 }
 
+const SEAT_FIELDS = [
+  'seats_used',
+  'seats_max',
+  'seats_grace',
+  'queue_depth',
+  'conc_waiting',
+] as const
+
 /** 席位快照只覆盖 Claude 行（`seats_max` 非空）的实时字段；缺席即空闲。 */
 export function mergeSeatSnapshot(items: Vm[], snap: PoolSeatSnapshot): Vm[] {
   return items.map((vm) => {
     if (vm.seats_max == null) return vm
     const live = snap.seats[vm.id]
-    const seatsUsed = live?.seats_used ?? 0
-    const queueDepth = live?.queue_depth ?? 0
-    if (vm.seats_used === seatsUsed && vm.queue_depth === queueDepth) return vm
-    return { ...vm, seats_used: seatsUsed, queue_depth: queueDepth }
+    // 缺席的 VM 只清零计数；上限不在帧里，保留列表接口给的值。
+    const next = {
+      seats_used: live?.seats_used ?? 0,
+      seats_max: live?.seats_max ?? vm.seats_max,
+      seats_grace: live?.seats_grace ?? 0,
+      queue_depth: live?.queue_depth ?? 0,
+      conc_waiting: live?.conc_waiting ?? 0,
+    }
+    if (SEAT_FIELDS.every((key) => vm[key] === next[key])) return vm
+    return { ...vm, ...next }
   })
+}
+
+/** 全局排队不挂在任何 VM 上，单独写进列表缓存的 `pool_queue`。 */
+export function mergePoolQueue(
+  prev: PoolQueueSummary | undefined,
+  snap: PoolSeatSnapshot
+): PoolQueueSummary {
+  if (
+    prev?.global_queue_depth === snap.global_queue_depth &&
+    prev.queue_max === snap.queue_max
+  ) {
+    return prev
+  }
+  return {
+    global_queue_depth: snap.global_queue_depth,
+    queue_max: snap.queue_max,
+  }
 }
 
 /**
@@ -58,7 +89,13 @@ export function usePoolSeatStream() {
 
     const apply = (snap: PoolSeatSnapshot) => {
       qc.setQueryData(queryKey, (prev) =>
-        prev ? { ...prev, items: mergeSeatSnapshot(prev.items, snap) } : prev
+        prev
+          ? {
+              ...prev,
+              items: mergeSeatSnapshot(prev.items, snap),
+              pool_queue: mergePoolQueue(prev.pool_queue, snap),
+            }
+          : prev
       )
     }
 

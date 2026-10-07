@@ -356,14 +356,37 @@ function renderText(text, vars) {
 }
 
 /**
+ * A preset switch injects standing text even when a saved template dropped
+ * `{{agent_standing}}`. Built-in templates already have the placeholder.
+ */
+function withStandingSlot(blocks, standingText) {
+  if (!Array.isArray(blocks) || !String(standingText ?? '').trim()) return blocks
+  if (blocks.some((block) => String(block?.text || '').includes('{{agent_standing}}'))) return blocks
+  const idx = blocks.findIndex((block) => {
+    const id = String(block?.id || '')
+    const text = String(block?.text || '')
+    return /agent/i.test(id) || text.includes('{{caller_agent}}') || text.includes('{{agent_official}}')
+  })
+  const copy = blocks.map((block) => ({ ...block }))
+  if (idx < 0) {
+    copy.splice(Math.min(copy.length, 2), 0, { id: 'agent_standing', type: 'text', text: '{{agent_standing}}' })
+    return copy
+  }
+  const existing = String(copy[idx].text || '')
+  copy[idx].text = existing.replace(/\u200b/g, '').trim() ? `{{agent_standing}}${existing}` : '{{agent_standing}}'
+  return copy
+}
+
+/**
  * Meta keys off, type forced to text. Blank drop_if_empty blocks are dropped;
  * other blank blocks keep their slot as a zero-width space because upstream
  * rejects empty text (0注入 agent slot with standing off and no caller agent).
  */
 export function renderPersonaTemplate(blocks, vars = {}) {
-  if (!Array.isArray(blocks)) return []
+  const source = withStandingSlot(blocks, vars?.agent_standing)
+  if (!Array.isArray(source)) return []
   const out = []
-  for (const block of blocks) {
+  for (const block of source) {
     if (!block || typeof block !== 'object') continue
     const text = renderText(block.text, vars)
     const blank = !text.trim()

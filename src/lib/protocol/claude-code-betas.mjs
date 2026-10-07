@@ -24,6 +24,8 @@ export const BETA_CACHE_DIAGNOSIS = 'cache-diagnosis-2026-04-07'
 export const BETA_CONTEXT_MANAGEMENT = 'context-management-2025-06-27'
 export const BETA_FALLBACK_CREDIT = 'fallback-credit-2026-06-01'
 export const BETA_CONTEXT_1M = 'context-1m-2025-08-07'
+/** Gates thinking.display=updates. Absent from rebuilt setup-token and mimicry headers. */
+export const BETA_THINKING_DISPLAY_UPDATES = 'thinking-display-updates-2026-08-18'
 
 export const HAIKU_BETA_HEADER = `${BETA_OAUTH},${BETA_INTERLEAVED}`
 

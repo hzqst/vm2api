@@ -36,17 +36,20 @@ export function Field({
   )
 }
 
-/** 用量/剩余条。颜色只在异常档出现，健康填充走主色。 */
+/** 用量/剩余条。颜色只在异常档出现，健康填充走主色；`gate` 画出配额闸线。 */
 export function Meter({
   label,
   value,
   hint,
   kind = 'used',
+  gate,
 }: {
   label: string
   value: number
   hint?: string
   kind?: 'used' | 'remain'
+  /** 闸线百分比（0–100），到这里写成受限并切号。 */
+  gate?: number
 }) {
   const p = Math.max(0, Math.min(100, Number(value) || 0))
   const anomaly =
@@ -77,9 +80,24 @@ export function Meter({
         <span className='text-xs text-muted-foreground'>{label}</span>
         <span className='text-sm font-semibold tabular-nums'>
           {p.toFixed(0)}%
+          {gate != null ? (
+            <span className='ml-1 text-[11px] font-normal text-muted-foreground'>
+              / 闸 {Math.round(gate)}%
+            </span>
+          ) : null}
         </span>
       </div>
-      <Progress value={p} className='h-1.5' indicatorClassName={bar} />
+      <div className='relative'>
+        <Progress value={p} className='h-1.5' indicatorClassName={bar} />
+        {gate != null ? (
+          <span
+            aria-hidden
+            title={`闸线 ${Math.round(gate)}%`}
+            className='absolute -top-0.5 h-2.5 w-0.5 -translate-x-1/2 rounded-full bg-foreground/80'
+            style={{ left: `${Math.max(0, Math.min(100, gate))}%` }}
+          />
+        ) : null}
+      </div>
       {hint ? (
         <p className='text-[11px] leading-4 text-muted-foreground'>{hint}</p>
       ) : null}

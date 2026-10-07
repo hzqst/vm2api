@@ -48,7 +48,7 @@ test('envelope persistable JSON bodies keep distinct fingerprints', () => {
   assert.notEqual(a, b)
 })
 
-test('stop_reason=refusal counts as upstream refusal; wrap AUP text and distill do not', () => {
+test('stop_reason=refusal and Usage Policy API Error are cacheable; distill is not', () => {
   assert.equal(
     isUpstreamRefusal({
       body: {
@@ -58,17 +58,17 @@ test('stop_reason=refusal counts as upstream refusal; wrap AUP text and distill 
         },
       },
     }),
-    false,
+    true,
   )
   assert.equal(
     isUpstreamRefusal(
-      { status: 502, terminalState: 'incomplete' },
+      { status: 400, terminalState: 'rejected' },
       {
         error_message:
-          'provider error: provider error: API Error: Claude Code is unable to respond to this request, which appears to violate our Usage Policy (https://www.anthropic.com/legal/aup)',
+          'API Error: Claude Code is unable to respond to this request, which appears to violate our Usage Policy (https://www.anthropic.com/legal/aup)',
       },
     ),
-    false,
+    true,
   )
   assert.equal(isUpstreamRefusal({ finalState: 'content_filter' }), true)
   assert.equal(isUpstreamRefusal({ body: { stop_reason: 'refusal' } }), true)
@@ -136,9 +136,9 @@ test('timed refusal expires and no longer blocks', () => {
     db.close()
   }
 })
-test('guard error is HTTP 500 refusal_guard not distill_blocked', () => {
+test('guard error is HTTP 503 refusal_guard not distill_blocked', () => {
   const err = refusalGuardError('abc')
-  assert.equal(err.status, 500)
+  assert.equal(err.status, 503)
   assert.equal(err.body.error.code, 'refusal_guard')
   assert.equal(err.body.error.type, 'permission_error')
   assert.equal(err.body.error.message, REFUSAL_GUARD_MESSAGE)

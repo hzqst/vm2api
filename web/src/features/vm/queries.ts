@@ -5,6 +5,7 @@ import type {
   TestModelsPayload,
   VmCredentialResponse,
   VmDetailPayload,
+  VmsListResponse,
 } from '@/types/panel-vm'
 import { api } from '@/lib/api'
 
@@ -12,10 +13,8 @@ export function vmsListQueryOptions(refetchInterval?: number) {
   return queryOptions({
     queryKey: ['panel', 'vms'] as const,
     queryFn: async () => {
-      const data = await api<{ items?: import('@/types/panel-vm').Vm[] }>(
-        '/api/panel/vms'
-      )
-      return { items: data.items || [] }
+      const data = await api<VmsListResponse>('/api/panel/vms')
+      return { items: data.items || [], pool_queue: data.pool_queue }
     },
     ...(refetchInterval
       ? { refetchInterval, refetchOnWindowFocus: false }

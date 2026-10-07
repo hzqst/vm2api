@@ -8,7 +8,6 @@ import type {
 import type {
   ConcurrencyInfo,
   RpmInfo,
-  SessionCapacity,
   VmCostSummary,
   WeeklySplitSummary,
 } from '@/lib/fable-status'
@@ -33,7 +32,6 @@ type VmOverviewTabProps = {
   now: number
   cost: VmCostSummary
   split: WeeklySplitSummary | null
-  sess: SessionCapacity | null
   conc: ConcurrencyInfo
   rpm: RpmInfo | null
   costByModel?: VmBillingModelRow[]

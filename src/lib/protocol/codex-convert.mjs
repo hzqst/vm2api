@@ -435,6 +435,30 @@ function parseSseData(line) {
   }
 }
 
+/**
+ * kin-codex-kernel labels every Responses SSE frame `event: response`. OpenAI names each
+ * frame after its payload (`event: response.created`, `event: response.output_text.delta`,
+ * ...), and relays such as claude-code-hub classify frames by that name, so a kernel stream
+ * reads to them as one with no content and no completion. Returns a per-stream mapper from
+ * one raw kernel line to the text to write: the kernel's event line is held and re-emitted
+ * as `event: <data.type>` in front of its data line ('' while held).
+ */
+export function createResponsesSseEventNamer() {
+  let held = null
+  return (line) => {
+    const raw = String(line ?? '')
+    if (raw.startsWith('event:')) {
+      held = raw
+      return ''
+    }
+    if (!raw.startsWith('data:')) return `${raw}\n`
+    const type = parseSseData(raw).event?.type
+    const name = typeof type === 'string' && type ? `event: ${type}` : held
+    held = null
+    return name ? `${name}\n${raw}\n` : `${raw}\n`
+  }
+}
+
 function outputTextFromCodex(body = {}) {
   const resp = body.response && typeof body.response === 'object' ? body.response : body
   const chunks = []

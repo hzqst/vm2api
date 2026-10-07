@@ -50,6 +50,11 @@ const CODE_MAP = {
   api_key_concurrency_limit: 'quota',
   pool_overloaded: 'overloaded',
   pool_wait_queue_full: 'overloaded',
+  pool_queue_timeout: 'overloaded',
+  pool_overload_cooldown: 'overloaded',
+  pool_rate_limited: 'rate_limit',
+  fable_requires_max: 'rate_limit',
+  user_concurrency_limit: 'quota',
   account_pool_exhausted: 'unavailable',
   api_pool_exhausted: 'unavailable',
   no_eligible_accounts: 'unavailable',
@@ -57,6 +62,9 @@ const CODE_MAP = {
   server_overloaded: 'overloaded',
   upstream_overloaded: 'overloaded',
   slot_busy: 'overloaded',
+  // Kernel restarting / slot restore: platform side, not provider overload.
+  kernel_unavailable: 'other',
+  restore_in_progress: 'other',
   wrap_connection_error: 'other',
   upstream_timeout: 'timeout',
   stream_incomplete: 'timeout',
@@ -73,6 +81,7 @@ const CODE_MAP = {
   distill_blocked: 'distill',
   refusal_guard: 'refusal',
   content_filter_refusal: 'refusal',
+  policy_blocked: 'refusal',
 }
 
 export const IGNORED_ERROR_CODES = new Set([
@@ -109,6 +118,12 @@ export const SLA_OK_ERROR_CODES = new Set([
   'distill_blocked',
   'refusal_guard',
   'content_filter_refusal',
+  'policy_blocked',
+  // Pool queue full / timeout moved from 429 to 529; SLA keeps counting them as it did at 429.
+  'pool_overloaded',
+  'pool_wait_queue_full',
+  'pool_queue_timeout',
+  'pool_overload_cooldown',
 ])
 
 export function ignoredErrorSqlList() {
@@ -212,7 +227,8 @@ export function classifyRequestError(row = {}) {
     } else if (status === 401 || status === 403 || /oauth|reimport|revoked/.test(text)) {
       id = isOauthCredentialFailure(row, text, code) ? 'credential' : 'auth'
     } else if (status === 429) id = 'rate_limit'
-    else if (status === 529 || status === 503 || /overload|no eligible|负载过高/.test(text)) id = 'overloaded'
+    else if (status === 529 || /overload|负载过高/.test(text)) id = 'overloaded'
+    else if (status === 503 || /no eligible/.test(text)) id = 'unavailable'
     else if (status === 400 || status === 422) id = 'request'
     else if (status >= 500) id = 'upstream'
     else id = 'other'

@@ -30,10 +30,11 @@ import {
 
 import { summarizeCodexSlot } from './codex-slot.mjs'
 import { evaluateCodexQuotaSchedule } from '../pool/codex-slot-pool.mjs'
+import { effectiveOpenAIPolicy, normalizeOpenAIQuotaPolicy } from '../pool/openai-quota-policy.mjs'
 
 export { isCodexVm, normalizeVmKind } from './vm-kind.mjs'
 
-export function listVms(projectRoot) {
+export function listVms(projectRoot, routing = null) {
   const dir = path.join(projectRoot, 'vms')
   if (!fs.existsSync(dir)) return []
   const files = listVmRecordFiles(dir)
@@ -42,7 +43,7 @@ export function listVms(projectRoot) {
       try {
         const raw = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'))
         if (!raw?.id) return null
-        return summarizeVm(raw, projectRoot)
+        return summarizeVm(raw, projectRoot, routing)
       } catch {
         return null
       }
@@ -56,10 +57,13 @@ export function getVm(projectRoot, id) {
   return JSON.parse(fs.readFileSync(file, 'utf8'))
 }
 
-export function summarizeVm(vm, projectRoot = null) {
+export function summarizeVm(vm, projectRoot = null, routing = null) {
   const kind = normalizeVmKind(vm)
   const codex = kind.kind === 'codex' ? summarizeCodexSlot(projectRoot, vm) : null
   const quota = codex?.usage?.quota || {}
+  const globalOpenAI = normalizeOpenAIQuotaPolicy(routing?.codex?.quota)
+  const openAIPolicy = kind.kind === 'codex' ? effectiveOpenAIPolicy(vm, globalOpenAI) : null
+  const quotaGate = kind.kind === 'codex' ? evaluateCodexQuotaSchedule(vm, Date.now(), globalOpenAI) : null
   return {
     id: vm.id,
     name: vm.name,
@@ -92,10 +96,24 @@ export function summarizeVm(vm, projectRoot = null) {
     account_tier:
       kind.kind === 'codex' ? 'codex' : vm.claude?.account_tier || (hasAccessPresence(vm.claude) ? 'pro' : null),
     has_session_key: false,
-    max_concurrency: vm.policy?.maxConcurrency ?? 2,
-    max_rpm: vm.policy?.maxRpm ?? 0,
+    max_concurrency: kind.kind === 'codex' ? openAIPolicy.max_concurrency : (vm.policy?.maxConcurrency ?? 2),
+    max_concurrency_override:
+      kind.kind === 'codex' ? openAIPolicy.concurrency_override : vm.policy?.concurrencyOverride === true,
+    max_rpm: kind.kind === 'codex' ? openAIPolicy.max_rpm : (vm.policy?.maxRpm ?? 0),
+    max_rpm_override: kind.kind === 'codex' ? openAIPolicy.rpm_override : vm.policy?.rpmOverride === true,
+    max_sessions: kind.kind === 'codex' ? openAIPolicy.max_sessions : null,
+    max_sessions_override: kind.kind === 'codex' ? openAIPolicy.sessions_override : false,
     session_slots: kind.kind === 'codex' ? null : (vm.policy?.sessionSlots ?? null),
     session_slots_override: kind.kind === 'codex' ? false : vm.policy?.sessionSlotsOverride === true,
+    scheduling_inherited:
+      kind.kind === 'codex'
+        ? {
+            max_concurrency: globalOpenAI.max_concurrency,
+            max_rpm: globalOpenAI.max_rpm,
+            max_sessions: globalOpenAI.max_sessions,
+            session_slots: null,
+          }
+        : null,
     quota_override: kind.kind === 'codex' ? null : vmQuotaOverrideOf(vm),
     allowed_models:
       Array.isArray(vm.policy?.allowed_models) && vm.policy.allowed_models.length
@@ -131,6 +149,15 @@ export function summarizeVm(vm, projectRoot = null) {
     status_5h: quota.status_5h ?? null,
     status_7d: quota.status_7d ?? null,
     codex_usage: codex?.usage || null,
+    quota_policy:
+      kind.kind === 'codex'
+        ? {
+            ...globalOpenAI,
+            ...openAIPolicy,
+            reason: quotaGate?.reason || null,
+            restricted_until: quotaGate?.until || null,
+          }
+        : null,
     reset_credits: codex?.reset_credits || null,
     plan_type: codex?.plan_type || null,
     claude_reset_credits: kind.kind === 'codex' ? null : vm.claude_reset_credits || null,
@@ -166,7 +193,11 @@ export function persistAccountTier(projectRoot, vmId, tier, { source = null } = 
  * Merge live `x-codex-*` headers (and optional park-until) into vm.codex.
  * Cluster 5H/7D meters read this via summarizeCodexSlot -> usage.quota.
  */
-export function persistCodexUsage(projectRoot, vmId, { headers, extra, limitedUntil, now = Date.now() } = {}) {
+export function persistCodexUsage(
+  projectRoot,
+  vmId,
+  { headers, extra, limitedUntil, now = Date.now(), policy = null } = {},
+) {
   if (!projectRoot || !vmId) return null
   const file = path.join(projectRoot, 'vms', `${vmId}.json`)
   if (!fs.existsSync(file)) return null
@@ -185,7 +216,7 @@ export function persistCodexUsage(projectRoot, vmId, { headers, extra, limitedUn
   vm.codex.usage = buildCodexUsageView(extraToCodexSnapshot(merged))
   vm.updated_at = new Date(now).toISOString()
   atomicWriteJson(file, vm, { mode: 0o600 })
-  syncCodexQuotaSchedule(projectRoot, vm, { now })
+  syncCodexQuotaSchedule(projectRoot, vm, { now, policy })
   return getVm(projectRoot, vmId) || vm
 }
 
@@ -194,13 +225,14 @@ export function persistCodexUsage(projectRoot, vmId, { headers, extra, limitedUn
  * Never flips the operator switch. Leftover quota-off (not schedule_manual)
  * is restored to on + restriction.
  */
-export function syncCodexQuotaSchedule(projectRoot, vm, { now = Date.now() } = {}) {
+export function syncCodexQuotaSchedule(projectRoot, vm, { now = Date.now(), policy = null } = {}) {
   if (!projectRoot || !vm?.id) return { action: 'keep', reason: null }
-  const ev = evaluateCodexQuotaSchedule(vm, now)
+  const ev = evaluateCodexQuotaSchedule(vm, now, policy)
   const file = path.join(projectRoot, 'vms', `${vm.id}.json`)
   const leftover = isLeftoverQuotaScheduleOff(vm)
   if (ev.action === 'restrict' || ev.action === 'restore') {
-    const until = Number(ev.until) || now + 5 * 60_000
+    const until = ev.until
+    if (until == null && /_local$/.test(ev.reason || '')) clearVmQuotaRestriction(file)
     const next = markVmRestriction(file, { until, reason: ev.reason })
     if (next) {
       vm.claude = next.claude
@@ -270,6 +302,23 @@ export function persistVmSessionSlots(projectRoot, vmId, value, { override = tru
     ...(vm.policy || {}),
     sessionSlots: value,
     sessionSlotsOverride: override,
+  }
+  vm.updated_at = new Date().toISOString()
+  atomicWriteJson(file, vm, { mode: 0o600 })
+  return vm
+}
+
+export function persistVmMaxSessions(projectRoot, vmId, value, { override = true } = {}) {
+  const file = path.join(projectRoot, 'vms', `${vmId}.json`)
+  if (!fs.existsSync(file)) return null
+  if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isInteger(value) || value < 0 || value > 256) {
+    throw new TypeError('max_sessions must be an integer between 0 and 256')
+  }
+  const vm = JSON.parse(fs.readFileSync(file, 'utf8'))
+  vm.policy = {
+    ...(vm.policy || {}),
+    maxSessions: value,
+    sessionsOverride: override,
   }
   vm.updated_at = new Date().toISOString()
   atomicWriteJson(file, vm, { mode: 0o600 })

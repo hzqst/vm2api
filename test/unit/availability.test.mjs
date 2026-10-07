@@ -9,7 +9,6 @@ import {
   isLeftoverQuotaScheduleOff,
   resolveScheduleState,
 } from '../../src/lib/pool/availability.mjs'
-import { SessionLimitRegistry } from '../../src/lib/pool/session-limit.mjs'
 
 const usageOk = { ok: true, source: 'vm-oauth-usage', at: '2026-08-24T00:00:00.000Z' }
 const officialOk = { ok: true, source: 'official-cc-usage', at: '2026-08-24T00:00:00.000Z' }
@@ -489,36 +488,4 @@ test('availabilityFromQuotaRefresh still aliases evaluateAccount', () => {
     quota: { utilization_5h: 0.2, status_5h: 'allowed' },
   })
   assert.equal(av.key, 'ok')
-})
-
-test('session cap refuses a new key and renews an existing one', () => {
-  const sessions = new SessionLimitRegistry()
-  sessions.touch('acc-1', 's1')
-  sessions.touch('acc-1', 's2')
-  const full = evaluateAccount({
-    hasRefresh: true,
-    schedulable: true,
-    lastProbe: usageOk,
-    account: { account_id: 'acc-1' },
-    quota: { utilization_5h: 0.1, status_5h: 'allowed' },
-    policy: { limit_5h: 0.85, limit_7d: 0.8, max_sessions: 2, session_idle_min: 5 },
-    sessionKey: 's-new',
-    sessionLimit: sessions,
-  })
-  assert.equal(full.key, 'sessions')
-  assert.equal(full.text, '会话已满')
-  assert.equal(full.accept, false)
-
-  const renew = evaluateAccount({
-    hasRefresh: true,
-    schedulable: true,
-    lastProbe: usageOk,
-    account: { account_id: 'acc-1' },
-    quota: { utilization_5h: 0.1, status_5h: 'allowed' },
-    policy: { limit_5h: 0.85, limit_7d: 0.8, max_sessions: 2, session_idle_min: 5 },
-    sessionKey: 's1',
-    sessionLimit: sessions,
-  })
-  assert.equal(renew.key, 'ok')
-  assert.equal(renew.accept, true)
 })

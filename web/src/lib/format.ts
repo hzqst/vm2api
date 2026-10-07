@@ -117,6 +117,17 @@ export function fmtMs(ms: unknown): string {
   return `${Math.round(n)}ms`
 }
 
+/** 设置项用的人读时长：`500 毫秒` / `45 秒` / `2 分钟` / `1 分 30 秒`。 */
+export function fmtDuration(ms: number): string {
+  const n = Math.max(0, Math.round(Number(ms) || 0))
+  if (n < 1000) return `${n} 毫秒`
+  const sec = n / 1000
+  if (sec < 60) return `${Number.isInteger(sec) ? sec : sec.toFixed(1)} 秒`
+  const min = Math.floor(sec / 60)
+  const rest = Math.round(sec - min * 60)
+  return rest ? `${min} 分 ${rest} 秒` : `${min} 分钟`
+}
+
 export function fmtRate(n: unknown, digits?: number): string {
   if (n == null || !Number.isFinite(Number(n))) return '—'
   const v = Number(n)

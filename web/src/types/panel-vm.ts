@@ -128,13 +128,13 @@ export type Vm = {
   auth_scheme?: string
   availability?: {
     /**
-     * 后端 `availability.mjs` 实际产出 7 种：
-     * `none` / `bad` / `off` / `quota` / `sessions` / `cool` / `ok`。
+     * 后端 `availability.mjs` 实际产出 6 种：
+     * `none` / `bad` / `off` / `quota` / `cool` / `ok`。
      * 此前只声明了 5 种（含后端根本不返回的 `warn`/`caution`），
      * 导致 `off` 被误归类、「关闭调用」筛选恒为空。
      * 注意 `off` 的 `usable` 为 false，判断顺序上必须先于 `!usable`。
      */
-    key: 'ok' | 'none' | 'bad' | 'off' | 'quota' | 'sessions' | 'cool'
+    key: 'ok' | 'none' | 'bad' | 'off' | 'quota' | 'cool'
     usable: boolean
     text?: string
     reason?: string
@@ -225,21 +225,40 @@ export type Vm = {
   active?: boolean
   max_concurrency?: number
   max_rpm?: number
-  /** Claude CLI native 执行位热准入上限；内核固定预开 20。 */
+  /** OpenAI conversation-window cap; 0 means unlimited. */
+  max_sessions?: number | null
+  /** true = 本槽钉住并发；false = 跟随本平台全局默认。 */
+  concurrency_override?: boolean
+  /** true = 本槽钉住 RPM；false = 跟随本平台全局默认。 */
+  rpm_override?: boolean
+  max_sessions_override?: boolean
+  /** Claude CLI native 执行位热准入上限，也是预调度的席位上限；内核固定预开 20。 */
   session_slots?: number | null
   session_slots_override?: boolean
+  /** 去掉本槽覆盖（PATCH 字段传 null）后会落回的值。 */
+  scheduling_inherited?: VmSchedulingInherited | null
   /** 单槽位配额覆盖；缺字段 = 跟随全局 `settings/quota`。GPT 槽位恒为 null。 */
   quota_override?: VmQuotaOverride | null
   /** 覆盖后实际生效的配额。 */
   quota_policy?: VmQuotaView | null
   /** 不含覆盖、按全局分档算出的配额，供「跟随全局」展示。 */
   quota_inherited?: VmQuotaView | null
+  /** OpenAI 的生效额度与限制原因；不包含 Claude 分档/weekly split。 */
+  openai_quota_policy?:
+    | (OpenAIQuotaPolicy & {
+        reason: string | null
+        restricted_until: number | null
+        concurrency_override: boolean
+        rpm_override: boolean
+        sessions_override: boolean
+      })
+    | null
   /** 当前有效调度等级；自动模式范围 1～7，手动模式范围 1～10。 */
   schedule_level?: number
   /** 调度等级来源；缺失时按自动模式展示。 */
   schedule_level_mode?: 'auto' | 'manual'
   rpm?: number
-  /** 同等级 WRR 权重，不是调度等级。 */
+  /** 同等级权重（只用于 Codex 选槽；Claude 预调度不看），不是调度等级。 */
   weight?: number
   inflight?: number
   allowed_models?: string[] | null
@@ -296,16 +315,23 @@ export type Vm = {
   schedule_disabled_reason?: string
   container?: string
   official_cc?: OfficialCcStatus
-  /** 会话上限快照对象；旧字段 `session_active`/`session_max` 是它的扁平化镜像。 */
+  /**
+   * Codex 会话上限快照；`session_active`/`session_max` 是它的扁平化镜像。
+   * Claude 行不带这三项，席位看 `seats_*`。
+   */
   sessions?: { active?: number; max?: number }
   session_active?: number
   session_max?: number
-  /** 调度器实时席位簿：正在被请求占用的不同席位数（Codex 为 null）。 */
+  /** 预调度席位簿：已占用的不同席位数，含宽限中的（Codex 为 null）。 */
   seats_used?: number | null
   /** 席位上限（VM 覆盖 → 全局 `inference.session_slots`）。 */
   seats_max?: number | null
-  /** 在该 VM 上排队等待席位/并发的请求数。 */
+  /** `seats_used` 中请求已结束、为原设备保留的宽限席位数。 */
+  seats_grace?: number | null
+  /** 在该 VM 上排队的请求数（等席位、并发、冷却 / RPM）。 */
   queue_depth?: number | null
+  /** `queue_depth` 中已有席位、只在等并发的请求数。 */
+  conc_waiting?: number | null
   status_7d_oi?: string
   window_5h_cost?: number
   window_5h_requests?: number
@@ -318,12 +344,33 @@ export type Vm = {
   [key: string]: unknown
 }
 
-/** `GET /api/panel/pool/stream` 的 `event: seats` 负载；缺席的 VM 表示空闲。 */
-export type PoolSeatSnapshot = {
-  seats: Record<
-    string,
-    { seats_used: number; holds: number; queue_depth: number }
-  >
+/** 全局排队：还没落到任何 VM 的请求数与上限 `routing.pool.queue_max`。 */
+export type PoolQueueSummary = {
+  global_queue_depth: number
+  queue_max: number
+}
+
+/** `GET /api/panel/vms` 响应体。 */
+export type VmsListResponse = {
+  items?: Vm[]
+  active_vm?: string | null
+  total?: number
+  proxy_pool?: Record<string, unknown>
+  pool_queue?: PoolQueueSummary
+}
+
+/** 单台 VM 的实时席位；缺席的 VM 表示空闲（全 0）。 */
+export type PoolSeatLive = {
+  seats_used: number
+  seats_max: number
+  seats_grace: number
+  queue_depth: number
+  conc_waiting: number
+}
+
+/** `GET /api/panel/pool/stream` 的 `event: seats` 负载。 */
+export type PoolSeatSnapshot = PoolQueueSummary & {
+  seats: Record<string, PoolSeatLive>
   ts: number
 }
 
@@ -456,14 +503,30 @@ export type OfficialCcStatus = {
 export type VmQuotaView = {
   limit_5h: number
   limit_7d: number
-  max_sessions: number
-  session_idle_min: number
   block_on_5h: boolean
   block_on_7d: boolean
   weekly_split: boolean
 }
 
 export type VmQuotaOverride = Partial<VmQuotaView>
+
+/** VM 并发 / RPM / 席位上限跟随时的取值：并发与 RPM 来自分档，席位来自 `inference.session_slots`。 */
+export type VmSchedulingInherited = {
+  max_concurrency: number
+  max_rpm: number
+  /** OpenAI only; 0 means unlimited. */
+  max_sessions?: number | null
+  /** Codex 行为 null。 */
+  session_slots: number | null
+}
+
+export type OpenAIQuotaPolicy = {
+  limit_5h: number
+  limit_7d: number
+  max_concurrency: number
+  max_rpm: number
+  max_sessions: number
+}
 
 export type QuotaTierKey = 'default' | 'pro' | 'max'
 
@@ -472,8 +535,6 @@ export type QuotaTierPolicy = {
   max_rpm?: number
   limit_5h?: number
   limit_7d?: number
-  max_sessions?: number
-  session_idle_min?: number
   warn_ratio?: number
   [key: string]: unknown
 }

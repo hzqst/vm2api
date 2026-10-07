@@ -13,6 +13,7 @@ export const ERROR_CLASS_META: Record<
   rate_limit: { label: '限流', owner: 'provider' },
   quota: { label: '额度', owner: 'platform' },
   overloaded: { label: '过载排队', owner: 'provider' },
+  unavailable: { label: '无可用账号', owner: 'platform' },
   timeout: { label: '超时', owner: 'provider' },
   credential: { label: '凭证', owner: 'platform' },
   proxy: { label: '代理', owner: 'platform' },

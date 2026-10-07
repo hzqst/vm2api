@@ -26,6 +26,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
 import { PlatformChip } from '@/components/platform-chip'
 import { dashboardQueryOptions } from '@/features/overview/queries'
 import {
@@ -110,6 +111,8 @@ export function CreateVmFields({
   const [tz, setTz] = useState<string>(DEFAULT_TEMPLATE.tz)
   const [locale, setLocale] = useState<string>(DEFAULT_TEMPLATE.locale)
   const [conc, setConc] = useState<number>(DEFAULT_TEMPLATE.conc)
+  const [openaiOwnConc, setOpenaiOwnConc] = useState(false)
+  const [openaiConc, setOpenaiConc] = useState<number | null>(null)
   const [weight, setWeight] = useState<number>(DEFAULT_TEMPLATE.weight)
   const [platform, setPlatform] = useState<'anthropic' | 'openai'>('anthropic')
   const [advOpen, setAdvOpen] = useState(false)
@@ -130,6 +133,8 @@ export function CreateVmFields({
     setTz(tpl.tz)
     setLocale(tpl.locale)
     setConc(tpl.conc)
+    setOpenaiConc(null)
+    setOpenaiOwnConc(false)
     setWeight(tpl.weight)
   }
 
@@ -148,7 +153,11 @@ export function CreateVmFields({
           locale,
           // 「自动」是纯 UI 哨兵值，不发给后端（对齐 index.html 的 `region || undefined`）。
           region: region === VM_REGION_AUTO ? undefined : region,
-          max_concurrency: conc,
+          ...(platform === 'openai'
+            ? openaiOwnConc && openaiConc != null
+              ? { max_concurrency: openaiConc }
+              : {}
+            : { max_concurrency: conc }),
           weight,
           ...deriveAfter(after),
           platform,
@@ -212,7 +221,13 @@ export function CreateVmFields({
         <Select
           value={platform}
           onValueChange={(next) => {
-            if (next === 'anthropic' || next === 'openai') setPlatform(next)
+            if (next === 'anthropic' || next === 'openai') {
+              setPlatform(next)
+              if (next === 'openai') {
+                setOpenaiConc(null)
+                setOpenaiOwnConc(false)
+              }
+            }
           }}
         >
           <SelectTrigger aria-label='槽位平台'>
@@ -324,24 +339,62 @@ export function CreateVmFields({
               </SelectContent>
             </Select>
           </div>
-          <div className='space-y-1'>
-            <Label>并发</Label>
-            <Select
-              value={String(conc)}
-              onValueChange={(v) => setConc(Number(v))}
-            >
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {VM_CONCURRENCY_OPTIONS.map((v) => (
-                  <SelectItem key={v} value={String(v)}>
-                    {v}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
+          {platform === 'openai' ? (
+            <div className='space-y-2'>
+              <Label>OpenAI 并发</Label>
+              <div className='flex items-center gap-2'>
+                <Switch
+                  checked={openaiOwnConc}
+                  onCheckedChange={(checked) => {
+                    setOpenaiOwnConc(checked)
+                    if (!checked) setOpenaiConc(null)
+                    else setOpenaiConc(conc)
+                  }}
+                  aria-label='使用独立 OpenAI 并发'
+                />
+                {openaiOwnConc ? (
+                  <Select
+                    value={String(openaiConc ?? conc)}
+                    onValueChange={(v) => setOpenaiConc(Number(v))}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {VM_CONCURRENCY_OPTIONS.filter((v) => v > 0).map((v) => (
+                        <SelectItem key={v} value={String(v)}>
+                          {v}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <span className='text-xs text-muted-foreground'>
+                    跟随已保存的 OpenAI 全局默认
+                  </span>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className='space-y-1'>
+              <Label>并发</Label>
+              <Select
+                value={String(conc)}
+                onValueChange={(v) => setConc(Number(v))}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {VM_CONCURRENCY_OPTIONS.map((v) => (
+                    <SelectItem key={v} value={String(v)}>
+                      {v}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
           <div className='space-y-1'>
             <Label>权重</Label>
             <Select

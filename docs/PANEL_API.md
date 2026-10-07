@@ -37,9 +37,10 @@
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/dashboard` | 总览：健康、KPI、`proxy_pool`、`ops`（默认近 1h SLA/TTFT）、`billing` |
-| GET | `/vms` | 列表（`has_token`、`cred_status`、`proxy_configured`、`can_import_credential`、`account_tier`、`schedule_level`、`schedule_level_mode`、`worker_credential`、Fable 轨） |
+| GET | `/vms` | 列表（`has_token`、`cred_status`、`proxy_configured`、`can_import_credential`、`account_tier`、`schedule_level`、`schedule_level_mode`、`worker_credential`、Fable 轨；Claude 行 `seats_used` / `seats_max` / `seats_grace` / `queue_depth` / `conc_waiting`）；响应另带 `pool_queue: { global_queue_depth, queue_max }` |
+| GET | `/pool/stream` | SSE `event: seats`，`{ seats: { [vmId]: { seats_used, seats_max, seats_grace, queue_depth, conc_waiting } }, global_queue_depth, queue_max, ts }`；缺席的 VM 表示空闲 |
 | GET | `/vms/:id` | 详情 + 调度等级 + 代理健康 + `billing.today/window_5h/window_7d/by_model/usage_stats`（`usage_stats` = 近 30 个上海自然日的按日用量 + 模型 / 入站路径排名，日界同 `billing.today`） + `account.runtime_window` |
-| PATCH | `/vms/:id` | 热改并发、模型白名单、槽策略、`schedule_level` 或 `timezone`（不重启槽）。`timezone` 为任意有效 IANA 名称，会钉住该槽（后续绑定不覆盖）；`timezone_follow_proxy: true` 重新跟随已绑代理的出口时区 |
+| PATCH | `/vms/:id` | 热改并发/RPM、OpenAI 会话上限、Claude 席位/配额、模型白名单、槽策略、Claude `schedule_level` 或 `timezone`（不重启槽）。`timezone` 为任意有效 IANA 名称，会钉住该槽（后续绑定不覆盖）；`timezone_follow_proxy: true` 重新跟随已绑代理的出口时区 |
 | POST | `/vms/:id/probe` | 槽 SOCKS5 探官方 `/usage` + Fable（Pro 跳过 Fable） |
 | POST | `/vms/:id/schedulable` | `{ schedulable }` 是否入池；不改容器 |
 | POST | `/vms/:id/cooldown/clear` | 清账号/模型冷却、粘性钉和 `/usage` 429 旗标，重新入池 |
@@ -82,7 +83,22 @@
 
 `account.runtime_window`：`rate_limited_at` / `rate_limit_reset_at` / `overload_until` / `session_window_start|end|status`。
 
-`schedule_level` 是当前有效调度等级，范围 1–10；`schedule_level_mode` 为 `manual` 或 `auto`。`PATCH {"schedule_level": 1..10}` 写入手动等级，`null` 或 `"auto"` 清除手动值。自动模式按 Claude 7D 重置剩余时间滚动分档：不足 24h 为 7，之后每 24h 降一级，144h 及以上或无有效重置时间为 1。`weight` 仍是同等级候选的平滑 WRR 比例，与调度等级无关。
+`schedule_level` 是当前有效调度等级，范围 1–10；`schedule_level_mode` 为 `manual` 或 `auto`。`PATCH {"schedule_level": 1..10}` 写入手动等级，`null` 或 `"auto"` 清除手动值。自动模式按 Claude 7D 重置剩余时间滚动分档：不足 24h 为 7，之后每 24h 降一级，144h 及以上或无有效重置时间为 1。Claude 同等级内按 `routing.pool.strategy`（`balanced` / `fill`）开新席位；`weight` 只用于 Codex 选槽，与调度等级无关。
+
+### 平台独立的槽位限额
+
+`max_concurrency` / `max_rpm` 传数字钉住本槽，传 `null` 清除覆盖并立即使用本平台全局值。Claude 跟随 `tiers`；OpenAI 跟随 `codex.quota`，不受 Claude 分档保存影响。
+
+OpenAI 另支持 `PATCH {"max_sessions": 0..256 | null}`：数字钉住活跃对话窗口上限，0 = 不限；`null` 立即恢复跟随并继续随后续全局保存更新。窗口闲置保留沿用 5 分钟，不是 Claude 席位或 sticky TTL。新增对话受上限约束，已存在的对话可复用窗口；借用其它账号执行不重复占用该对话的归属窗口。
+
+列表/详情的 OpenAI 行返回 `max_concurrency`、`max_rpm`、`max_sessions`，对应来源标记 `concurrency_override`、`rpm_override`、`max_sessions_override`；`scheduling_inherited` 给出清除覆盖后的值。`inflight` / `rpm` 来自 OpenAI 执行运行态，`session_active` / `session_max` 来自对话窗口；`session_slots`、Claude `quota_policy` / `quota_inherited` 为 `null`。
+
+`openai_quota_policy` 是 OpenAI 的独立生效视图：5 个额度字段、`concurrency_override` / `rpm_override` / `sessions_override`、`reason` 和 `restricted_until`（毫秒或 `null`）。`availability` 使用相同实时策略，不套用 Claude 闸线；缺失用量不伪造百分比，未知本地软闸重置时间保持 `null`。此字段在 Claude 行为 `null`。
+
+Claude PATCH `max_sessions` 返回 400 `claude_max_sessions_forbidden`；OpenAI PATCH `session_slots` / `quota_override` 分别返回 400 `gpt_session_slots_forbidden` / `gpt_quota_override_forbidden`。非法新限额返回 400 `invalid_scheduling_value`。混合字段先校验，再写入，拒绝的字段不会使同一请求中的其它限额部分生效。
+
+`POST /vms/create` 指定 `platform: "openai"`，省略并发/RPM/会话上限即跟随已保存的 OpenAI 全局值；显式值钉住本槽。OpenAI 凭证导入/重导入保留既有覆盖和权重，未覆盖字段采用当前 OpenAI 全局值；不新增跨平台切换入口。
+
 
 `GET /vms/:id` 的 `kernel.rust_health` 来自 wrap `/internal/health`：`reachable`（进程在且 `ready_slots>=1`）、`process_up`、`provider`（cli-hop 为 `local_cli`）、`ready_slots`、`cli_pid`、`worker_version`。Go hop 没有 slot 字段。`reachable=false` 且 `process_up=true` 表示 kernel 在、CLI 槽未就绪。
 
@@ -134,15 +150,37 @@
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET/PUT | `/routing` | sticky / pool / failover / 并发 / `tiers` / 额度 / logging / `compatibility` / `official_cc` / `health_probe` |
+| GET/PUT | `/routing` | sticky / pool / failover / Claude 并发与 `tiers` / OpenAI `codex.quota` / 额度 / logging / `compatibility` / `official_cc` / `health_probe` |
 
-`PUT` 热更新。`tiers` 必须回传：`PUT` 是整体替换而非 patch，缺字段即置空。保存时按 Pro/Max 把未手动 override 的槽并发写回去。
+`PUT` 热更新。`tiers` 必须回传：该块是整体替换而非 patch，缺字段即置空。Claude 分档保存只传播到未手动覆盖的 Claude 槽。OpenAI `codex.quota` 按字段合并，不覆盖其它 Codex 协议/客户端配置，只更新跟随的 OpenAI 限额。
 
 `compatibility.persona_preset`（`official` / `official_full` / `zero` / `custom`）和 `compatibility.cache_ttl`（`5m` / `1h`）保存后投影到每个 Claude 槽的 `vms/<id>/run/kernel.json`：`persona_preset`、`system_layout`（`zero`→`zero`，其余→`identity`）、`default_cache_ttl`。响应 `kernel_persona.updated` 是本次字节有变化的槽数。`PATCH /vms/:id` 的 `timezone` / `timezone_follow_proxy` 另把 `timezone` 热写进该槽 `kernel.json`，`timezone_sync.kernel_hot` 表示文件有变化。容器 `TZ` 不在这次写入里。Codex 槽不写。
 
 `compatibility.agent_standing`（字符串，≤2000）与四个按档布尔 map `agent_standing_presets` / `agent_standing_hide_presets` / `persona_env_presets` / `persona_hide_presets` 控制常驻约束、约束遮罩、Environment 和整档 usage 遮罩，不投影到 `kernel.json`，Node 每次请求热读。`GET /api/panel/persona/preview-vars?timezone=<IANA>` 返回 system提示词页预览用的真实模板常量（身份句、官方 agent 全文、按该时区渲染的 Environment），不含 billing；时区非法或缺省按 UTC。
 
 `agent_standing_presets` 缺 map/key 默认关闭，只有显式 `true` 启用；`agent_standing` 内置文本保持不变。约束遮罩与 Environment 开关缺省仍为开启，整档遮罩仍回落既有模板/旧设置。保存显式开启的档位不改变其他缺省关闭的档位。
+
+### OpenAI 全局额度
+
+```json
+{"codex":{"quota":{"limit_5h":1,"limit_7d":1,"max_concurrency":2,"max_rpm":0,"max_sessions":0}}}
+```
+
+| 字段 | 默认 | 新值范围 / 单位 |
+|------|------|-----------------|
+| `limit_5h` / `limit_7d` | 1 | 数字 0.3–1；使用比例，控制台显示百分比 |
+| `max_concurrency` | 2 | 整数 1–256；每账号在飞请求数 |
+| `max_rpm` | 0 | 整数 0–1,000,000；0 = 不限 |
+| `max_sessions` | 0 | 整数 0–256；0 = 不限 |
+
+本地软闸在实际普通准入生效：用量达到闸线即排除账号。提高阈值或窗口有效重置后重新评估，不能清除上游硬限制、人工关闭或凭证问题；已在飞的流和对话窗口不被重建。两个窗口独立判断，一个重置不代表另一个解除。
+
+`codex.quota` 为 `null`、数组、未知字段、字符串数字或超范围值，返回 400 `invalid_openai_quota`，消息定位字段，校验失败前不落盘。新增限额不接受 OpenAI 并发 0；历史存储 0 仍按原有效值 2 执行和展示。
+
+旧配置缺少自有 `codex.quota` 时，启动迁移先保存 OpenAI 槽的有效非默认值为覆盖，再原子保存规范化 routing；重启/中断续跑保持幂等。既有异常大对话上限保留为历史本槽值，不截断。升级前备份 routing 与 VM 记录；代码回退不自动恢复旧配置语义。不要用仓内默认配置覆盖部署上的 routing/VM/凭证数据。
+
+控制台账号池、配额、粘性均采用摘要→配置弹窗：取消/Escape/外部关闭丢弃弹窗临时改动；“应用到草稿”只合并该弹窗的字段，“保存”才持久化全局设置。保存失败保留草稿。配额切换平台保留双方草稿；VM 调度弹窗直接 PATCH，本槽保存独立于全局保存。Sticky 开关/TTL/出站 session 由两个平台共享，Claude 席位与 OpenAI 对话窗口不共享容量。
+
 
 ## 蒸馏拦截
 
@@ -156,11 +194,24 @@
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET/PUT | `/refusal-guards` | 仅缓存 `stop_reason=refusal` / refusal 块 / `finalState=content_filter`。命中后 HTTP 500，`code=refusal_guard`，不 hop。wrap `Usage Policy` 文案和信封 JSON 不会入缓存 |
+| GET/PUT | `/refusal-guards` | 精确指纹，以及可选的用户正文近似（`similarity_enabled`，`similarity` 为 80/85/90/95，默认开、90）。命中 HTTP 503，`code=refusal_guard`，不 hop。相似度只比用户正文。`device_block_enabled` 默认开：命中后永久封禁入站 device id。响应带 `devices` |
 | DELETE | `/refusal-guards/:fingerprint` | 删除一条 64 位 hex 指纹 |
 | DELETE | `/refusal-guards` | 须 `{ "confirm": true }` 清空 |
+| DELETE | `/refusal-device-blocks` | `{ "device_id" }` 解封一条；`{ "confirm": true }` 清空。空 device、短于 8 字符的值不会入库 |
 
-`PUT { enabled }` 写入 SQLite `settings.refusal_guard_enabled`。环境变量 `REFUSAL_GUARD=0` 仍强制关闭。与蒸馏拦截独立：0 注入跳过普通蒸馏针，本缓存仍生效。`count_tokens` 同样在 peek / worker hop 之前拦截。仅 admin。
+`PUT { enabled }` 写入 SQLite `settings.refusal_guard_enabled`。环境变量 `REFUSAL_GUARD=0` 仍强制关闭。与蒸馏拦截独立：0 注入跳过普通蒸馏针，本缓存仍生效。`count_tokens` 同样在 peek / worker hop 之前拦截。device 取入站 `metadata.user_id.device_id`，否则显式 `device_id` / `x-kin-device-id`，不用 IP、UA 或 API key。仅 admin。
+
+## 决策模型与硬正则
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET/PUT | `/jev-intercept` | 协议入口。顺序：蒸馏硬规则 → 去掉 reminder、按需展开 base64 后的硬正则 → 拒答缓存 → 决策模型。没配地址则跳过模型；模型失败默认放行 |
+
+`PUT` 写入 SQLite `settings.jev_intercept`。字段：`enabled`（默认关）、`hard_regex_enabled`（默认开）、`provider`（`jev` 默认、`laya`、`modernbert`）、`base_url`、`model`、`timeout_ms`（200–8000，默认 2000）、`patterns[]`、`api_key` 或 `api_keys`（最多 8 把）、`question_ids`（题库 id，缺省为全部）。省略密钥保持原值；`api_key: ""` 或 `api_keys: []` 清除。另有 `safety_instruction`（空则不加自定义题）、`safety_threshold`（0–1，默认 0.5）、`block_if_below`（默认开）、`fail_open`（默认开）、`dedup_sec`（0–3600，默认 60）、`max_state_chars`（256–64000，默认 16000）、`expand_base64`、`strip_reminders`（后两个默认开）。GET 不回密钥，回 `api_key_set`、`api_key_count`、`question_bank`、`providers`、`builtin_patterns`。
+
+三个后端走同一套 `/v1/systemone`。题库存在 `questions`：可增删改，缺省是内置六题（综合、色情、破限、逆向、渗透、网络攻击）。每题都是「是否安全」，高分表示安全，启用的题目一起问，任一题低于阈值就拦。`safety_instruction` 非空时再多问一题自定义要求。`POST /jev-intercept/models` 用地址和 Key（留空则用已存的第一把）请求 `{base}/v1/models`，失败回 502，不会把上游 401 当成面板登出。
+
+内置正则覆盖 NSFW、蒸馏、破解、破限，面板删不掉。比较的是用户正文。命中硬正则或模型返回 HTTP 403 `policy_blocked`，不 hop；拒答守卫开启时写入拒答缓存，并在 device 封禁开启时封禁入站 device id。上游 `content_policy` / `content_filter` / `cyber_policy` / `moderation_blocked` / `safety_violation` / `usage_policy` 同样入库。仅 admin。
 
 
 ## 密钥 / 日志
@@ -189,9 +240,9 @@ attempts：每次选中的 VM/账号、错误域、cooldown、提交边界、终
 | `stop_reason` | 流式来自 `message_delta` |
 | 费用列 | 官方价 input/output/cache 5m·1h·read；上海日切 |
 
-`GET /request-logs/stats` 另返回 `window`：SLA、错误率、429/503、QPS/TPS、耗时与 TTFT 分位、按模型 `avg_first_token_ms`、`error_collection`。`GET /dashboard.ops` 默认近 1 小时同一形状。
+`GET /request-logs/stats` 另返回 `window`：SLA、错误率、429/503/529、QPS/TPS、耗时与 TTFT 分位、按模型 `avg_first_token_ms`、`error_collection`。`GET /dashboard.ops` 默认近 1 小时同一形状。
 
-筛选：`status=error`、`error_class=` = auth / request / signature / rate_limit / quota / overloaded / timeout / credential / proxy / upstream / other。每行带 `error_class` / `error_label` / `error_owner`。5h/7d/限流计入 SLA 成功。
+筛选：`status=error`、`error_class=` = auth / request / signature / rate_limit / quota / overloaded / unavailable / timeout / credential / proxy / upstream / other / distill / refusal。每行带 `error_class` / `error_label` / `error_owner`。5h/7d/限流计入 SLA 成功。号池容量 529（`pool_overloaded` / `pool_wait_queue_full` / `pool_queue_timeout`）不计入 SLA 失败；上游 529（`upstream_overloaded`）计入。
 
 流式 usage 由 worker SSE 校验器合并后经 trailer 回传，终态 attempt 只记一次。
 

@@ -599,6 +599,30 @@ test('inbound session and device keys match across API keys at the protocol entr
   }
 })
 
+test('the protocol entry hands the device seat key to the pool, independent of the API key', async () => {
+  const { dir, router } = realStickyRouter()
+  try {
+    const turn = {
+      messages: [{ role: 'user', content: 'please refactor the scheduler module and explain every single change' }],
+    }
+    const a = await captureRunOpts({
+      body: sessionBody({ device_id: 'dev-seat', session_id: 'sess-seat' }, turn),
+      stickyRouter: router,
+      apiKeyRecord: { id: 'key-a', group_id: 1 },
+    })
+    const b = await captureRunOpts({
+      body: sessionBody({ device_id: 'dev-seat', session_id: 'sess-other' }, turn),
+      stickyRouter: router,
+      apiKeyRecord: { id: 'key-b', group_id: 1 },
+    })
+    assert.equal(a.skipSessionSeat, false)
+    assert.equal(a.seatKey, 'seat:dev:dev-seat')
+    assert.equal(b.seatKey, a.seatKey)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('shared API key keeps different devices apart at the protocol entry', async () => {
   const { dir, router } = realStickyRouter()
   try {
@@ -719,7 +743,9 @@ test('Claude Code sub-agent hops run as child sessions of the main session', asy
     const nested = await agentHop('agent-c', 'agent-a')
 
     assert.equal(main.stickyKey, 'sess:main-sess')
-    assert.equal(main.windowKey, undefined)
+    // A one-shot short turn ('hello') holds no seat even with a device id.
+    assert.equal(main.skipSessionSeat, true)
+    assert.equal(main.seatKey, null)
     // Each agent queues on its own session, never behind the main one.
     const keys = [main.stickyKey, a.stickyKey, b.stickyKey, nested.stickyKey]
     assert.equal(new Set(keys).size, keys.length)
@@ -727,8 +753,6 @@ test('Claude Code sub-agent hops run as child sessions of the main session', asy
     assert.deepEqual(a.stickyKeys, [a.stickyKey])
     for (const child of [a, b, nested]) {
       assert.match(child.stickyKey, /^sess:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
-      // Session seat counts against the main session; placement follows its VM.
-      assert.equal(child.windowKey, 'sess:main-sess')
       assert.equal(child.familyKey, 'family2:main-sess')
       assert.equal(child.familyVmId, 'vm-cc')
       assert.equal(child.deviceKey, main.deviceKey)

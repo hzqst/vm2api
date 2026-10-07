@@ -37,6 +37,7 @@ test('classifyRequestError maps known codes and statuses', () => {
   assert.equal(classifyRequestError({ status: 403, error_code: 'distill_blocked' }).error_class, 'distill')
   assert.equal(classifyRequestError({ status: 403, error_code: 'refusal_guard' }).error_class, 'refusal')
   assert.equal(classifyRequestError({ status: 500, error_code: 'refusal_guard' }).error_class, 'refusal')
+  assert.equal(classifyRequestError({ status: 503, error_code: 'refusal_guard' }).error_class, 'refusal')
   assert.equal(classifyRequestError({ status: 401, error_code: 'upstream_auth_error' }).error_class, 'credential')
   assert.equal(
     classifyRequestError({
@@ -50,6 +51,11 @@ test('classifyRequestError maps known codes and statuses', () => {
   assert.equal(classifyRequestError({ status: 504, error_code: 'upstream_timeout' }).error_class, 'timeout')
   assert.equal(classifyRequestError({ status: 503, error_code: 'slot_busy' }).error_class, 'overloaded')
   assert.equal(classifyRequestError({ status: 503, error_code: 'wrap_connection_error' }).error_class, 'other')
+  assert.equal(classifyRequestError({ status: 503 }).error_class, 'unavailable')
+  assert.equal(classifyRequestError({ status: 529 }).error_class, 'overloaded')
+  assert.equal(classifyRequestError({ status: 503, error_code: 'kernel_unavailable' }).error_class, 'other')
+  assert.equal(classifyRequestError({ status: 529, error_code: 'pool_overload_cooldown' }).error_class, 'overloaded')
+  assert.equal(classifyRequestError({ status: 429, error_code: 'pool_rate_limited' }).error_class, 'rate_limit')
   assert.equal(classifyRequestError({ status: 403, error_message: 'Just a moment Cloudflare' }).error_class, 'proxy')
   assert.equal(
     classifyRequestError({

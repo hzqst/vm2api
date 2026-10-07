@@ -19,7 +19,7 @@ export async function syncVmTimezoneFromProxy(
   projectRoot,
   proxyPool,
   vmId,
-  { force = false, detect = true, proxyId = null } = {},
+  { force = false, detect = true, proxyId = null, persist = true } = {},
 ) {
   const id = String(vmId || '').trim()
   if (!id || !proxyPool) return skip('vm_id_required')
@@ -39,11 +39,12 @@ export async function syncVmTimezoneFromProxy(
   if (vm.timezone === timezone) {
     // Already aligned, but re-stamp the source so the panel stops showing the
     // zone as hand-pinned once the operator opted back into following.
-    if (force && vm.timezone_source !== 'proxy_geo') {
+    if (persist && force && vm.timezone_source !== 'proxy_geo') {
       persistVmTimezone(projectRoot, id, timezone, { source: 'proxy_geo' })
     }
     return { ok: true, applied: false, timezone, reason: 'already_current' }
   }
+  if (!persist) return { ok: true, applied: true, timezone, reason: null }
   const summary = persistVmTimezone(projectRoot, id, timezone, { source: 'proxy_geo' })
   if (!summary) return skip('persist_failed')
   return { ok: true, applied: true, timezone, reason: null }

@@ -96,6 +96,17 @@ export function isPlanLimitMessage(message) {
 }
 
 /**
+ * Whether a finished request proves the account's own plan window is spent.
+ * A 429 the pool synthesized itself (`fable_requires_max`, `pool_rate_limited`)
+ * never reached the provider, so it says nothing about the account's quota.
+ */
+export function isAccountQuotaExhausted(result = {}, limitText = '') {
+  if (!result || result.ok) return false
+  if (isPlanLimitMessage(limitText)) return true
+  return Number(result.status) === 429 && result.via !== 'pool-failover'
+}
+
+/**
  * Wrap CLI often reports Extra 5h/7d as `You've hit your limit` without HTTP headers.
  * The reset comes from the text; an elapsed leftover reset must never be reused.
  */

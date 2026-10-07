@@ -7,11 +7,14 @@ export const ERROR_CLASS_TONE: Record<string, string> = {
   rate_limit: 'caution',
   quota: 'warn',
   overloaded: 'bad',
+  unavailable: 'warn',
   timeout: 'bad',
   credential: 'caution',
   proxy: 'bad',
   upstream: 'bad',
   other: 'bad',
+  distill: 'caution',
+  refusal: 'bad',
 }
 
 export function statusTone(status: unknown): StatusTone {

@@ -12,6 +12,7 @@ import {
   credentialStatus,
   fleetGroup,
   poolStatus,
+  seatTitle,
   vmCircuitTitle,
   vmCooldown,
   vmCooldownTitle,
@@ -124,10 +125,7 @@ function PriorityChip({ vm }: { vm: Vm }) {
   const valid = Number.isInteger(level) && level >= 0
   const text = valid ? `优先级-${level}` : '优先级-—'
   const mode = vm.schedule_level_mode === 'manual' ? '手动' : '自动'
-  const weight = Number(vm.weight)
-  const title = Number.isFinite(weight)
-    ? `${mode}调度等级 · WRR ${weight}`
-    : `${mode}调度等级`
+  const title = `${mode}调度等级`
   return (
     <span
       className='inline-flex rounded border border-border/70 px-1.5 py-0.5 font-mono text-[11px] leading-none font-semibold text-muted-foreground tabular-nums'
@@ -188,7 +186,7 @@ function CountPill({ tone, n }: { tone: 'ok' | 'bad'; n: number }) {
   )
 }
 
-/** 实时席位占用（调度器席位簿）；Codex 行没有席位。 */
+/** 实时席位占用（预调度席位簿）；Codex 行没有席位。 */
 function SeatTag({ vm }: { vm: Vm }) {
   if (vm.seats_max == null) return null
   const used = Number(vm.seats_used) || 0
@@ -200,7 +198,7 @@ function SeatTag({ vm }: { vm: Vm }) {
         'shrink-0 text-[11px] text-muted-foreground tabular-nums',
         queued > 0 && 'text-[color:var(--status-warn)]'
       )}
-      title={`席位 ${used}/${vm.seats_max}${queued ? ` · 排队 ${queued}` : ''}`}
+      title={seatTitle(vm)}
     >
       席位 {used}/{vm.seats_max}
       {queued ? ` · 排队 ${queued}` : ''}

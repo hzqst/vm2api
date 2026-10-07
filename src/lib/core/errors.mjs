@@ -77,6 +77,7 @@ export const ErrorCode = {
   DISTILL_BLOCKED: 'distill_blocked',
   REFUSAL_GUARD: 'refusal_guard',
   CONTENT_FILTER_REFUSAL: 'content_filter_refusal',
+  POLICY_BLOCKED: 'policy_blocked',
   // resource
   VM_NOT_FOUND: 'vm_not_found',
   NOT_FOUND: 'not_found',
@@ -106,9 +107,20 @@ export const KERNEL_FAILURE_STATUS = Object.freeze({
 
 export const CLIENT_POOL_BUSY_MESSAGE = '号池负载过高，稍后再试'
 export const CLIENT_POOL_UNAVAILABLE_MESSAGE = '号池当前没有可用账号'
+export const CLIENT_POOL_RATE_LIMITED_MESSAGE = '号池账号均被上游限流，稍后再试'
 
-/** Every eligible seat stayed busy until the bounded wait ran out. */
-const POOL_OVERLOADED_CODES = new Set(['pool_overloaded', 'pool_wait_queue_full'])
+/**
+ * Capacity: every eligible seat stayed busy until the bounded wait ran out, the
+ * pool queue was full, or every account sits in an upstream-529 overload cooldown.
+ */
+const POOL_OVERLOADED_CODES = new Set([
+  'pool_overloaded',
+  'pool_wait_queue_full',
+  'pool_queue_timeout',
+  'pool_overload_cooldown',
+])
+/** Every account sits in an upstream-429 rate-limit cooldown: the caller hits the provider's limit. */
+const POOL_RATE_LIMITED_CODES = new Set(['pool_rate_limited'])
 /** Nothing eligible to wait for: configuration, quota, credentials, or model gates. */
 const POOL_UNAVAILABLE_CODES = new Set([
   'account_pool_exhausted',
@@ -130,23 +142,49 @@ export function isUsagePolicyErrorMessage(message = '') {
   return USAGE_POLICY_MESSAGE.test(String(message || ''))
 }
 
-/** `overloaded` (real capacity, 429), `unavailable` (nothing eligible, 503), or null. */
+export const REFUSAL_GUARD_MESSAGE =
+  "Request blocked by the refusal guard. Anthropic's API previously refused this pattern."
+
+/**
+ * `overloaded` (real capacity, 529), `rate_limited` (every account in an
+ * upstream 429 cooldown, 429), `unavailable` (nothing eligible, 503), or null.
+ */
 export function poolErrorKind(code, message = '') {
   const key = String(code || '').trim()
   if (POOL_OVERLOADED_CODES.has(key)) return 'overloaded'
+  if (POOL_RATE_LIMITED_CODES.has(key)) return 'rate_limited'
   if (POOL_UNAVAILABLE_CODES.has(key)) return 'unavailable'
   if (POOL_CAPACITY_MESSAGE.test(String(message || ''))) return 'unavailable'
   return null
 }
 
+/** Anthropic's own capacity status: clients back off and retry instead of treating it as a quota hit. */
+export const POOL_OVERLOADED_STATUS = 529
+
 function poolClientError(kind) {
   if (kind === 'overloaded') {
-    return makeError({
-      type: ErrorType.RATE_LIMIT,
-      code: ErrorCode.POOL_OVERLOADED,
-      message: CLIENT_POOL_BUSY_MESSAGE,
-      status: 429,
-    })
+    return {
+      ...makeError({
+        type: ErrorType.OVERLOADED,
+        code: ErrorCode.POOL_OVERLOADED,
+        message: CLIENT_POOL_BUSY_MESSAGE,
+        status: POOL_OVERLOADED_STATUS,
+      }),
+      // Every 529 carries a Retry-After; the caller raises it to the planner estimate.
+      retryAfterSec: 1,
+    }
+  }
+  if (kind === 'rate_limited') {
+    return {
+      ...makeError({
+        type: ErrorType.RATE_LIMIT,
+        code: ErrorCode.UPSTREAM_RATE_LIMIT,
+        message: CLIENT_POOL_RATE_LIMITED_MESSAGE,
+        status: 429,
+      }),
+      // The caller raises it to the earliest rate-limit reset.
+      retryAfterSec: 1,
+    }
   }
   return makeError({
     type: ErrorType.OVERLOADED,
@@ -161,6 +199,15 @@ export function rewritePoolErrorForClient(mapped, originalBody = null) {
   const message = originalBody?.error?.message || mapped?.body?.error?.message || ''
   const kind = poolErrorKind(code, message)
   return kind ? poolClientError(kind) : mapped
+}
+
+/** Upstream `Retry-After` (delta seconds or HTTP date) as whole seconds ≥ 1, or null. */
+export function retryAfterSeconds(value, now = Date.now()) {
+  const raw = String(value ?? '').trim()
+  if (!raw) return null
+  const secs = /^\d+(\.\d+)?$/.test(raw) ? Number(raw) : (Date.parse(raw) - now) / 1000
+  if (!Number.isFinite(secs) || secs <= 0) return null
+  return Math.max(1, Math.ceil(secs))
 }
 
 export function makeError({
@@ -358,13 +405,9 @@ export function mapUpstreamError(status, body, headers = {}) {
       details: { upstream_status: status },
     })
   }
+  // Kernel slot busy on the last hop is capacity, same as a full pool queue.
   if (inboundCode === 'slot_busy' || /rust kernel has no free slot/i.test(String(msg || ''))) {
-    return makeError({
-      type: ErrorType.OVERLOADED,
-      code: 'slot_busy',
-      message: String(msg || 'rust kernel has no free slot'),
-      status: 503,
-    })
+    return poolClientError('overloaded')
   }
   if (
     inboundCode === 'wrap_connection_error' ||
@@ -394,6 +437,19 @@ export function mapUpstreamError(status, body, headers = {}) {
   }
   const request_id =
     body?.error?.request_id || body?.request_id || headers['request-id'] || headers['x-request-id'] || null
+  if (isUsagePolicyErrorMessage(msg)) {
+    return makeError({
+      type: ErrorType.PERMISSION,
+      code: ErrorCode.REFUSAL_GUARD,
+      message: REFUSAL_GUARD_MESSAGE,
+      status: 503,
+      details: {
+        upstream_type: upType,
+        upstream_status: status,
+      },
+      request_id,
+    })
+  }
   if (inboundCode === ErrorCode.CONTENT_FILTER_REFUSAL) {
     return makeError({
       type: ErrorType.PERMISSION,
@@ -425,33 +481,41 @@ export function mapUpstreamError(status, body, headers = {}) {
   }
 
   if (status === 429 || upType === 'rate_limit_error') {
-    return makeError({
-      type: ErrorType.RATE_LIMIT,
-      code: ErrorCode.UPSTREAM_RATE_LIMIT,
-      message: String(msg),
-      status: 429,
-      details: {
-        upstream_type: upType,
-        upstream_status: status,
-        retry_after: headers['retry-after'] || null,
-      },
-      request_id,
-    })
+    const retryAfterSec = retryAfterSeconds(headers['retry-after'])
+    return {
+      ...makeError({
+        type: ErrorType.RATE_LIMIT,
+        code: ErrorCode.UPSTREAM_RATE_LIMIT,
+        message: String(msg),
+        status: 429,
+        details: {
+          upstream_type: upType,
+          upstream_status: status,
+          retry_after: headers['retry-after'] || null,
+        },
+        request_id,
+      }),
+      ...(retryAfterSec ? { retryAfterSec } : {}),
+    }
   }
 
   if (status === 529 || upType === 'overloaded_error') {
-    return makeError({
-      type: ErrorType.OVERLOADED,
-      code: ErrorCode.UPSTREAM_OVERLOADED,
-      message: String(msg),
-      status: 529,
-      details: {
-        upstream_type: upType,
-        upstream_status: status,
-        ...(body?.error?.upstream_code ? { upstream_code: body.error.upstream_code } : {}),
-      },
-      request_id,
-    })
+    return {
+      ...makeError({
+        type: ErrorType.OVERLOADED,
+        code: ErrorCode.UPSTREAM_OVERLOADED,
+        message: String(msg),
+        status: 529,
+        details: {
+          upstream_type: upType,
+          upstream_status: status,
+          ...(body?.error?.upstream_code ? { upstream_code: body.error.upstream_code } : {}),
+        },
+        request_id,
+      }),
+      // Every 529 carries a Retry-After: the upstream's, else 1s.
+      retryAfterSec: retryAfterSeconds(headers['retry-after']) || 1,
+    }
   }
 
   if (inboundCode === ErrorCode.UPSTREAM_INVALID || status === 400 || upType === 'invalid_request_error') {
@@ -697,18 +761,6 @@ export function inspectRequestBody(body) {
       body.system != null || (Array.isArray(body.messages) && body.messages.some((m) => m?.role === 'system')),
     max_tokens: body.max_tokens ?? body.max_output_tokens ?? null,
   }
-}
-
-export function mapQuotaGateError(gate) {
-  const code = gate.reason || 'quota_error'
-  const type = code === 'concurrency_limit' ? ErrorType.RATE_LIMIT : ErrorType.QUOTA
-  return makeError({
-    type,
-    code,
-    message: gate.detail?.message || gate.reason || 'Quota exceeded',
-    status: 429,
-    details: gate.detail || undefined,
-  })
 }
 
 export function mapModelError(modelCheck) {

@@ -102,7 +102,6 @@ const FEATURES = [
   'protocol-convert',
   'go-slot-worker',
   'account-pool-failover',
-  'weighted-round-robin',
   'tools',
   'client-workspace',
   'api-direct-kernel',
@@ -257,10 +256,14 @@ const {
   applyVmConcurrency,
   applyVmRpm,
   applyVmSessionSlots,
+  applyVmMaxSessions,
+  inheritVmScheduling,
   applyVmQuotaOverride,
+  migrateLegacyOpenAIPolicies,
 } = routingRt
 
 routingConfig = loadRoutingConfig()
+migrateLegacyOpenAIPolicies(routingConfig)
 setManualScheduleWins(routingConfig.pool?.manual_schedule_wins)
 if (routingConfig.official_cc) {
   routingConfig.official_cc = normalizeOfficialCcConfig(routingConfig.official_cc)
@@ -466,7 +469,9 @@ usageProbeMonitor = createUsageProbeMonitor({
     const id = account?.account_id || vm?.claude?.account_uuid || vm?.account_uuid || vm?.id
     if (isCodexVm(vm)) {
       try {
-        syncCodexQuotaSchedule(cfg.paths.project, getVm(cfg.paths.project, vm.id) || vm)
+        syncCodexQuotaSchedule(cfg.paths.project, getVm(cfg.paths.project, vm.id) || vm, {
+          policy: routingConfig.codex?.quota,
+        })
       } catch {}
       return
     }
@@ -477,7 +482,7 @@ usageProbeMonitor = createUsageProbeMonitor({
       poolScheduler.syncQuotaSchedule(vm, account)
     } catch {}
   },
-  probeOne: (vm) => panel.buildProbeOne({ cfg, accountQuota, id: vm.id }),
+  probeOne: (vm) => panel.buildProbeOne({ cfg, accountQuota, id: vm.id, routingConfig }),
 })
 notifyMonitor = createNotifyMonitor({
   config: routingConfig.notify,
@@ -510,6 +515,7 @@ backupService.onRestored((db) => {
   apiScheduler.reload(apiEndpointStore.listRaw())
 
   routingConfig = loadRoutingConfig()
+  migrateLegacyOpenAIPolicies(routingConfig)
   setManualScheduleWins(routingConfig.pool?.manual_schedule_wins)
   if (routingConfig.official_cc) {
     routingConfig.official_cc = normalizeOfficialCcConfig(routingConfig.official_cc)
@@ -883,6 +889,8 @@ const handlePanel = createPanelHandler({
   applyVmConcurrency,
   applyVmRpm,
   applyVmSessionSlots,
+  applyVmMaxSessions,
+  inheritVmScheduling,
   applyVmQuotaOverride,
   initPoolRuntime,
   poolSchedulerConfig,

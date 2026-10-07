@@ -10,6 +10,7 @@ import {
   rebuildOutboundSession,
   resolveOutboundSessionId,
   resolveInboundIdentity,
+  resolveSeatIdentity,
   sessionContextDiscriminator,
   REBUILD_SESSION_SEED,
   STABLE_SESSION_SEED,
@@ -365,4 +366,77 @@ test('resolveInboundIdentity reads explicit device_id from the raw inbound body'
     body: {},
   })
   assert.deepEqual(identity, { sessionId: 'session-raw', deviceId: 'device-raw', source: 'explicit-device' })
+})
+
+const LONG_TURN = 'please refactor the scheduler module and explain every single change you make'
+
+test('resolveSeatIdentity: device id first, then metadata session, never the API key', () => {
+  const both = { metadata: { user_id: JSON.stringify({ device_id: 'dev-1', session_id: 'sess-1' }) } }
+  const inbound = { ...both, messages: [{ role: 'user', content: LONG_TURN }] }
+  assert.deepEqual(resolveSeatIdentity({ inbound, body: inbound }), { key: 'seat:dev:dev-1', source: 'device' })
+  const explicit = { device_id: 'dev-2', messages: [{ role: 'user', content: LONG_TURN }] }
+  assert.equal(resolveSeatIdentity({ inbound: explicit, body: explicit }).key, 'seat:dev:dev-2')
+  const header = resolveSeatIdentity({
+    inbound: { messages: [{ role: 'user', content: LONG_TURN }] },
+    headers: { 'X-Kin-Device-Id': 'dev-3' },
+  })
+  assert.equal(header.key, 'seat:dev:dev-3')
+  const sessionOnly = {
+    metadata: { user_id: JSON.stringify({ session_id: 'sess-9' }) },
+    messages: [{ role: 'user', content: LONG_TURN }],
+  }
+  assert.deepEqual(resolveSeatIdentity({ inbound: sessionOnly, body: sessionOnly }), {
+    key: 'seat:sess:sess-9',
+    source: 'session',
+  })
+})
+
+test('resolveSeatIdentity: same IP + UA + first turn hashes to one identity whatever the API key', () => {
+  const turn = (extra = []) => ({
+    system: [{ type: 'text', text: 'You are a helpful assistant.' }],
+    messages: [{ role: 'user', content: LONG_TURN }, ...extra],
+  })
+  const headers = { 'user-agent': 'my-client/1.2.3', authorization: 'Bearer key-a', 'x-api-key': 'key-a' }
+  const first = resolveSeatIdentity({ inbound: turn(), headers, clientIp: '10.0.0.7' })
+  assert.equal(first.source, 'fingerprint')
+  assert.match(first.key, /^seat:h:[0-9a-f]{64}$/)
+  const otherKey = resolveSeatIdentity({
+    inbound: turn(),
+    headers: { 'user-agent': 'my-client/1.3.0', authorization: 'Bearer key-b', 'x-api-key': 'key-b' },
+    clientIp: '10.0.0.7',
+  })
+  assert.equal(otherKey.key, first.key)
+  const laterTurn = resolveSeatIdentity({
+    inbound: turn([
+      { role: 'assistant', content: 'done' },
+      { role: 'user', content: 'next' },
+    ]),
+    headers,
+    clientIp: '10.0.0.7',
+  })
+  assert.equal(laterTurn.key, first.key)
+  const otherIp = resolveSeatIdentity({ inbound: turn(), headers, clientIp: '10.0.0.8' })
+  assert.notEqual(otherIp.key, first.key)
+  const otherContent = resolveSeatIdentity({
+    inbound: { ...turn(), messages: [{ role: 'user', content: `${LONG_TURN} differently` }] },
+    headers,
+    clientIp: '10.0.0.7',
+  })
+  assert.notEqual(otherContent.key, first.key)
+})
+
+test('resolveSeatIdentity: cache_control ephemeral content outranks the client fingerprint', () => {
+  const inbound = {
+    system: [{ type: 'text', text: 'cached system prompt', cache_control: { type: 'ephemeral' } }],
+    messages: [{ role: 'user', content: LONG_TURN }],
+  }
+  const a = resolveSeatIdentity({ inbound, headers: { 'user-agent': 'a/1' }, clientIp: '1.1.1.1' })
+  const b = resolveSeatIdentity({ inbound, headers: { 'user-agent': 'b/1' }, clientIp: '2.2.2.2' })
+  assert.equal(a.source, 'cache')
+  assert.equal(a.key, b.key)
+})
+
+test('resolveSeatIdentity: a short one-shot probe takes no seat', () => {
+  const probe = { max_tokens: 16, messages: [{ role: 'user', content: 'hi' }] }
+  assert.deepEqual(resolveSeatIdentity({ inbound: probe, clientIp: '10.0.0.7' }), { key: null, source: 'probe' })
 })

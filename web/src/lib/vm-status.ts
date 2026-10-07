@@ -262,6 +262,18 @@ export function vmCooldown(
   }
 }
 
+/** Claude 席位悬浮说明：宽限与等并发都是 `seats_used` / `queue_depth` 的子集。 */
+export function seatTitle(vm: Vm): string {
+  const used = Number(vm.seats_used) || 0
+  const grace = Number(vm.seats_grace) || 0
+  const queued = Number(vm.queue_depth) || 0
+  const conc = Number(vm.conc_waiting) || 0
+  const parts = [`席位 ${used}/${Number(vm.seats_max) || 0}`]
+  if (grace) parts.push(`宽限保留 ${grace}`)
+  if (queued) parts.push(`排队 ${queued}${conc ? `（等并发 ${conc}）` : ''}`)
+  return parts.join(' · ')
+}
+
 export function vmCooldownTitle(vm: Vm): string {
   const cool = vmCooldown(vm)
   if (!cool) return '无冷却'
@@ -277,14 +289,13 @@ export function accountStatus(vm: Vm | undefined): StatusTone {
 
   if (vm?.availability?.key && !probeTaintedAvailability(vm)) {
     const a = vm.availability
-    // 7 个 key 的完整映射，对齐 index.html 的 accountStatus。
+    // 6 个 key 的完整映射，对齐 index.html 的 accountStatus。
     const fallback: Record<typeof a.key, string> = {
       none: '无凭证',
       ok: '可用',
       off: '调度关',
       cool: '冷却中',
       quota: '额度限制',
-      sessions: '会话已满',
       bad: '无效凭证',
     }
     // 与 poolStatus 同口径：off 只表达调度意图，凭证死活先于它判。
@@ -297,7 +308,7 @@ export function accountStatus(vm: Vm | undefined): StatusTone {
     const cls =
       a.key === 'ok'
         ? 'ok'
-        : a.key === 'quota' || a.key === 'sessions'
+        : a.key === 'quota'
           ? 'warn'
           : a.key === 'cool'
             ? 'caution'
@@ -511,7 +522,7 @@ export function poolStatus(vm: Vm | undefined): StatusTone {
         return { key: 'bad', text: '已过期', cls: 'bad' }
       return { key: 'off', text: a.text || '调度关', cls: 'off' }
     }
-    if (a.key === 'quota' || a.key === 'sessions') {
+    if (a.key === 'quota') {
       return { key: 'quota', text: a.text || '额度限制', cls: 'warn' }
     }
     if (a.key === 'cool' || vmCooldown(vm))

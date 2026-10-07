@@ -10,6 +10,7 @@ import {
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { api } from '@/lib/api'
+import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -97,6 +98,7 @@ export function VmListPage() {
     onError: (error: Error) => toast.error(error.message),
   })
   const vms: Vm[] = vmsQ.data?.items || []
+  const poolQueue = vmsQ.data?.pool_queue
   const accounts = usage.data?.accounts
   const canCreate =
     me.data?.role === 'admin' ||
@@ -109,8 +111,24 @@ export function VmListPage() {
       title={VIEW_TITLES.vm}
       fluid
       extra={
-        canCreate ? (
-          <Button onClick={() => setCreateOpen(true)}>创建</Button>
+        poolQueue || canCreate ? (
+          <div className='flex items-center gap-3'>
+            {poolQueue ? (
+              <span
+                className={cn(
+                  'text-xs text-muted-foreground tabular-nums',
+                  poolQueue.global_queue_depth > 0 &&
+                    'text-[color:var(--status-warn)]'
+                )}
+                title='还没落到任何 VM、在等新席位的 Claude 请求数 / 允许排队数量（上限按全部排队请求计，含各 VM 上的排队，见状态列）'
+              >
+                全局排队 {poolQueue.global_queue_depth}/{poolQueue.queue_max}
+              </span>
+            ) : null}
+            {canCreate ? (
+              <Button onClick={() => setCreateOpen(true)}>创建</Button>
+            ) : null}
+          </div>
         ) : undefined
       }
     >

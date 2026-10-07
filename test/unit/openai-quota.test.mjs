@@ -15,6 +15,57 @@ import {
   CHATGPT_RESET_CONSUME_URL,
 } from '../../src/lib/oauth/openai-quota.mjs'
 import { persistCodexQuotaSnapshot } from '../../src/lib/vm/codex-slot.mjs'
+import {
+  evaluateOpenAIQuotaGate,
+  effectiveOpenAIPolicy,
+  mergeOpenAIQuotaPolicy,
+} from '../../src/lib/pool/openai-quota-policy.mjs'
+
+test('OpenAI local quota gate blocks equality without inventing a reset and recovers after reset', () => {
+  const now = Date.parse('2026-10-06T00:00:00.000Z')
+  const reset = new Date(now + 60_000).toISOString()
+  const vm = {
+    codex: {
+      extra: {
+        codex_5h_used_percent: 80,
+        codex_5h_reset_at: reset,
+        codex_7d_used_percent: 10,
+        codex_7d_reset_at: reset,
+      },
+    },
+  }
+  assert.equal(evaluateOpenAIQuotaGate(vm, { limit_5h: 0.8, limit_7d: 1 }, now).reason, 'quota_5h_local')
+  assert.equal(evaluateOpenAIQuotaGate(vm, { limit_5h: 0.81, limit_7d: 1 }, now).limited, false)
+  const unknownReset = evaluateOpenAIQuotaGate(
+    { codex: { extra: { codex_5h_used_percent: 80 } } },
+    { limit_5h: 0.8 },
+    now,
+  )
+  assert.equal(unknownReset.limited, true)
+  assert.equal(unknownReset.until, null)
+  assert.equal(
+    evaluateOpenAIQuotaGate(
+      { codex: { extra: { codex_5h_used_percent: 100, codex_5h_reset_at: new Date(now - 1).toISOString() } } },
+      { limit_5h: 0.8 },
+      now,
+    ).limited,
+    false,
+  )
+})
+
+test('OpenAI policy pins and null-reset inheritance remain platform-local', () => {
+  const global = mergeOpenAIQuotaPolicy({}, { max_concurrency: 8, max_rpm: 120, max_sessions: 4 })
+  assert.deepEqual(effectiveOpenAIPolicy({ policy: { maxConcurrency: 3, concurrencyOverride: true } }, global), {
+    max_concurrency: 3,
+    max_rpm: 120,
+    max_sessions: 4,
+    concurrency_override: true,
+    rpm_override: false,
+    sessions_override: false,
+  })
+  assert.equal(effectiveOpenAIPolicy({ policy: { maxSessions: 0, sessionsOverride: false } }, global).max_sessions, 4)
+  assert.equal(effectiveOpenAIPolicy({ policy: { maxSessions: 6, sessionsOverride: true } }, global).max_sessions, 6)
+})
 
 test('extraFromRateLimit maps shorter window to 5h', () => {
   const extra = extraFromRateLimit({
@@ -275,4 +326,25 @@ test('persisted GPT quota survives summarizeVm and exposes plan_type', async () 
     ],
   )
   assert.equal(s.plan_type, 'team')
+})
+
+test('raw primary/secondary quota and normalized views agree at local boundaries', () => {
+  const now = Date.parse('2026-10-07T00:00:00Z')
+  const vm = {
+    codex: {
+      extra: {
+        codex_primary_used_percent: 50,
+        codex_primary_window_minutes: 300,
+        codex_secondary_used_percent: 70,
+        codex_secondary_window_minutes: 10080,
+      },
+    },
+  }
+  const gate = evaluateOpenAIQuotaGate(vm, { limit_5h: 0.5, limit_7d: 0.6 }, now)
+  assert.equal(gate.reason, 'quota_5h_local')
+  assert.equal(gate.until, null)
+  vm.codex.extra.codex_primary_reset_at = new Date(now - 1).toISOString()
+  assert.equal(evaluateOpenAIQuotaGate(vm, { limit_5h: 0.5, limit_7d: 0.6 }, now).reason, 'quota_7d_local')
+  assert.equal(evaluateOpenAIQuotaGate({ utilization_5h: 1.2 }, { limit_5h: 1 }, now).reason, 'quota_5h_local')
+  assert.equal(evaluateOpenAIQuotaGate({ utilization_5h: null }, { limit_5h: 0.3 }, now).limited, false)
 })

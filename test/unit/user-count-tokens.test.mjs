@@ -152,7 +152,7 @@ test('distill count_tokens returns distill_blocked and never peeks or hops', asy
   assert.equal(cap.calls[0].body.error.code, 'distill_blocked')
 })
 
-test('refusal-cache count_tokens returns 500 and never peeks or hops', async () => {
+test('refusal-cache count_tokens returns 503 and never peeks or hops', async () => {
   const cap = jsonCapture()
   let peeked = false
   let hopped = false
@@ -191,7 +191,52 @@ test('refusal-cache count_tokens returns 500 and never peeks or hops', async () 
   assert.equal(peeked, false)
   assert.equal(hopped, false)
   assert.equal(hits, 1)
-  assert.equal(cap.calls[0].status, 500)
+  assert.equal(cap.calls[0].status, 503)
+  assert.equal(cap.calls[0].body.error.code, 'refusal_guard')
+})
+
+test('device-banned count_tokens returns 503 and never peeks or hops', async () => {
+  const cap = jsonCapture()
+  let peeked = false
+  let hopped = false
+  let hits = 0
+  await handleUserCountTokens(
+    { headers: { 'x-kin-device-id': 'device-12345678' } },
+    {},
+    {
+      json: cap.json,
+      requireAuth: () => true,
+      readBody: async () => ({
+        model: 'claude-opus-5',
+        messages: [{ role: 'user', content: 'hello from a banned device' }],
+      }),
+      cfg: { limits: { max_body_bytes: 4096 }, distill: { enabled: true } },
+      settings: { get: () => true },
+      refusalGuards: { get: () => null, hit: () => {}, nearest: () => null },
+      refusalDevices: {
+        get: (id) => (id === 'device-12345678' ? { device_id: id } : null),
+        hit: () => {
+          hits += 1
+        },
+        block: () => {},
+      },
+      stickyRouter: { extractPoolKey: () => null },
+      getPoolScheduler: () => ({
+        peekAccount: async () => {
+          peeked = true
+          return { ok: false, code: 'no_eligible_accounts' }
+        },
+      }),
+      countTokensViaWorker: async () => {
+        hopped = true
+        return { ok: true, status: 200, body: { input_tokens: 1 } }
+      },
+    },
+  )
+  assert.equal(peeked, false)
+  assert.equal(hopped, false)
+  assert.equal(hits, 1)
+  assert.equal(cap.calls[0].status, 503)
   assert.equal(cap.calls[0].body.error.code, 'refusal_guard')
 })
 

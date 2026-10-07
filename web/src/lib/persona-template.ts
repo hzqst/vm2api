@@ -711,16 +711,55 @@ export type SystemPreviewBlock = {
   placeholder: boolean
 }
 
+function withStandingSlot(
+  blocks: readonly RawBlock[],
+  standingText: string
+): RawBlock[] {
+  if (!String(standingText ?? '').trim()) return [...blocks]
+  if (
+    blocks.some((block) =>
+      String(block?.text || '').includes('{{agent_standing}}')
+    )
+  ) {
+    return [...blocks]
+  }
+  const idx = blocks.findIndex((block) => {
+    const id = String(block?.id || '')
+    const text = String(block?.text || '')
+    return (
+      /agent/i.test(id) ||
+      text.includes('{{caller_agent}}') ||
+      text.includes('{{agent_official}}')
+    )
+  })
+  const copy = blocks.map((block) => ({ ...block }))
+  if (idx < 0) {
+    copy.splice(Math.min(copy.length, 2), 0, {
+      id: 'agent_standing',
+      type: 'text',
+      text: '{{agent_standing}}',
+    })
+    return copy
+  }
+  const existing = String(copy[idx].text || '')
+  copy[idx].text = existing.replace(/\u200b/g, '').trim()
+    ? `{{agent_standing}}${existing}`
+    : '{{agent_standing}}'
+  return copy
+}
+
 /**
  * 模板 → 出站 system[]，镜像 gateway `renderPersonaTemplate`。
  * 引用 {{billing}} / {{billing_semi}} 的块整块不展示：那一行是计费头。
+ * 本档常驻开关打开时，即使保存的模板丢掉了 {{agent_standing}}，也写进 agent 块。
  */
 export function previewSystemBlocks(
   blocks: readonly RawBlock[],
   vars: Record<string, string>
 ): SystemPreviewBlock[] {
+  const source = withStandingSlot(blocks, vars.agent_standing || '')
   const out: SystemPreviewBlock[] = []
-  for (const block of blocks) {
+  for (const block of source) {
     if (!block || typeof block !== 'object') continue
     const used = extractTemplateVars(block.text)
     if (used.some((name) => BILLING_VARS.includes(name))) continue

@@ -13,16 +13,11 @@ import {
   dataplaneLabel,
 } from '@/features/vm/dataplane-contract'
 
-const SESSION_SLOT_STEPS = [1, 2, 4, 8, 12, 16, 20]
-
 export function KernelRoutingPane(props: {
   value: Record<string, unknown>
   onChange: (next: Record<string, unknown>) => void
 }) {
   const configured = Number(props.value.session_slots ?? 20)
-  const options = SESSION_SLOT_STEPS.includes(configured)
-    ? SESSION_SLOT_STEPS
-    : [...SESSION_SLOT_STEPS, configured].sort((a, b) => a - b)
   return (
     <Card>
       <CardHeader>
@@ -57,34 +52,18 @@ export function KernelRoutingPane(props: {
             宿主机写 credentials.json，槽内 kernel 与 cli-node / cc-node 只读
           </span>
         </SettingRow>
-        <SettingRow label='预开 native 位'>
+        <SettingRow
+          label='预开 native 位'
+          desc='每台 VM 实际可占用的席位上限在 设置 → 账号池 → 席位 里调'
+        >
           <span className='text-sm tabular-nums'>
             {String(props.value.dataplane || 'wrap') === 'crag'
               ? '最多 20（cc-node 一进程）'
               : '20（固定）'}
+            <span className='ml-1.5 text-muted-foreground'>
+              · 席位上限 {configured}
+            </span>
           </span>
-        </SettingRow>
-        <SettingRow
-          label='默认 session 槽位'
-          desc='限制每个 Claude 槽可占用的 CLI 执行位；与同时请求数独立'
-        >
-          <Select
-            value={String(configured)}
-            onValueChange={(value) =>
-              props.onChange({ ...props.value, session_slots: Number(value) })
-            }
-          >
-            <SelectTrigger className='w-40'>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {options.map((value) => (
-                <SelectItem key={value} value={String(value)}>
-                  {value}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
         </SettingRow>
       </CardContent>
     </Card>

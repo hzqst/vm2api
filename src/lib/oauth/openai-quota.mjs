@@ -4,7 +4,7 @@
  * without auto-reset, spark shadow, or agent-identity recovery.
  */
 import crypto from 'node:crypto'
-import { getVm } from '../vm/vm-registry.mjs'
+import { getVm, syncCodexQuotaSchedule } from '../vm/vm-registry.mjs'
 import { isCodexVm } from '../vm/vm-kind.mjs'
 import { hostProxyUrlForVm, isLocalEgressProxy } from '../vm/egress.mjs'
 import { readCodexAccounts, upsertCodexAccount, persistCodexQuotaSnapshot } from '../vm/codex-slot.mjs'
@@ -316,7 +316,7 @@ function publicUsage(extra, resetCredits, usagePayload = {}) {
   }
 }
 
-async function queryUpstream(slot, { fetchImpl, rotate = true, projectRoot, vmId } = {}) {
+async function queryUpstream(slot, { fetchImpl, rotate = true, projectRoot, vmId, policy = null } = {}) {
   if (!slot.proxyUrl && !fetchImpl && !slot.direct) {
     return fail('proxy_required', 'GPT 槽未绑定 SOCKS5', 400)
   }
@@ -383,6 +383,9 @@ async function queryUpstream(slot, { fetchImpl, rotate = true, projectRoot, vmId
     planType: pack.usage.payload?.plan_type || pack.usage.payload?.planType,
     ...(persistable ? { resetCredits: persistable } : {}),
   })
+  syncCodexQuotaSchedule(projectRoot, getVm(projectRoot, vmId), {
+    policy,
+  })
   return {
     ok: true,
     ...publicUsage(extra, persistable || resetCredits, pack.usage.payload || {}),
@@ -391,13 +394,13 @@ async function queryUpstream(slot, { fetchImpl, rotate = true, projectRoot, vmId
   }
 }
 
-export async function queryOpenaiQuota({ projectRoot, vmId, fetchImpl, rotate = true } = {}) {
+export async function queryOpenaiQuota({ projectRoot, vmId, fetchImpl, rotate = true, policy = null } = {}) {
   const slot = await loadSlot(projectRoot, vmId)
   if (!slot.ok) return slot
-  return queryUpstream(slot, { fetchImpl, rotate, projectRoot, vmId })
+  return queryUpstream(slot, { fetchImpl, rotate, projectRoot, vmId, policy })
 }
 
-export async function resetOpenaiQuota({ projectRoot, vmId, fetchImpl, rotate = true } = {}) {
+export async function resetOpenaiQuota({ projectRoot, vmId, fetchImpl, rotate = true, policy = null } = {}) {
   const slot = await loadSlot(projectRoot, vmId)
   if (!slot.ok) return slot
   if (!slot.proxyUrl && !fetchImpl && !slot.direct) return fail('proxy_required', 'GPT 槽未绑定 SOCKS5', 400)
@@ -439,7 +442,7 @@ export async function resetOpenaiQuota({ projectRoot, vmId, fetchImpl, rotate = 
     })
   }
 
-  const after = await queryUpstream(current, { fetchImpl, rotate: false, projectRoot, vmId })
+  const after = await queryUpstream(current, { fetchImpl, rotate: false, projectRoot, vmId, policy })
   if (!after.ok) {
     return {
       ok: true,

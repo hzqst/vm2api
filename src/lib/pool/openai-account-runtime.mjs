@@ -54,6 +54,10 @@ export function openAIRuntimeSignals(id, now = Date.now()) {
   }
 }
 
+export function openAIRuntimeSnapshot(id, now = Date.now()) {
+  return openAIRuntimeSignals(id, now)
+}
+
 export function readOpenAICursor() {
   return roundRobinCursor
 }
@@ -68,11 +72,18 @@ export function bumpOpenAICursor() {
  * the same tick, so two admissions can never both see the last free seat.
  * Returns a lease whose release() is idempotent, or null when full.
  */
-export function tryAcquireOpenAISlot(id, { concurrency = 1, maxRpm = 0, now = Date.now() } = {}) {
-  const cap = Number(concurrency) > 0 ? Number(concurrency) : 1
+export function tryAcquireOpenAISlot(id, { concurrency = 1, maxRpm = 0, now = Date.now(), quotaPolicy = null } = {}) {
+  // Candidate selection resolves pins against the same live policy snapshot.
+  // Never replace a resolved legacy/pinned candidate cap with the global cap
+  // here: doing so can sell more seats than the candidate was selected for.
+  const effectiveConcurrency = Number.isFinite(Number(concurrency))
+    ? Number(concurrency)
+    : Number(quotaPolicy?.max_concurrency)
+  const effectiveRpm = Number.isFinite(Number(maxRpm)) ? Number(maxRpm) : Number(quotaPolicy?.max_rpm)
+  const cap = Number(effectiveConcurrency) > 0 ? Number(effectiveConcurrency) : 1
   const slot = slotOf(id)
   if (slot.inFlight >= cap) return null
-  const rpm = Number(maxRpm) || 0
+  const rpm = Number(effectiveRpm) || 0
   if (rpm > 0 && recentStarts(slot, now) >= rpm) return null
   recentStarts(slot, now)
   slot.inFlight += 1

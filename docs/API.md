@@ -205,7 +205,7 @@ curl -sS http://127.0.0.1:8787/v1/usage -H "Authorization: Bearer $KEY"
 curl -sS http://127.0.0.1:8787/health
 ```
 
-无鉴权。含 `features`、`limitations`、`stats`。能力字面量：`passthrough`、`stream`、`verified-stream`、`protocol-convert`、`go-slot-worker`、`account-pool-failover`、`weighted-round-robin`、`tools`、`client-workspace`、`count_tokens`、`account_usage`。
+无鉴权。含 `features`、`limitations`、`stats`。能力字面量：`passthrough`、`stream`、`verified-stream`、`protocol-convert`、`go-slot-worker`、`account-pool-failover`、`tools`、`client-workspace`、`count_tokens`、`account_usage`。
 
 ## 错误
 
@@ -235,17 +235,18 @@ curl -sS http://127.0.0.1:8787/health
 | `upstream_error` | 401/403/502 |
 | `api_error` | 500 |
 
-429 可能带 `retry-after`。恢复备份期间协议口 `503 restore_in_progress`。健康探测短请求在无缓存且 fail-closed 时 `503`。
+上游 429 失败转移用尽后原样返回 429 `upstream_rate_limit`，有上游 `retry-after` 时透传；529 一定带 `retry-after`（号池估计，上游 529 取上游值，都没有时为 1）。恢复备份期间协议口 `503 restore_in_progress`。健康探测短请求在无缓存且 fail-closed 时 `503`。Claude Code Usage Policy `API Error`（含内核报成 400 的）不换号、不修复重试，客户端收到 503 `refusal_guard`，并把该 prompt 永久写入拒答缓存；再次相同请求，或用户正文与已缓存正文的估计 Jaccard 达到面板阈值（默认 0.90，可选 0.80/0.85/0.90/0.95），都在 hop 前被拦。`content_policy`、`cyber_policy`、`moderation_blocked` 等内容错误码同样入库。协议硬正则，或面板所选的 Jev / Laya / ModernBERT（`/v1/systemone`，`noul ≥ 0.5`）判为 NSFW、蒸馏、破解、破限时返回 403 `policy_blocked`，不 hop，并在拒答守卫开启时入库、可封禁 device。近似和 device 封禁可在面板关闭。拒答命中在 device 封禁开启时还会永久封禁该入站 device id。
 
 号池结果分开返回，不互相伪装：
 
 | 情况 | HTTP | code | message |
 |---|---|---|---|
-| 所有合格执行位都忙，有界等待（或等待队列）用完 | 429 | `pool_overloaded` | 号池负载过高，稍后再试 |
-| 没有任何合格账号（未配置、额度 / 凭证 / 模型 / 人工关闭都不合格） | 503 | `pool_unavailable` | 号池当前没有可用账号 |
+| 排队超时、排队已满（`routing.pool.queue_max`）、有界等待用完、最后一跳内核槽忙（`slot_busy`），或剩余账号都在上游 529 过载冷却（`overload_until`） | 529（`overloaded_error`） | `pool_overloaded` | 号池负载过高，稍后再试 |
+| 剩余账号都在上游 429 限流冷却（`rate_limit_reset_at`），没有过载冷却 | 429（`rate_limit_error`） | `upstream_rate_limit` | 号池账号均被上游限流，稍后再试 |
+| 没有任何合格账号（未配置、额度 / 凭证 / 模型 / 人工关闭都不合格，且没有上游冷却） | 503 | `pool_unavailable` | 号池当前没有可用账号 |
 | 已经执行过、最后一跳失败 | 上游本义 | 上游错误码（如 `incomplete_response`、429、401） | 上游本义 |
 
-`pool_overloaded` 只有在已知恢复时刻（冷却、RPM 窗口、会话窗口到期）时才带 `retry-after`。OpenAI 槽同样如此。续接 `previous_response_id` 的 Responses 请求只能在原 GPT 账号上继续；该账号已不可用时返回 `409 response_not_portable`，请带完整上下文重新发起。
+`pool_overloaded` 是 HTTP 529、`type: overloaded_error`，总带 `retry-after`（秒，至少 1）：优先取相关 VM 最早的席位宽限到期，其次已知恢复时刻（冷却、RPM 窗口），都没有时为 1。排队已满时立即返回，不入队。OpenAI 槽仍是自己的 429 `pool_overloaded`。续接 `previous_response_id` 的 Responses 请求只能在原 GPT 账号上继续；该账号已不可用时返回 `409 response_not_portable`，请带完整上下文重新发起。
 
 客户端断开不计 SLA、不处罚账号。
 
@@ -319,10 +320,11 @@ stateDiagram-v2
 
 - **realtime（默认）**：第一段业务 SSE 写出后不再换账号。
 - **verified**：收齐 `message_stop` 再给客户端；不完整则继续换号。
-- sticky：同一会话（`x-session-id` 等键）在终态成功后绑槽。绑定是偏好，不是过滤：绑定槽忙（并发、RPM、执行位满、未知 429 短冷却）时，这一轮借用同平台别的空闲合格槽，绑定不动，下一轮仍回原槽；额度 / 凭证 / 暂停等确定失效才把会话连同会话窗口迁走。
+- 席位（预调度）：Claude 请求按入站 device 占席位（`metadata.user_id.device_id` / `device_id` / `x-kin-device-id` → `metadata` 的 `session_id` → `cache_control: ephemeral` 内容哈希 → 客户端 IP + 归一化 UA + system + 首轮 user 内容哈希；API key 从不参与）。同一 device 的并发请求共用 1 个席位，共享该 VM 并发，在 VM 内按到达顺序等待，不拆到两台 VM。每台 VM 的席位数是 `session_slots`（VM 覆盖 → `inference.session_slots`，上限 20）。最后一个请求结束后席位保留 `routing.pool.seat_grace_ms`（默认 30 秒）给同一 device。开新席位要求余量 `min(limit_5h − u5, limit_7d − u7) ≥ (已占 + 1) × seat_budget_reserve_pct`。新 device 先回粘性 VM，否则按 `strategy`（`balanced` 选占用率最低、`fill` 选已占最多未满，同级再比余量）；都满时进全局 FIFO，新到请求不插队；有粘性 VM 的先在该 VM 等 `sticky_wait_timeout_ms`，再转全局等 `fallback_wait_timeout_ms`。超时返回 529。一次性短探测（单条短 user 文本、无工具）和诊断 pin 不占席位。
+- sticky：同一会话（`x-session-id` 等键）在终态成功后绑槽，粘性 VM 是新席位的首选；已占席位的 device 一直留在席位所在 VM。额度 / 凭证 / 暂停等确定失效或换 VM 重试时席位立即释放（不进宽限），在新 VM 开席位并更新设备绑定。
 - 重试预算：每个 VM 每请求最多 3 次实际执行；准入竞争失败不算一次执行。`failover.max_total_attempts` / `max_account_switches` 用完后只再尝试本请求还没试过的 VM，直到 `total_retry_deadline_ms`。
-- 子请求：带显式 `parent_session_id` / `root_session_id` 且父会话在本地已有绑定时，子请求计入父会话的会话窗口，不新占 `max_sessions`；每个并行子请求仍各占一个执行位、并发与 RPM。没有显式父子字段时，同设备的新会话不会被当作子请求。
-- Claude Code 子 agent：请求头带 `x-claude-code-agent-id` 时，按上一条的子请求处理，父会话是 `metadata.user_id.session_id`，子会话 ID 由它和 agent ID 派生。每个 agent 单独排队、单独占执行位，落在父会话同一 VM 的任意空闲执行位，不等父会话当前这一轮。
+- 子请求：带显式 `parent_session_id` / `root_session_id` 且父会话在本地已有绑定时，子请求跟随父会话所在 VM（family 粘性）；同一 device 的父子请求共用该 device 的席位。没有显式父子字段时，同设备的新会话不会被当作子请求。
+- Claude Code 子 agent：请求头带 `x-claude-code-agent-id` 时，按上一条的子请求处理，父会话是 `metadata.user_id.session_id`，子会话 ID 由它和 agent ID 派生。每个 agent 单独串行，不等父会话当前这一轮。
 - 裸 429（没有 5h/7d 头、没有套餐文案）不按模型名定范围：当前执行单元短暂让位并触发一次 `/usage` 探测，由真实用量决定是否是账号额度。上游文本点名模型的才按模型冷却，每分钟限流按 RPM 短冷却。
 
 ## 用量回包

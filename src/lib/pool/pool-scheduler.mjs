@@ -23,6 +23,7 @@ import {
   viewRuntimeWithoutLeftoverRevoke,
 } from './schedule-eligibility.mjs'
 import {
+  budgetHeadroom,
   evaluateAccount,
   isAccountRestrictionReason,
   isLeftoverQuotaScheduleOff,
@@ -37,7 +38,7 @@ import { slotAllowsModel } from './slot-model-gate.mjs'
 import { isCodexVm } from '../vm/vm-kind.mjs'
 import { detectInboundPlatform } from '../protocol/platform-detect.mjs'
 import { resolveCredentialScheduleLevel } from './credential-weight.mjs'
-import { PLATFORM_SCOPE, vmMatchesOwnerScope } from '../admin/resource-owner.mjs'
+import { PLATFORM_SCOPE, normalizeOwnerId, vmMatchesOwnerScope } from '../admin/resource-owner.mjs'
 import {
   kernelFaults,
   rustKernelBusy,
@@ -45,36 +46,103 @@ import {
   rustKernelReachable,
 } from '../transport/rust-kernel-client.mjs'
 import { resolveSessionSlots } from '../vm/slot-engine.mjs'
+import { SeatPlanner, rankSeatCandidates } from './seat-planner.mjs'
 
 const WAIT_TIMEOUT_MIN_MS = 1000
 const WAIT_TIMEOUT_MAX_MS = 120000
 
-const DEFAULT_CONFIG = {
-  strategy: 'weighted-round-robin',
-  max_waiters_per_account: 100,
+export const QUEUE_MAX_MIN = 1
+export const QUEUE_MAX_MAX = 999
+export const SEAT_GRACE_MAX_MS = 120000
+export const SEAT_BUDGET_RESERVE_MAX = 0.5
+export const CIRCUIT_THRESHOLD_MAX = 20
+export const CIRCUIT_OPEN_MIN_MS = 1000
+
+/** A queued request re-reads eligibility this often, so cooldown lifts and new slots reach it. */
+const QUEUE_REFRESH_MS = 2000
+
+/** routing.pool defaults. `strategy` only places new seats; see seat-planner.mjs. */
+export const DEFAULT_POOL_ROUTING = Object.freeze({
+  strategy: 'balanced',
+  queue_max: 50,
+  seat_grace_ms: 30000,
+  seat_budget_reserve_pct: 0.02,
   fallback_wait_timeout_ms: 30000,
   sticky_wait_timeout_ms: 45000,
+  circuit_failure_threshold: 3,
+  circuit_open_ms: 30000,
+})
+
+const DEFAULT_CONFIG = {
+  ...DEFAULT_POOL_ROUTING,
   worker_health_ttl_ms: 5000,
   heartbeat_stale_ms: 15000,
   fable_max_per_account: 4,
   default_max_per_account: 2,
 }
 
-function clampWaitTimeoutMs(value, fallback) {
+function clampNumber(value, fallback, min, max, { round = true } = {}) {
   if (value == null || value === '') return fallback
   const n = Number(value)
   if (!Number.isFinite(n)) return fallback
-  return Math.min(WAIT_TIMEOUT_MAX_MS, Math.max(WAIT_TIMEOUT_MIN_MS, Math.round(n)))
+  const v = round ? Math.round(n) : n
+  return Math.min(max, Math.max(min, v))
+}
+
+function clampWaitTimeoutMs(value, fallback) {
+  return clampNumber(value, fallback, WAIT_TIMEOUT_MIN_MS, WAIT_TIMEOUT_MAX_MS)
+}
+
+/**
+ * Normalize the stored `routing.pool` block. Legacy strategies (weighted
+ * round-robin, round-robin, lru, fill-first) read as `balanced`; the old
+ * per-account waiter cap is dropped in favor of the pool-wide `queue_max`.
+ */
+export function normalizePoolRouting(pool = {}) {
+  const next = { ...(pool && typeof pool === 'object' ? pool : {}) }
+  delete next.max_waiters_per_account
+  next.strategy = next.strategy === 'fill' ? 'fill' : 'balanced'
+  next.queue_max = clampNumber(next.queue_max, DEFAULT_POOL_ROUTING.queue_max, QUEUE_MAX_MIN, QUEUE_MAX_MAX)
+  next.seat_grace_ms = clampNumber(next.seat_grace_ms, DEFAULT_POOL_ROUTING.seat_grace_ms, 0, SEAT_GRACE_MAX_MS)
+  next.seat_budget_reserve_pct = clampNumber(
+    next.seat_budget_reserve_pct,
+    DEFAULT_POOL_ROUTING.seat_budget_reserve_pct,
+    0,
+    SEAT_BUDGET_RESERVE_MAX,
+    { round: false },
+  )
+  next.sticky_wait_timeout_ms = clampWaitTimeoutMs(
+    next.sticky_wait_timeout_ms,
+    DEFAULT_POOL_ROUTING.sticky_wait_timeout_ms,
+  )
+  next.fallback_wait_timeout_ms = clampWaitTimeoutMs(
+    next.fallback_wait_timeout_ms,
+    DEFAULT_POOL_ROUTING.fallback_wait_timeout_ms,
+  )
+  // UnitCircuit used to read 0 / junk as its default; store that default so the
+  // panel shows the value that actually runs.
+  next.circuit_failure_threshold = circuitSetting(
+    next.circuit_failure_threshold,
+    DEFAULT_POOL_ROUTING.circuit_failure_threshold,
+    1,
+    CIRCUIT_THRESHOLD_MAX,
+  )
+  next.circuit_open_ms = circuitSetting(
+    next.circuit_open_ms,
+    DEFAULT_POOL_ROUTING.circuit_open_ms,
+    CIRCUIT_OPEN_MIN_MS,
+    Number.MAX_SAFE_INTEGER,
+  )
+  return next
+}
+
+function circuitSetting(value, fallback, min, max) {
+  if (!Number(value)) return fallback
+  return clampNumber(value, fallback, min, max)
 }
 
 function normalizePoolConfig(config = {}) {
-  const next = { ...DEFAULT_CONFIG, ...(config || {}) }
-  next.sticky_wait_timeout_ms = clampWaitTimeoutMs(next.sticky_wait_timeout_ms, DEFAULT_CONFIG.sticky_wait_timeout_ms)
-  next.fallback_wait_timeout_ms = clampWaitTimeoutMs(
-    next.fallback_wait_timeout_ms,
-    DEFAULT_CONFIG.fallback_wait_timeout_ms,
-  )
-  return next
+  return { ...DEFAULT_CONFIG, ...normalizePoolRouting(config) }
 }
 
 export function formatPoolSelectionSummary(details = {}) {
@@ -95,6 +163,35 @@ function isUnboundAuthCooldown(candidate, bound, stickyCleared) {
   if (!stickyCleared || !bound) return false
   if (candidate.vmId !== bound.vmId || candidate.accountId !== bound.accountId) return false
   return candidate.waitReason === 'account_cooldown' && isAuthCooldownReason(candidate.cooldownReason)
+}
+
+/**
+ * The seat book is process-wide and seat identities are client-chosen. Each
+ * owner scope sees a disjoint VM inventory, so the same device under another
+ * scope is another seat; otherwise one tenant's request could find the other's
+ * seat "off its pool" and free it.
+ */
+function scopedSeatKey(seatKey, scope = PLATFORM_SCOPE) {
+  const type = scope?.type || 'platform'
+  const owner = type === 'user' ? `user:${normalizeOwnerId(scope.userId)}` : type
+  return `${owner}|${seatKey}`
+}
+
+/**
+ * Nothing eligible. Fable keeps its Max gate; otherwise an upstream cooldown on
+ * the dropped accounts names the cause: any 529 overload cooldown is capacity
+ * (529), only 429 rate-limit cooldowns are the provider's limit (429). Without
+ * either, nothing will come back by waiting (503).
+ */
+function emptyPoolFailure(model, candidates, now = Date.now()) {
+  if (isFableModel(model)) return { reason: 'fable_requires_max', retry_after_ms: null }
+  const { rate_limited: limited = null, overloaded = null } = candidates?.cooldowns || {}
+  if (overloaded != null) {
+    const until = limited == null ? overloaded : Math.min(overloaded, limited)
+    return { reason: 'pool_overload_cooldown', retry_after_ms: Math.max(0, until - now) }
+  }
+  if (limited != null) return { reason: 'pool_rate_limited', retry_after_ms: Math.max(0, limited - now) }
+  return { reason: 'no_eligible_accounts', retry_after_ms: null }
 }
 
 function selectionSnapshot(candidates = [], available = [], extras = {}) {
@@ -132,20 +229,9 @@ function maxConcurrencyOf(vm, fallback = 2) {
   return parseConcurrency(vm?.policy?.maxConcurrency, fallback)
 }
 
-function sessionSlotsOf(vm, fallback = 20) {
+/** Seats on this VM: its `session_slots` override, else the global default; clamped 1–20 by slot-engine. */
+function seatCapOf(vm, fallback = 20) {
   return resolveSessionSlots(vm, { inference: { session_slots: fallback } })
-}
-
-/** Distinct conversation window. 0 = off. Not the native seat cap. */
-function maxSessionsOf(vm, accountQuota, account) {
-  const fromVm = Number(vm?.policy?.maxSessions)
-  if (Number.isFinite(fromVm) && fromVm > 0) return Math.round(fromVm)
-  try {
-    const policy = accountQuota?.policyFor?.(account, { tier: vmTierOf(vm) })
-    const configured = Number(policy?.max_sessions ?? account?.max_sessions)
-    if (Number.isFinite(configured) && configured > 0) return Math.round(configured)
-  } catch {}
-  return 0
 }
 
 function vmTierOf(vm) {
@@ -175,7 +261,6 @@ function stickyShouldWait(waitReason, cooldownReason = null) {
     waitReason === 'fable_concurrency' ||
     waitReason === 'rpm_limit' ||
     waitReason === 'slot_busy' ||
-    waitReason === 'session_slots_full' ||
     waitReason === 'circuit_probe'
   ) {
     return true
@@ -183,6 +268,19 @@ function stickyShouldWait(waitReason, cooldownReason = null) {
   // Upstream RPM or an unproven bare 429 is a short cooldown on the same unit,
   // not a reason to move the conversation: borrow now, return next turn.
   return waitReason === 'account_cooldown' && SOFT_COOLDOWN_REASONS.has(String(cooldownReason || ''))
+}
+
+/** Waits that reserve() re-checks live, so a queued grant may try them without a fresh eligibility read. */
+const LIVE_RECHECKED_WAITS = new Set([
+  'concurrency_limit',
+  'fable_concurrency',
+  'rpm_limit',
+  'slot_busy',
+  'circuit_probe',
+])
+
+function grantable(candidate) {
+  return !candidate.busy || LIVE_RECHECKED_WAITS.has(candidate.waitReason)
 }
 
 function platformMismatch(model, vm) {
@@ -232,18 +330,35 @@ export class PoolScheduler extends EventEmitter {
     this.inflightFamily = new Map()
     this.waiters = new Map()
     this.healthCache = new Map()
-    this.smooth = new Map()
     this.lastUsed = new Map()
     this.cooldownTimers = new Map()
-    this.vmSlots = new Map()
+    this.planner = new SeatPlanner({
+      graceMs: this.config.seat_grace_ms,
+      reservePct: this.config.seat_budget_reserve_pct,
+      strategy: this.config.strategy,
+      stickyWaitMs: () => this.config.sticky_wait_timeout_ms,
+      onChange: () => this.emit('change'),
+    })
     this.unitCircuit = unitCircuit
     if (runtimeRepo) this.unitCircuit.bindRepo(runtimeRepo)
   }
 
-  async selectAndReserve({
+  /**
+   * `seatKey` is the device seat identity (resolveSeatIdentity). Requests with
+   * one go through the seat planner; pinned diagnostics, seatless probes and
+   * keyless callers keep the direct pick-and-wait path.
+   */
+  async selectAndReserve(args = {}) {
+    const pinned = !!String(args.pinVmId || '').trim()
+    if (args.seatKey && !pinned && !args.skipSessionSlot) {
+      return this.selectSeat({ ...args, seatKey: scopedSeatKey(args.seatKey, args.ownerScope) })
+    }
+    return this.selectDirect(args)
+  }
+
+  async selectDirect({
     model,
     stickyKey = null,
-    windowKey = undefined,
     excluded = new Set(),
     spilled = new Set(),
     avoid = null,
@@ -253,15 +368,12 @@ export class PoolScheduler extends EventEmitter {
     pinVmId = null,
     familyVmId = null,
     deviceVmId = null,
-    skipSessionSlot = false,
     ownerScope = PLATFORM_SCOPE,
     stickyKeys = null,
   } = {}) {
     const startedAt = Date.now()
     const pinned = !!String(pinVmId || '').trim()
     const blocked = new Set(excluded)
-    const spill = new Set(spilled)
-    const conversationWindow = windowKey === undefined ? stickyKey : windowKey
     let stickyCleared = false
     let familyGated = false
     const boundBefore = stickyKey ? this.stickyRouter?.resolve?.(stickyKey) : null
@@ -296,19 +408,7 @@ export class PoolScheduler extends EventEmitter {
     })
     for (;;) {
       if (signal?.aborted) throw makeAbortError()
-      const windowHome = conversationWindow ? this.stickyRouter?.resolve?.(conversationWindow)?.accountId || null : null
-      const candidates = await this.eligibleCandidates({
-        model,
-        excluded: blocked,
-        signal,
-        pinVmId,
-        deviceVmId,
-        skipSessionSlot,
-        sessionKey: stickyKey,
-        windowKey: conversationWindow,
-        windowHome,
-        ownerScope,
-      })
+      const candidates = await this.eligibleCandidates({ model, excluded: blocked, signal, pinVmId, ownerScope })
       // A gated family home (quota, credential, excluded) is a migration
       // signal for the caller. Busy is not: it still yields a candidate.
       const familyVm = familyVmId ? String(familyVmId).trim() : ''
@@ -318,30 +418,20 @@ export class PoolScheduler extends EventEmitter {
         ? available.filter((candidate) => !avoid.has(candidate.accountId) && !avoid.has(candidate.vmId))
         : available
       let selected = this.pick(preferred, {
-        model,
         stickyKey,
         eligible: candidates,
-        spilled: spill,
+        spilled,
         stickyKeys,
         deviceVmId,
         familyVmId: familyGated ? null : familyVm,
       })
-      if (this.lastStickyCleared) {
-        stickyCleared = true
-        // The home left the pool: windows computed against it are stale.
-        if (windowHome && !this.stickyRouter?.resolve?.(conversationWindow)) continue
-      }
+      if (this.lastStickyCleared) stickyCleared = true
       const reserveMisses = []
       const attempted = new Set()
-      // Free seat first: a sticky or preferred miss scans every other candidate
-      // before anything waits. Capacity borrowing never moves the durable pin.
+      // Free capacity first: a sticky or preferred miss scans every other
+      // candidate before anything waits. Borrowing never moves the durable pin.
       while (selected) {
-        const reservation = this.reserve(selected, {
-          sessionKey: stickyKey,
-          skipQuota: pinned,
-          pinned,
-          skipSessionSlot,
-        })
+        const reservation = this.reserve(selected, { skipQuota: pinned, pinned })
         if (reservation) return finishReserve(selected, reservation)
         reserveMisses.push({ ...selected, busy: true, waitReason: selected.waitReason || 'concurrency_limit' })
         attempted.add(selected.accountId)
@@ -351,7 +441,6 @@ export class PoolScheduler extends EventEmitter {
         )
         if (!remaining.length) break
         selected = this.pick(remaining, {
-          model,
           stickyKey: null,
           eligible: candidates,
           deviceVmId,
@@ -370,7 +459,8 @@ export class PoolScheduler extends EventEmitter {
       const waitCandidates = reserveMisses.length ? effectiveCandidates : candidates
       const waitAvailable = reserveMisses.length ? effectiveAvailable : available
       if (waitCandidates.length === 0) {
-        return fail(isFableModel(model) ? 'fable_requires_max' : 'no_eligible_accounts', waitCandidates, waitAvailable)
+        const empty = emptyPoolFailure(model, candidates)
+        return { ...fail(empty.reason, waitCandidates, waitAvailable), retry_after_ms: empty.retry_after_ms }
       }
       const waitPool = waitCandidates.filter(
         (candidate) => !isUnboundAuthCooldown(candidate, boundBefore, stickyCleared),
@@ -387,16 +477,6 @@ export class PoolScheduler extends EventEmitter {
         stickyCleared,
         requestDeadline: loopDeadline,
       })
-      if (waitPlan?.queueFull && waitPlan.sticky) {
-        // Queue full on the bound account: this one request spills (sub2api
-        // Layer 1 spillover). The durable pin stays so the next turn returns.
-        stickyCleared = true
-        if (waitPlan.accountId) {
-          blocked.add(waitPlan.accountId)
-          spill.add(waitPlan.accountId)
-        }
-        continue
-      }
       const waitDeadline = waitPlan?.deadline || loopDeadline
       if (wakeAts.length && Math.min(...wakeAts) >= waitDeadline && !concurrencyWait) {
         return fail('all_accounts_busy', waitCandidates, waitAvailable, waitPool)
@@ -404,58 +484,356 @@ export class PoolScheduler extends EventEmitter {
       if (!waitPlan || waitPlan.timeoutMs <= 0) {
         return fail('all_accounts_busy', waitCandidates, waitAvailable, waitPool)
       }
-      if (waitPlan.queueFull) {
-        throw Object.assign(new Error('Account pool wait queue is full'), { code: 'pool_wait_queue_full' })
-      }
       const waitCap = Math.min(waitDeadline, loopDeadline)
       const sliceDeadline = wakeAts.length ? Math.min(waitCap, ...wakeAts) : waitCap
-      let woken = false
-      try {
-        const waited = await this.waitForCapacity({
-          signal,
-          deadline: sliceDeadline,
-          accountId: waitPlan.accountId,
-          vmId: waitPlan.vmId,
-          sticky: waitPlan.sticky,
-          stickyKey,
-        })
-        woken = !!waited?.woken
-      } catch (error) {
-        if (error?.code === 'pool_wait_queue_full' && waitPlan.sticky) continue
-        throw error
-      }
+      const waited = await this.waitForCapacity({
+        signal,
+        deadline: sliceDeadline,
+        accountId: waitPlan.accountId,
+        vmId: waitPlan.vmId,
+        sticky: waitPlan.sticky,
+        stickyKey,
+      })
       // Notify continues the loop and re-reads eligibility from scratch.
       // Only a wait-plan / failover deadline timeout is all_accounts_busy.
-      if (!woken && sliceDeadline >= waitCap) {
+      if (!waited?.woken && sliceDeadline >= waitCap) {
         return fail('all_accounts_busy', waitCandidates, waitAvailable, waitPool)
       }
     }
   }
 
   /**
-   * `windowKey` is the conversation window (root session for an explicit
-   * child). Only its home account, or any account when it has no home, is
-   * asked for a window; elsewhere the request borrows execution capacity only.
+   * Seat path (R1–R7). A seated device rides its seat and waits for VM
+   * concurrency in that VM's FIFO, never on another VM. A new device takes a
+   * free seat (sticky VM first, then strategy) or queues in arrival order:
+   * on its sticky VM until `sticky_wait_timeout_ms`, then globally until
+   * `fallback_wait_timeout_ms`. A seated device's concurrency wait times out
+   * after `sticky_wait_timeout_ms`. Timeouts are `pool_queue_timeout`.
    */
-  async eligibleCandidates({
+  async selectSeat({
     model,
+    seatKey,
+    stickyKey = null,
+    stickyKeys = null,
     excluded = new Set(),
+    spilled = new Set(),
+    avoid = null,
     signal,
-    pinVmId = null,
+    deadline = null,
+    allowWait = true,
+    familyVmId = null,
     deviceVmId = null,
-    skipSessionSlot = false,
-    sessionKey = null,
-    windowKey = undefined,
-    windowHome = null,
     ownerScope = PLATFORM_SCOPE,
   } = {}) {
+    const startedAt = Date.now()
+    const failoverDeadline = Number(deadline) || Number.POSITIVE_INFINITY
+    const familyVm = familyVmId ? String(familyVmId).trim() : ''
+    const deviceVm = deviceVmId ? String(deviceVmId).trim() : ''
+    const avoided = (candidate) => !!avoid?.size && (avoid.has(candidate.accountId) || avoid.has(candidate.vmId))
+    let stickyCleared = false
+    let familyGated = false
+    let seatMoved = false
+    let candidates = []
+    let ticket = null
+    let consumed = false
+    const fail = (reason) => {
+      const waitMs = Date.now() - startedAt
+      const available = candidates.filter((candidate) => this.isReservable(candidate))
+      return {
+        ok: false,
+        code: 'no_available_accounts',
+        waitMs,
+        familyGated,
+        retry_after_ms: this.planner.retryAfterMs(candidates.map((candidate) => candidate.vmId)),
+        ...selectionSnapshot(candidates, available, { reason, waitMs, stickyCleared }),
+      }
+    }
+    const finish = (granted) => {
+      consumed = true
+      return {
+        ...granted.candidate,
+        ...granted.reservation,
+        selectionReason: granted.selectionReason,
+        seatKey,
+        seatMoved: seatMoved && granted.seatOpened,
+        familyGated,
+        stickyCleared,
+        waitMs: Date.now() - startedAt,
+        slotWaitMs: this.remainingSlotWaitMs({ startedAt: Date.now(), loopDeadline: failoverDeadline, sticky: true }),
+      }
+    }
+    try {
+      for (;;) {
+        if (signal?.aborted) throw makeAbortError()
+        if (ticket?.granted) return finish(ticket.granted)
+        candidates = await this.eligibleCandidates({ model, excluded, signal, ownerScope })
+        // A grant can land while eligibility was being re-read.
+        if (ticket?.granted) return finish(ticket.granted)
+        if (familyVm && !candidates.some((candidate) => candidate.vmId === familyVm)) familyGated = true
+        const sticky = this.reconcileSticky({
+          stickyKey,
+          stickyKeys,
+          eligible: candidates,
+          spilled,
+          familyVmId: familyGated ? null : familyVm,
+        })
+        if (sticky.cleared) stickyCleared = true
+        const byVm = new Map(candidates.map((candidate) => [candidate.vmId, candidate]))
+        if (ticket) ticket.candidates = byVm
+        const now = Date.now()
+        // Home left the pool (circuit open, unschedulable, hard cooldown, removed).
+        // A full home is still a candidate, so that wait keeps its sticky clock.
+        if (ticket?.kind === 'seat' && ticket.vmId && !byVm.has(ticket.vmId)) {
+          this.planner.toGlobal(ticket)
+          ticket.deadline = Math.min(failoverDeadline, now + this.config.fallback_wait_timeout_ms)
+        }
+        let seat = this.planner.seatOf(seatKey)
+        if (seat) {
+          const home = byVm.get(seat.vmId)
+          const homeUsable = !!home && (!home.busy || stickyShouldWait(home.waitReason, home.cooldownReason))
+          // A home that left the pool (quota, credential, failover exclusion) or a
+          // same-unit retry with a free seat elsewhere moves the device now, without grace.
+          const steerAway = homeUsable && avoided(home) && this.openableCandidates(candidates, avoided).length > 0
+          if (!homeUsable || steerAway) {
+            this.planner.free(seat)
+            seatMoved = true
+            seat = null
+          } else if (avoided(home) && !allowWait) {
+            return fail('all_accounts_busy')
+          }
+        }
+        if (seat) {
+          if (!ticket) {
+            if (!this.planner.hasConcWaiters(seat.vmId)) {
+              const granted = this.claimSeat(seatKey, byVm.get(seat.vmId), 'seat-held')
+              if (granted) return finish(granted)
+            }
+            if (!allowWait || now >= failoverDeadline) return fail('all_accounts_busy')
+            ticket = this.enqueueTicket({
+              seatKey,
+              kind: 'conc',
+              vmId: seat.vmId,
+              candidates: byVm,
+              deadline: Math.min(failoverDeadline, now + this.config.sticky_wait_timeout_ms),
+            })
+          } else if (ticket.kind !== 'conc' || ticket.vmId !== seat.vmId) {
+            this.planner.place(ticket, { kind: 'conc', vmId: seat.vmId })
+          }
+          this.planner.pump(seat.vmId)
+        } else {
+          const stickyVms = [familyGated ? '' : familyVm, deviceVm, sticky.vmId || ''].filter(Boolean)
+          if (!ticket) {
+            const granted = this.openNewSeat(seatKey, candidates, { avoided, stickyVms })
+            if (granted) return finish(granted)
+            if (!candidates.length) {
+              const empty = emptyPoolFailure(model, candidates)
+              return { ...fail(empty.reason), retry_after_ms: empty.retry_after_ms }
+            }
+            if (!allowWait || now >= failoverDeadline) return fail('all_accounts_busy')
+            const home = stickyVms
+              .map((vmId) => byVm.get(vmId))
+              .find((candidate) => candidate && (!candidate.busy || stickyShouldWait(candidate.waitReason)))
+            ticket = home
+              ? this.enqueueTicket({
+                  seatKey,
+                  kind: 'seat',
+                  vmId: home.vmId,
+                  candidates: byVm,
+                  stickyUntil: Math.min(failoverDeadline, now + this.config.sticky_wait_timeout_ms),
+                  deadline: failoverDeadline,
+                })
+              : this.enqueueTicket({
+                  seatKey,
+                  kind: 'global',
+                  vmId: null,
+                  candidates: byVm,
+                  deadline: Math.min(failoverDeadline, now + this.config.fallback_wait_timeout_ms),
+                })
+          } else if (ticket.kind === 'conc') {
+            // Its seat moved away: wait for a new seat on the same terms as a new device.
+            this.planner.place(ticket, { kind: 'global', vmId: null })
+            ticket.deadline = Math.min(failoverDeadline, now + this.config.fallback_wait_timeout_ms)
+          }
+          for (const vmId of ticket.vmId ? [ticket.vmId] : byVm.keys()) this.planner.pump(vmId)
+        }
+        if (ticket.granted) return finish(ticket.granted)
+        const until = ticket.kind === 'seat' ? ticket.stickyUntil : ticket.deadline
+        await this.waitTicket(ticket, { signal, until: Math.min(until, Date.now() + QUEUE_REFRESH_MS) })
+        if (ticket.granted) return finish(ticket.granted)
+        const after = Date.now()
+        if (ticket.kind === 'seat' && after >= ticket.stickyUntil) {
+          this.planner.toGlobal(ticket)
+          ticket.deadline = Math.min(failoverDeadline, after + this.config.fallback_wait_timeout_ms)
+          continue
+        }
+        if (after >= ticket.deadline) return fail('pool_queue_timeout')
+      }
+    } finally {
+      this.planner.remove(ticket)
+      // Granted while the caller went away: hand the seat and the slot back.
+      if (ticket?.granted && !consumed) ticket.granted.reservation.release()
+    }
+  }
+
+  /** Candidates that can take a brand-new seat right now without passing anyone queued for it. */
+  openableCandidates(candidates, avoided = () => false) {
+    return candidates.filter(
+      (candidate) =>
+        !avoided(candidate) &&
+        this.isReservable(candidate) &&
+        this.planner.canOpen(candidate.vmId, candidate.seatCap, candidate.headroom) &&
+        !this.planner.hasSeatWaiters(candidate.vmId),
+    )
+  }
+
+  /** Sticky VMs first (family, device, session), then the configured strategy. */
+  openNewSeat(seatKey, candidates, { avoided, stickyVms = [] }) {
+    const openable = this.openableCandidates(candidates, avoided)
+    if (!openable.length) return null
+    for (const vmId of stickyVms) {
+      const home = openable.find((candidate) => candidate.vmId === vmId)
+      const granted = home ? this.claimSeat(seatKey, home, 'sticky') : null
+      if (granted) return granted
+    }
+    for (const candidate of this.planner.rank(openable)) {
+      const granted = this.claimSeat(seatKey, candidate, this.planner.strategy)
+      if (granted) return granted
+    }
+    return null
+  }
+
+  /**
+   * Synchronous claim: the reservation (concurrency, quota/RPM, circuit) and
+   * the seat land together or not at all. The device's existing seat must be
+   * on this VM; otherwise a new one opens only under cap and budget.
+   */
+  claimSeat(seatKey, candidate, selectionReason) {
+    if (!candidate || !grantable(candidate)) return null
+    const current = this.planner.seatOf(seatKey)
+    if (current && current.vmId !== candidate.vmId) return null
+    if (!current && !this.planner.canOpen(candidate.vmId, candidate.seatCap, candidate.headroom)) return null
+    const reservation = this.reserve(candidate)
+    if (!reservation) return null
+    const seat =
+      current ||
+      this.planner.open(seatKey, { vmId: candidate.vmId, accountId: candidate.accountId, cap: candidate.seatCap })
+    this.planner.hold(seat)
+    const releaseRequest = reservation.release
+    let released = false
+    return {
+      candidate,
+      selectionReason,
+      seatOpened: !current,
+      reservation: {
+        ...reservation,
+        slotIndex: seat.index,
+        release: () => {
+          if (released) return
+          released = true
+          releaseRequest()
+          this.planner.release(seat)
+        },
+      },
+    }
+  }
+
+  enqueueTicket({ seatKey, kind, vmId, candidates, deadline, stickyUntil = null }) {
+    if (this.queuedTotal() >= this.config.queue_max) throw this.queueFullError([...candidates.keys()])
+    const ticket = {
+      seatKey,
+      kind,
+      vmId,
+      candidates,
+      deadline,
+      stickyUntil,
+      enqueuedAt: Date.now(),
+      queued: false,
+      granted: null,
+      wake: null,
+      accepts: (id) => ticket.kind === 'global' && ticket.candidates.has(id),
+      vmIds: () => [...ticket.candidates.keys()],
+      tryGrant: (id) => {
+        const granted = this.claimSeat(ticket.seatKey, ticket.candidates.get(id), 'queued')
+        if (!granted) return false
+        ticket.granted = granted
+        return true
+      },
+    }
+    this.planner.enqueue(ticket)
+    return ticket
+  }
+
+  waitTicket(ticket, { signal, until }) {
+    if (ticket.granted) return Promise.resolve()
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        clearTimeout(timer)
+        signal?.removeEventListener?.('abort', onAbort)
+        ticket.wake = null
+      }
+      const done = () => {
+        cleanup()
+        resolve()
+      }
+      const onAbort = () => {
+        cleanup()
+        reject(makeAbortError())
+      }
+      const timer = setTimeout(done, Math.max(1, until - Date.now()))
+      ticket.wake = done
+      if (signal?.aborted) onAbort()
+      else signal?.addEventListener?.('abort', onAbort, { once: true })
+    })
+  }
+
+  /** Every Claude request waiting right now: seat queues plus cooldown / RPM / concurrency waiters. */
+  queuedTotal() {
+    return this.planner.pending() + this.totalWaiters()
+  }
+
+  queueFullError(vmIds = null) {
+    return Object.assign(new Error('Claude pool queue is full'), {
+      code: 'pool_wait_queue_full',
+      retryAfterMs: this.planner.retryAfterMs(vmIds),
+    })
+  }
+
+  /**
+   * The session pin as pick() treats it: a bound home that left the pool, or
+   * sits in a cooldown that must rotate, releases the pin; capacity keeps it.
+   * `spilled` homes keep their pin. Returns the VM the pin still points at.
+   */
+  reconcileSticky({ stickyKey = null, stickyKeys = null, eligible = [], spilled = null, familyVmId = null } = {}) {
+    const bound = stickyKey ? this.stickyRouter?.resolve?.(stickyKey) : null
+    if (!bound) return { cleared: false, vmId: null, match: null }
+    const familyVm = familyVmId ? String(familyVmId).trim() : ''
+    if (familyVm && bound.vmId !== familyVm && eligible.some((candidate) => candidate.vmId === familyVm)) {
+      // The family home moved: this session follows it instead of keeping a stale pin.
+      this.releaseSticky(bound, stickyKey, stickyKeys)
+      return { cleared: true, vmId: null, match: null }
+    }
+    const match = eligible.find((candidate) => candidate.vmId === bound.vmId && candidate.accountId === bound.accountId)
+    if (!match) {
+      if (!spilled?.has(bound.accountId)) this.releaseSticky(bound, stickyKey, stickyKeys)
+      return { cleared: true, vmId: null, match: null }
+    }
+    if (match.busy && !stickyShouldWait(match.waitReason, match.cooldownReason)) {
+      // Auth / quota / pause cooldown: the conversation moves.
+      this.releaseSticky(bound, stickyKey, stickyKeys)
+      return { cleared: true, vmId: null, match: null }
+    }
+    return { cleared: false, vmId: bound.vmId, match }
+  }
+
+  async eligibleCandidates({ model, excluded = new Set(), signal, pinVmId = null, ownerScope = PLATFORM_SCOPE } = {}) {
     const now = Date.now()
     this.runtimeRepo?.clearExpired?.(now)
     const summaries = listVms(this.projectRoot)
     const candidates = []
+    // Accounts dropped by an upstream 429 / 529 cooldown; an empty pool reports
+    // that cause (pool_rate_limited / pool_overload_cooldown) instead of 503.
+    candidates.cooldowns = { rate_limited: null, overloaded: null }
     const pin = pinVmId ? String(pinVmId).trim() : ''
-    const deviceVm = deviceVmId ? String(deviceVmId).trim() : ''
-    const conversationWindow = skipSessionSlot ? null : windowKey === undefined ? sessionKey : windowKey
     for (const summary of summaries) {
       if (signal?.aborted) throw makeAbortError()
       if (pin && summary.id !== pin) continue
@@ -466,8 +844,6 @@ export class PoolScheduler extends EventEmitter {
       const accountId = accountIdOf(vm, this.projectRoot)
       if (!accountId || excluded.has(accountId) || excluded.has(vm.id)) continue
       const state = this.runtimeRepo?.get?.(accountId) || null
-      const claimWindow = !!conversationWindow && (!windowHome || windowHome === accountId)
-      const candidateWindow = claimWindow ? conversationWindow : null
       const eligibility = await this.checkEligibility({
         vm,
         accountId,
@@ -476,22 +852,27 @@ export class PoolScheduler extends EventEmitter {
         now,
         signal,
         pinned: !!pin,
-        windowKey: candidateWindow,
-        borrow: !!conversationWindow && !claimWindow,
-        skipSessionSlot,
-        sessionKey,
       })
-      if (!eligibility.ok) continue
+      if (!eligibility.ok) {
+        const kind = eligibility.reason
+        if (kind === 'rate_limited' || kind === 'overloaded') {
+          const until = Number(eligibility.until) || 0
+          const prev = candidates.cooldowns[kind]
+          candidates.cooldowns[kind] = prev == null ? until : Math.min(prev, until)
+        }
+        continue
+      }
       const maxConcurrency = this.effectiveMaxConcurrency(
         vm,
         eligibility.account,
         parseConcurrency(this.config.default_max_per_account, 2),
       )
       const inflight = this.inflight.get(accountId) || 0
+      const seatCap = seatCapOf(vm, this.config.default_session_slots)
+      this.planner.noteCap(vm.id, seatCap)
       candidates.push({
         ok: true,
         vmId: vm.id,
-        deviceAffinity: !!deviceVm && vm.id === deviceVm,
         accountId,
         vm,
         state,
@@ -500,16 +881,9 @@ export class PoolScheduler extends EventEmitter {
         weight: weightOf(vm, state),
         inflight,
         maxConcurrency,
-        sessionSlots: sessionSlotsOf(vm, this.config.default_session_slots),
-        skipSessionSlot: !!skipSessionSlot,
+        seatCap,
+        headroom: eligibility.headroom ?? null,
         account: eligibility.account || null,
-        windowKey: candidateWindow,
-        slotHeld: skipSessionSlot ? null : this.assignedSlot(summary.id, sessionKey),
-        slotHeldBusy: skipSessionSlot
-          ? false
-          : this.slotInflight(summary.id, this.assignedSlot(summary.id, sessionKey)),
-        slotOwned: skipSessionSlot ? false : this.ownsBusySlot(summary.id, sessionKey),
-        usedSlots: this.usedSlotCount(summary.id),
         loadRatio: (inflight + this.waiterCount(accountId)) / maxConcurrency,
         lastUsedAt: this.lastUsed.get(accountId) || state?.last_used_at || 0,
         workerStatus: eligibility.workerStatus,
@@ -523,19 +897,7 @@ export class PoolScheduler extends EventEmitter {
     return candidates
   }
 
-  async checkEligibility({
-    vm,
-    accountId,
-    state,
-    model,
-    now,
-    signal,
-    pinned = false,
-    windowKey = null,
-    borrow = false,
-    skipSessionSlot = false,
-    sessionKey = null,
-  }) {
+  async checkEligibility({ vm, accountId, state, model, now, signal, pinned = false }) {
     // sub2api IsSchedulable: rate_limit_reset_at / overload_until gate before any
     // passive Extra reading or health hop. Pins are diagnostics and still reach the slot.
     const hardBlock = pinned ? null : hardBlockOf(state, now)
@@ -566,6 +928,7 @@ export class PoolScheduler extends EventEmitter {
       return proxySync
     }
     let account = null
+    let headroom = null
     if (!pinned) {
       try {
         account = this.accountQuota?.repo?.get?.(accountId) || null
@@ -587,6 +950,14 @@ export class PoolScheduler extends EventEmitter {
         }
         const policy = this.accountQuota?.policyFor?.(account, { tier: vmTierOf(vm) }) || null
         const lastUsedAt = this.lastUsed.get(accountId) || state?.last_used_at || null
+        const quota = account.unified
+          ? {
+              ...listQuotaFromHeaders(account.unified, { now }),
+              last_used_at: lastUsedAt,
+              last_probe: account.last_probe || account.unified.last_probe,
+              probe_source: account.unified.source,
+            }
+          : {}
         const ev = evaluateAccount({
           vm,
           account: { ...account, last_used_at: lastUsedAt },
@@ -601,17 +972,8 @@ export class PoolScheduler extends EventEmitter {
           expiresAt: vm.claude?.expires_at || vm.expires_at || null,
           refreshedAt: vm.claude?.refreshed_at || vm.refreshed_at || null,
           workerCredential: account.worker_status?.credential || null,
-          quota: account.unified
-            ? {
-                ...listQuotaFromHeaders(account.unified, { now }),
-                last_used_at: lastUsedAt,
-                last_probe: account.last_probe || account.unified.last_probe,
-                probe_source: account.unified.source,
-              }
-            : {},
+          quota,
           policy,
-          sessionKey: windowKey,
-          sessionLimit: skipSessionSlot || borrow ? null : this.accountQuota?.sessions,
           cooldownUntil:
             state?.cooldown_until || vm.claude?.temp_unschedulable_until || vm.temp_unschedulable_until || null,
           cooldownReason:
@@ -633,6 +995,7 @@ export class PoolScheduler extends EventEmitter {
             return { ok: false, reason: ev.reason || ev.key || 'account_gated' }
           }
         }
+        headroom = budgetHeadroom({ account: { ...account, last_used_at: lastUsedAt }, quota, policy, now })
       }
     }
     const workerStatus = await this.getWorkerHealth(this.executionContext(vm, accountId), { signal })
@@ -695,28 +1058,7 @@ export class PoolScheduler extends EventEmitter {
       }
     }
     const inflight = this.inflight.get(accountId) || 0
-    const sessionSlots = sessionSlotsOf(vm, this.config.default_session_slots)
-    if (windowKey && !pinned && this.accountQuota?.sessions?.canAccept) {
-      let idleMin = 5
-      try {
-        const policy = this.accountQuota.policyFor?.(account, { tier: vmTierOf(vm) })
-        const configured = Number(policy?.session_idle_min)
-        if (Number.isFinite(configured) && configured > 0) idleMin = configured
-      } catch {}
-      const maxSessions = maxSessionsOf(vm, this.accountQuota, account)
-      if (maxSessions > 0) {
-        const windowGate = this.accountQuota.sessions.canAccept(accountId, windowKey, {
-          max: maxSessions,
-          idleMin,
-        })
-        if (!windowGate.ok) return { ok: false, reason: 'session_limit' }
-      }
-    }
-
     if (circuitProbeUntil) markWait('circuit_probe', circuitProbeUntil)
-    if (!skipSessionSlot && this.usedSlotCount(vm.id) >= sessionSlots && !this.ownsBusySlot(vm.id, sessionKey)) {
-      markWait('session_slots_full')
-    }
     if (inflight >= maxConcurrency) markWait('concurrency_limit')
     const fableCap = Number(this.config.fable_max_per_account)
     if (isFableModel(modelKey) && Number.isFinite(fableCap) && fableCap > 0) {
@@ -724,7 +1066,7 @@ export class PoolScheduler extends EventEmitter {
       if (familyInflight >= fableCap) markWait('fable_concurrency')
     }
     if (this.accountQuota && !pinned) {
-      const quotaGate = this.accountQuota.canAccept(accountId, { sessionKey: windowKey, tier: vmTierOf(vm) })
+      const quotaGate = this.accountQuota.canAccept(accountId, { tier: vmTierOf(vm) })
       if (!quotaGate.ok) {
         if (quotaGate.reason === 'concurrency_limit') markWait('concurrency_limit')
         else if (quotaGate.reason === 'rpm_limit') markWait('rpm_limit', quotaGate.detail?.reset_at)
@@ -738,7 +1080,7 @@ export class PoolScheduler extends EventEmitter {
     } else if (workerStatus && rustKernelProcessUp(workerStatus) && !rustKernelReachable(workerStatus)) {
       return { ok: false, reason: 'worker_unhealthy' }
     }
-    return { ok: true, account, workerStatus, busy, availableAt, waitReason }
+    return { ok: true, account, workerStatus, busy, availableAt, waitReason, headroom }
   }
 
   executionContext(vm, accountId) {
@@ -865,83 +1207,55 @@ export class PoolScheduler extends EventEmitter {
     return cleared
   }
 
-  /** Session leaves this VM: drop alias keys and the slot that session was pinned to. */
+  /** Session leaves this VM: drop its alias keys. A device seat lives in the planner, not here. */
   releaseSticky(bound, stickyKey, stickyKeys) {
     const keys = Array.isArray(stickyKeys) && stickyKeys.length ? stickyKeys : stickyKey ? [stickyKey] : []
-    for (const key of keys) {
-      this.dropSessionSlot(bound?.vmId, key)
-      this.stickyRouter?.unbind?.(key)
-      try {
-        this.accountQuota?.sessions?.drop?.(bound?.accountId, key)
-      } catch {}
-    }
+    for (const key of keys) this.stickyRouter?.unbind?.(key)
   }
 
   /**
    * The account left the pool for a hard reason (quota, credential): every
-   * conversation pinned to it moves, and its windows go with the pins so no
-   * ghost window outlives the row. In-flight leases keep their own release.
+   * conversation pinned to it moves. In-flight leases keep their own release;
+   * seats on it move with the device's next request.
    */
   releaseAccountSessions({ accountId = null, vmId = null } = {}) {
     if (!accountId && !vmId) return 0
-    const bound = this.stickyRouter?.boundKeys?.({ accountId, vmId }) || []
-    for (const entry of bound) {
-      this.dropSessionSlot(entry.vmId, entry.key)
-      try {
-        this.accountQuota?.sessions?.drop?.(entry.accountId, entry.key)
-      } catch {}
-    }
     return this.stickyRouter?.unbindByAccount?.({ accountId, vmId }) || 0
   }
 
   /**
-   * Sticky, family, and device are preferences, never filters. A busy home
-   * lends this one request to another free seat; the durable pin survives.
-   * `spilled`: accounts this request skipped only for capacity (wait queue
-   * full, kernel slot_busy). Their pin survives; the next turn returns.
+   * Direct path (pins, seatless probes). Sticky, family, and device are
+   * preferences, never filters. A busy home lends this one request to another
+   * free unit; the durable pin survives. `spilled`: accounts this request
+   * skipped only for capacity (kernel slot_busy). Their pin survives; the next
+   * turn returns. Ties inside one priority/load level use the balanced order.
    */
   pick(
     candidates,
-    {
-      model,
-      stickyKey,
-      eligible = candidates,
-      spilled = null,
-      stickyKeys = null,
-      deviceVmId = null,
-      familyVmId = null,
-    } = {},
+    { stickyKey, eligible = candidates, spilled = null, stickyKeys = null, deviceVmId = null, familyVmId = null } = {},
   ) {
     this.lastStickyCleared = false
     if (!candidates.length && !eligible?.length) return null
-    let bound = stickyKey ? this.stickyRouter?.resolve?.(stickyKey) : null
+    const sticky = this.reconcileSticky({
+      stickyKey,
+      stickyKeys,
+      eligible: eligible || candidates,
+      spilled,
+      familyVmId,
+    })
+    this.lastStickyCleared = sticky.cleared
     let borrowed = false
-    const familyVm = familyVmId ? String(familyVmId).trim() : ''
-    if (bound && familyVm && bound.vmId !== familyVm && (eligible || candidates).some((c) => c.vmId === familyVm)) {
-      // The family home moved: this session follows it instead of keeping a stale pin.
-      this.releaseSticky(bound, stickyKey, stickyKeys)
-      this.lastStickyCleared = true
-      bound = null
-    }
-    if (bound) {
-      const match = (candidate) => candidate.vmId === bound.vmId && candidate.accountId === bound.accountId
-      const amongEligible = (eligible || candidates).find(match)
-      if (!amongEligible) {
-        if (!spilled?.has(bound.accountId)) this.releaseSticky(bound, stickyKey, stickyKeys)
-        this.lastStickyCleared = true
-      } else if (candidates.some(match) && this.isReservable(amongEligible)) {
-        return { ...amongEligible, selectionReason: 'sticky' }
-      } else if (amongEligible.busy && !stickyShouldWait(amongEligible.waitReason, amongEligible.cooldownReason)) {
-        // Auth / quota / pause cooldown: the conversation moves.
-        this.releaseSticky(bound, stickyKey, stickyKeys)
-        this.lastStickyCleared = true
-      } else {
-        // Capacity, or a replay steering around this unit: borrow, keep the pin.
-        borrowed = true
-      }
+    if (sticky.match) {
+      const inPool = candidates.some(
+        (candidate) => candidate.vmId === sticky.match.vmId && candidate.accountId === sticky.match.accountId,
+      )
+      if (inPool && this.isReservable(sticky.match)) return { ...sticky.match, selectionReason: 'sticky' }
+      // Capacity, or a replay steering around this unit: borrow, keep the pin.
+      borrowed = true
     }
     if (!candidates.length) return null
     const reasonFor = (reason) => (borrowed ? 'sticky-spill' : reason)
+    const familyVm = familyVmId ? String(familyVmId).trim() : ''
     if (familyVm) {
       const home = candidates.find((candidate) => candidate.vmId === familyVm && this.isReservable(candidate))
       if (home) return { ...home, selectionReason: reasonFor('family-affinity') }
@@ -956,21 +1270,11 @@ export class PoolScheduler extends EventEmitter {
     const minLoad = Math.min(...pool.map((candidate) => candidate.loadRatio))
     pool = pool.filter((candidate) => candidate.loadRatio === minLoad)
     if (pool.length === 1) return { ...pool[0], selectionReason: reasonFor('priority-load') }
-
-    const strategy = String(this.config.strategy || 'weighted-round-robin')
-    if (strategy === 'lru' || strategy === 'fill-first') {
-      pool.sort((left, right) => left.lastUsedAt - right.lastUsedAt || left.accountId.localeCompare(right.accountId))
-      return { ...pool[0], selectionReason: reasonFor(strategy) }
-    }
-    if (strategy === 'round-robin') {
-      const key = `rr:${normalizeModel(model)}`
-      const cursor = Number(this.smooth.get(key) || 0)
-      const sorted = [...pool].sort((left, right) => left.accountId.localeCompare(right.accountId))
-      const selected = sorted[cursor % sorted.length]
-      this.smooth.set(key, cursor + 1)
-      return { ...selected, selectionReason: reasonFor('round-robin') }
-    }
-    return { ...this.pickSmoothWeighted(pool, model), selectionReason: reasonFor('weighted-round-robin') }
+    const [balanced] = rankSeatCandidates(pool, {
+      strategy: 'balanced',
+      openOf: (vmId) => this.planner.openCount(vmId),
+    })
+    return { ...balanced, selectionReason: reasonFor('balanced') }
   }
 
   peekRank(candidates = []) {
@@ -983,11 +1287,12 @@ export class PoolScheduler extends EventEmitter {
     return { ...pool[0], selectionReason: pool.length === 1 ? 'priority-load' : 'peek' }
   }
 
-  /** Read-only current account. Never bind, unbind, reserve, or mutate WRR. */
+  /** Read-only current account. Never bind, unbind, or reserve. */
   async peekAccount({ model, stickyKey = null, signal, ownerScope = PLATFORM_SCOPE } = {}) {
-    const candidates = await this.eligibleCandidates({ model, sessionKey: stickyKey, signal, ownerScope })
+    const candidates = await this.eligibleCandidates({ model, signal, ownerScope })
     if (!candidates.length) {
-      return { ok: false, code: isFableModel(model) ? 'fable_requires_max' : 'no_eligible_accounts' }
+      const empty = emptyPoolFailure(model, candidates)
+      return { ok: false, code: empty.reason, retry_after_ms: empty.retry_after_ms }
     }
     const bound = stickyKey ? this.stickyRouter?.resolve?.(stickyKey) : null
     if (bound) {
@@ -1000,39 +1305,6 @@ export class PoolScheduler extends EventEmitter {
     const selected = this.peekRank(idle.length ? idle : candidates)
     if (!selected) return { ok: false, code: 'no_eligible_accounts' }
     return { ok: true, ...selected }
-  }
-
-  pickSmoothWeighted(candidates, model) {
-    const key = `wrr:${normalizeModel(model)}`
-    let state = this.smooth.get(key)
-    if (!state || !(state instanceof Map)) {
-      state = new Map()
-      this.smooth.set(key, state)
-    }
-    const active = new Set(candidates.map((candidate) => candidate.accountId))
-    for (const id of state.keys()) {
-      if (!active.has(id)) state.delete(id)
-    }
-    let selected = null
-    let selectedCurrent = -Infinity
-    let total = 0
-    for (const candidate of [...candidates].sort(
-      (left, right) => left.lastUsedAt - right.lastUsedAt || left.accountId.localeCompare(right.accountId),
-    )) {
-      if (candidate.weight <= 0) continue
-      total += candidate.weight
-      const current = (state.get(candidate.accountId) || 0) + candidate.weight
-      state.set(candidate.accountId, current)
-      if (!selected || current > selectedCurrent) {
-        selected = candidate
-        selectedCurrent = current
-      }
-    }
-    if (!selected) {
-      return [...candidates].sort((left, right) => left.accountId.localeCompare(right.accountId))[0]
-    }
-    state.set(selected.accountId, (state.get(selected.accountId) || 0) - total)
-    return selected
   }
 
   familyInflight(accountId, family) {
@@ -1064,28 +1336,24 @@ export class PoolScheduler extends EventEmitter {
 
   reloadConfig(config = {}) {
     this.config = normalizePoolConfig(config)
+    this.planner.configure({
+      graceMs: this.config.seat_grace_ms,
+      reservePct: this.config.seat_budget_reserve_pct,
+      strategy: this.config.strategy,
+    })
+    // A larger queue_max or a new strategy can admit waiters right away.
+    this.planner.pumpAll()
   }
 
   /**
-   * One atomic claim: concurrency, native seat, Fable cap, quota/RPM, circuit,
-   * then the conversation window. Any refusal hands back exactly what this
-   * call took, in reverse order. release() is idempotent.
+   * One atomic claim: concurrency, Fable cap, quota/RPM, then circuit. Any
+   * refusal hands back exactly what this call took, in reverse order.
+   * release() is idempotent and hands freed concurrency to the VM's queue.
+   * Seats are layered on top by claimSeat().
    */
-  reserve(candidate, { sessionKey = null, skipQuota = false, pinned = false, skipSessionSlot = false } = {}) {
+  reserve(candidate, { skipQuota = false, pinned = false } = {}) {
     const requestInflight = this.inflight.get(candidate.accountId) || 0
     if (!candidate.maxConcurrency || requestInflight >= candidate.maxConcurrency) return null
-    const windowKey = skipSessionSlot
-      ? null
-      : candidate.windowKey === undefined
-        ? sessionKey || null
-        : candidate.windowKey || null
-    const slot = skipSessionSlot ? null : this.acquireSlot(candidate.vmId, sessionKey, candidate.sessionSlots)
-    if (!skipSessionSlot && candidate.sessionSlots > 0 && !slot) return null
-    const undoSlot = () => {
-      if (!slot) return
-      this.releaseSlotHold(candidate.vmId, slot.holdKey)
-      if (slot.created && sessionKey) this.forgetPreferredSlot(candidate.vmId, sessionKey, slot.index)
-    }
     const family = isFableModel(candidate.model) ? FABLE_FAMILY_KEY : null
     const fableCap = Number(this.config.fable_max_per_account)
     if (
@@ -1094,42 +1362,25 @@ export class PoolScheduler extends EventEmitter {
       fableCap > 0 &&
       this.familyInflight(candidate.accountId, family) >= fableCap
     ) {
-      undoSlot()
-      return null
-    }
-    if (windowKey && !pinned && !this.windowOpen(candidate, windowKey)) {
-      undoSlot()
       return null
     }
     const quotaReservation = this.accountQuota?.tryAcquire?.(candidate.accountId, {
-      sessionKey: windowKey,
       skipGate: !!skipQuota,
       tier: vmTierOf(candidate.vm),
     })
-    if (quotaReservation && !quotaReservation.ok) {
-      undoSlot()
-      return null
-    }
+    if (quotaReservation && !quotaReservation.ok) return null
     // A pin is an operator diagnostic: it reaches the slot without taking the probe.
     const circuitHold = pinned ? null : this.unitCircuit?.admit?.(candidate.accountId)
     if (circuitHold && !circuitHold.ok) {
       if (quotaReservation) this.accountQuota?.release?.(candidate.accountId)
-      undoSlot()
       return null
-    }
-    let windowGen = null
-    if (windowKey) {
-      try {
-        windowGen = this.accountQuota?.sessions?.touch?.(candidate.accountId, windowKey) ?? null
-      } catch {}
     }
     this.inflight.set(candidate.accountId, requestInflight + 1)
     this.bumpFamily(candidate.accountId, family, 1)
     let released = false
     return {
       reserved: true,
-      slotIndex: slot?.index ?? null,
-      windowKey,
+      slotIndex: null,
       release: () => {
         if (released) return
         released = true
@@ -1137,146 +1388,12 @@ export class PoolScheduler extends EventEmitter {
         if (next === 0) this.inflight.delete(candidate.accountId)
         else this.inflight.set(candidate.accountId, next)
         this.bumpFamily(candidate.accountId, family, -1)
-        if (windowKey) {
-          try {
-            this.accountQuota?.sessions?.release?.(candidate.accountId, windowKey, { gen: windowGen })
-          } catch {}
-        }
         this.accountQuota?.release?.(candidate.accountId)
         if (circuitHold?.probe) this.unitCircuit?.releaseProbe?.(candidate.accountId)
-        if (slot?.ephemeral) this.releaseSlotHold(candidate.vmId, slot.holdKey)
+        this.planner.pump(candidate.vmId)
         this.notifyCapacity(candidate.accountId)
       },
     }
-  }
-
-  _slotBook(vmId) {
-    const id = String(vmId || '')
-    let book = this.vmSlots.get(id)
-    if (!book) {
-      book = { preferred: new Map(), inflight: new Map() }
-      this.vmSlots.set(id, book)
-    }
-    return book
-  }
-
-  assignedSlot(vmId, sessionKey) {
-    if (!sessionKey) return null
-    const index = this.vmSlots.get(String(vmId || ''))?.preferred?.get(String(sessionKey))
-    return Number.isInteger(index) ? index : null
-  }
-
-  slotInflight(vmId, index) {
-    if (index == null) return false
-    const inflight = this.vmSlots.get(String(vmId || ''))?.inflight
-    if (!inflight) return false
-    for (const held of inflight.values()) {
-      if (held.index === index) return true
-    }
-    return false
-  }
-
-  /** Seats, not requests: concurrent holds of one session share its index. */
-  usedSlotCount(vmId) {
-    const inflight = this.vmSlots.get(String(vmId || ''))?.inflight
-    if (!inflight?.size) return 0
-    const seats = new Set()
-    for (const held of inflight.values()) seats.add(held.index)
-    return seats.size
-  }
-
-  /** This session's preferred seat is busy with its own in-flight request. */
-  ownsBusySlot(vmId, sessionKey) {
-    const key = String(sessionKey || '')
-    if (!key) return false
-    const book = this.vmSlots.get(String(vmId || ''))
-    const preferred = book?.preferred?.get(key)
-    if (!Number.isInteger(preferred)) return false
-    for (const held of book.inflight.values()) {
-      if (held.index === preferred && held.key === key) return true
-    }
-    return false
-  }
-
-  /**
-   * VM is the callable atom. session_slots are seats inside that VM: a Node
-   * accounting of concurrent sessions, not a kernel native slot id. A session
-   * keeps its seat index as the next decision; further concurrent requests of
-   * the same session ride that seat without taking another. Per-request
-   * concurrency is bounded by maxConcurrency in reserve(), not here.
-   */
-  acquireSlot(vmId, sessionKey, cap) {
-    const limit = Number(cap) || 0
-    if (limit <= 0) return null
-    const book = this._slotBook(vmId)
-    const key = String(sessionKey || '')
-    const preferred = key ? book.preferred.get(key) : null
-    const busy = new Set()
-    for (const held of book.inflight.values()) busy.add(held.index)
-    let index
-    if (Number.isInteger(preferred) && (!busy.has(preferred) || this.ownsBusySlot(vmId, key))) {
-      if (!busy.has(preferred) && busy.size >= limit) return null
-      index = preferred
-    } else {
-      if (busy.size >= limit) return null
-      index = 0
-      while (index < limit && busy.has(index)) index += 1
-      if (index >= limit) return null
-      if (key) book.preferred.set(key, index)
-    }
-    const holdKey = `live:${key || 'anon'}:${index}:${Date.now()}:${Math.random().toString(16).slice(2)}`
-    book.inflight.set(holdKey, { index, key })
-    this.emit('change')
-    return { index, holdKey, ephemeral: true, created: index !== preferred }
-  }
-
-  /** Roll back a seat assignment a refused reservation just created. */
-  forgetPreferredSlot(vmId, sessionKey, index) {
-    const id = String(vmId || '')
-    const book = this.vmSlots.get(id)
-    const key = String(sessionKey || '')
-    if (!book || !key || book.preferred.get(key) !== index) return
-    book.preferred.delete(key)
-    if (!book.inflight.size && !book.preferred.size) this.vmSlots.delete(id)
-  }
-
-  /** Synchronous window re-check at claim time; eligibility ran before an await. */
-  windowOpen(candidate, windowKey) {
-    const sessions = this.accountQuota?.sessions
-    if (!sessions?.canAccept) return true
-    const account = candidate.account ?? this.accountQuota?.repo?.get?.(candidate.accountId) ?? null
-    const max = maxSessionsOf(candidate.vm, this.accountQuota, account)
-    if (max <= 0) return true
-    let idleMin = 5
-    try {
-      const configured = Number(
-        this.accountQuota.policyFor?.(account, { tier: vmTierOf(candidate.vm) })?.session_idle_min,
-      )
-      if (Number.isFinite(configured) && configured > 0) idleMin = configured
-    } catch {}
-    return sessions.canAccept(candidate.accountId, windowKey, { max, idleMin }).ok !== false
-  }
-
-  /**
-   * Session left this VM: forget its seat preference. Live holds belong to
-   * in-flight requests and are returned only by their own release().
-   */
-  dropSessionSlot(vmId, sessionKey) {
-    const id = String(vmId || '')
-    const book = this.vmSlots.get(id)
-    const key = String(sessionKey || '')
-    if (!book || !key) return
-    book.preferred.delete(key)
-    if (!book.inflight.size && !book.preferred.size) this.vmSlots.delete(id)
-  }
-
-  releaseSlotHold(vmId, holdKey) {
-    const id = String(vmId || '')
-    const book = this.vmSlots.get(id)
-    if (!book || !holdKey) return
-    const removed = book.inflight.delete(String(holdKey))
-    if (!book.inflight.size && !book.preferred.size) this.vmSlots.delete(id)
-    if (removed) this.emit('change')
   }
 
   markSuccess(candidate, { workerStatus = null, countUsage = true } = {}) {
@@ -1345,10 +1462,6 @@ export class PoolScheduler extends EventEmitter {
     this.cooldownTimers.set(accountId, timer)
   }
 
-  maxWaiters() {
-    return Math.max(1, Number(this.config.max_waiters_per_account) || 100)
-  }
-
   waiterCount(accountId) {
     if (!accountId) return 0
     return this.waiters.get(accountId)?.size || 0
@@ -1371,10 +1484,7 @@ export class PoolScheduler extends EventEmitter {
   isReservable(candidate) {
     if (!candidate) return false
     const inflight = candidate.inflight || 0
-    const seats = Number(candidate.sessionSlots) || 0
     const conc = Number(candidate.maxConcurrency) || 0
-    const usedSlots = Number(candidate.usedSlots) || 0
-    if (!candidate.skipSessionSlot && seats > 0 && usedSlots >= seats && !candidate.slotOwned) return false
     if (conc > 0 && inflight >= conc) return false
     if (!candidate.busy) return true
     return candidate.waitReason === 'slot_busy'
@@ -1390,7 +1500,6 @@ export class PoolScheduler extends EventEmitter {
       vmId: candidate?.vmId || null,
       reason: candidate?.waitReason || null,
       timeoutMs,
-      maxWaiting: this.maxWaiters(),
       sticky: !!sticky,
       deadline: now + timeoutMs,
       availableAt: candidate?.availableAt || null,
@@ -1417,36 +1526,18 @@ export class PoolScheduler extends EventEmitter {
         stickyShouldWait(match.waitReason, match.cooldownReason) &&
         !this.isReservable(match)
       ) {
-        if (this.waiterCount(match.accountId) < this.maxWaiters()) {
-          return this.makeWaitPlan(match, { sticky: true, requestDeadline })
-        }
-        return { queueFull: true, sticky: true, accountId: match.accountId }
+        return this.makeWaitPlan(match, { sticky: true, requestDeadline })
       }
     }
     const waitable = candidates.filter((candidate) => candidate.busy && !this.isReservable(candidate))
     const peek = this.peekRank(waitable)
-    const ranked = [...waitable].sort(
-      (left, right) =>
-        left.lastUsedAt - right.lastUsedAt || String(left.accountId).localeCompare(String(right.accountId)),
-    )
-    const order = peek ? [peek, ...ranked.filter((candidate) => candidate.accountId !== peek.accountId)] : ranked
-    for (const candidate of order) {
-      if (this.waiterCount(candidate.accountId) < this.maxWaiters()) {
-        return this.makeWaitPlan(candidate, { sticky: false, requestDeadline })
-      }
-    }
-    if (waitable.length) return { queueFull: true }
-    return null
+    return peek ? this.makeWaitPlan(peek, { sticky: false, requestDeadline }) : null
   }
 
+  /** Direct-path wait (cooldown / RPM / concurrency); it counts against the pool-wide `queue_max`. */
   waitForCapacity({ signal, deadline, stickyKey, accountId = null, vmId = null, sticky = false } = {}) {
     const bucketId = String(accountId || stickyKey || '_pool')
-    if (this.waiterCount(bucketId) >= this.maxWaiters()) {
-      throw Object.assign(new Error('Account pool wait queue is full'), {
-        code: 'pool_wait_queue_full',
-        accountId: bucketId,
-      })
-    }
+    if (this.queuedTotal() >= this.config.queue_max) throw this.queueFullError(vmId ? [vmId] : null)
     const id = Symbol('pool-waiter')
     let bucket = this.waiters.get(bucketId)
     if (!bucket) {
@@ -1492,6 +1583,7 @@ export class PoolScheduler extends EventEmitter {
     })
   }
 
+  /** Cooldown lifted, credential back, or a direct release: wake direct waiters and re-pump seat queues. */
   notifyCapacity(accountId = null) {
     const wakeEntry = (entry) => {
       try {
@@ -1521,6 +1613,7 @@ export class PoolScheduler extends EventEmitter {
     for (const bucket of buckets) {
       for (const entry of bucket.values()) wakeEntry(entry)
     }
+    this.planner.pumpAll()
   }
 
   /**
@@ -1648,6 +1741,7 @@ export class PoolScheduler extends EventEmitter {
     for (const [accountId, byFamily] of this.inflightFamily) {
       family[accountId] = Object.fromEntries(byFamily)
     }
+    const seat = this.seatSnapshot()
     return {
       strategy: this.config.strategy,
       fable_max_per_account: this.config.fable_max_per_account,
@@ -1655,25 +1749,31 @@ export class PoolScheduler extends EventEmitter {
       inflight_family: family,
       waiters: this.waiterSnapshot(),
       health_cache: Object.fromEntries([...this.healthCache].map(([id, entry]) => [id, entry.value])),
-      seats: this.seatSnapshot(),
+      seats: seat.seats,
+      pool_queue: { global_queue_depth: seat.global_queue_depth, queue_max: seat.queue_max },
     }
   }
 
-  /** Live seat books and queued waiters per VM, for panel rows and the seat stream. */
+  /**
+   * Seats and queues per VM for panel rows and the seat stream. `queue_depth`
+   * counts every request waiting on that VM (seat, concurrency, cooldown/RPM);
+   * `conc_waiting` is the concurrency share of it.
+   */
   seatSnapshot() {
-    const seats = {}
-    const row = (vmId) => (seats[vmId] ||= { seats_used: 0, holds: 0, queue_depth: 0 })
-    for (const [vmId, book] of this.vmSlots) {
-      if (!book.inflight.size) continue
-      const entry = row(vmId)
-      entry.seats_used = this.usedSlotCount(vmId)
-      entry.holds = book.inflight.size
-    }
+    const { seats, global_queue_depth } = this.planner.snapshot()
     for (const bucket of this.waiters.values()) {
       for (const entry of bucket.values()) {
-        if (entry?.vmId) row(entry.vmId).queue_depth += 1
+        if (!entry?.vmId) continue
+        const row = (seats[entry.vmId] ||= {
+          seats_used: 0,
+          seats_max: this.planner.caps.get(entry.vmId) || 0,
+          seats_grace: 0,
+          queue_depth: 0,
+          conc_waiting: 0,
+        })
+        row.queue_depth += 1
       }
     }
-    return seats
+    return { seats, global_queue_depth, queue_max: this.config.queue_max }
   }
 }

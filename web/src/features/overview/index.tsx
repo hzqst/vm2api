@@ -91,7 +91,7 @@ export function OverviewPage() {
     ['caution', 'cool'].includes(accountStatus(v).key)
   ).length
   const limited = vms.filter((v) =>
-    ['warn', 'quota', 'sessions'].includes(accountStatus(v).key)
+    ['warn', 'quota'].includes(accountStatus(v).key)
   ).length
   const noToken = vms.filter((v) => !v.has_token).length
   const tokensIn = Number(totals.tokens_in ?? summary.tokens_in ?? 0)

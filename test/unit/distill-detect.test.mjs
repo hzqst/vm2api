@@ -132,7 +132,7 @@ test('memory-stage-one harvest is distill even at 4096 tokens', () => {
   )
 })
 
-test('hostdzire memory-stage-one envelope is distill even if official or zero inject', () => {
+test('memory-stage-one envelope is distill even if official or zero inject', () => {
   const inbound = {
     model: 'claude-opus-5',
     max_tokens: 4096,
@@ -367,22 +367,21 @@ test('normalize keeps default fingerprints when omitted', () => {
   assert.equal(r.error.message, '不允许蒸馏')
 })
 
-test('handleProtocol intercepts distill before credential hop, refusal guard after distill', () => {
+test('handleProtocol intercepts before credential hop', () => {
   const src = fs.readFileSync(path.join(root, 'src/lib/protocol/handle-protocol.mjs'), 'utf8')
-  const earlyDistill = src.indexOf('if (applyDistillGuard(')
-  const earlyRefusal = src.indexOf('if (applyRefusalGuard(')
+  const early = src.indexOf('await applyProtocolIntercept(')
   const codex = src.indexOf('handleCodexProtocol({')
-  assert.ok(earlyDistill > 0 && earlyDistill < codex)
-  assert.ok(earlyRefusal > earlyDistill && earlyRefusal < codex)
+  assert.ok(early > 0 && early < codex)
   const before = src.indexOf("applyIntercept(cfg.intercept.rules, 'before_upstream'")
-  const lateDistill = src.indexOf('if (applyDistillGuard(', earlyDistill + 1)
-  const lateRefusal = src.indexOf('if (applyRefusalGuard(', earlyRefusal + 1)
+  const late = src.indexOf('await applyProtocolIntercept(', early + 1)
   const api = src.indexOf("inferenceBackend === 'api'")
   assert.ok(before > 0)
-  assert.ok(lateDistill > before)
-  assert.ok(lateRefusal > lateDistill)
-  assert.ok(api > lateRefusal)
-  const guard = src.slice(src.indexOf('function applyDistillGuard'), src.indexOf('function isZeroInjectMode'))
+  assert.ok(late > before)
+  assert.ok(api > late)
+  const guard = src.slice(
+    src.indexOf('async function applyProtocolIntercept'),
+    src.indexOf('function isZeroInjectMode'),
+  )
   assert.ok(guard.includes('isProxiedOfficialClaudeCode'))
   const countSrc = fs.readFileSync(path.join(root, 'src/lib/protocol/user-count-tokens.mjs'), 'utf8')
   const countGuard = countSrc.indexOf('blockCountTokensBeforeHop(req, parsed.body, deps)')

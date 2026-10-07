@@ -11,6 +11,7 @@ import {
   publicUsageWindow,
   parseLimitResetFromMessage,
   isPlanLimitMessage,
+  isAccountQuotaExhausted,
   limitWindowFromMessage,
   hasOfficialUsageSample,
   hasLiveExtraSample,
@@ -197,4 +198,20 @@ test('isPlanLimitMessage matches CLI limit text but not the entitlement error', 
   assert.equal(isPlanLimitMessage('Extra usage required for this model'), false)
   assert.equal(limitWindowFromMessage("You've hit your weekly limit"), '7d')
   assert.equal(limitWindowFromMessage("You've hit your limit"), '5h')
+})
+
+test('isAccountQuotaExhausted ignores 429s the pool synthesized itself', () => {
+  const fableGate = { ok: false, status: 429, via: 'pool-failover' }
+  assert.equal(isAccountQuotaExhausted(fableGate, 'Fable requires an available Max account'), false)
+  const poolRateLimited = { ok: false, status: 429, via: 'pool-failover' }
+  assert.equal(isAccountQuotaExhausted(poolRateLimited, 'rate limited'), false)
+})
+
+test('isAccountQuotaExhausted keeps provider 429s and plan-limit text', () => {
+  assert.equal(isAccountQuotaExhausted({ ok: false, status: 429, via: 'go-worker-stream' }, ''), true)
+  assert.equal(isAccountQuotaExhausted({ ok: false, status: 429 }, ''), true)
+  const planText = "You've hit your limit · resets 3pm"
+  assert.equal(isAccountQuotaExhausted({ ok: false, status: 400, via: 'pool-failover' }, planText), true)
+  assert.equal(isAccountQuotaExhausted({ ok: true, status: 200 }, planText), false)
+  assert.equal(isAccountQuotaExhausted({ ok: false, status: 503, via: 'go-worker' }, ''), false)
 })

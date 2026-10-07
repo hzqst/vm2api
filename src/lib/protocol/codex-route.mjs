@@ -2,6 +2,7 @@
  * Codex hop routing. Claude traffic never reads this object.
  */
 import { isCodexVm } from '../vm/vm-kind.mjs'
+import { normalizeOpenAIQuotaPolicy } from '../pool/openai-quota-policy.mjs'
 
 export { isCodexVm, normalizeVmKind } from '../vm/vm-kind.mjs'
 
@@ -29,6 +30,7 @@ export const DEFAULT_CODEX_ROUTING = Object.freeze({
     claude_code: 'reject',
     unknown: 'allow',
   },
+  quota: normalizeOpenAIQuotaPolicy(),
 })
 
 export function normalizeCodexRouting(raw = {}) {
@@ -55,6 +57,7 @@ export function normalizeCodexRouting(raw = {}) {
       anthropic_to_codex: raw.convert?.anthropic_to_codex === true,
     },
     clients,
+    quota: normalizeOpenAIQuotaPolicy(raw.quota),
   }
 }
 

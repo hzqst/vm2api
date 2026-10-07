@@ -212,7 +212,7 @@ function classifyAccount(v = {}, now = Date.now()) {
   const cred = v.cred_status || {}
   const hasToken = !!v.has_token
   const key = hasToken ? String(av.key || cred.key || 'ok') : 'none'
-  const gated = key === 'quota' || key === 'sessions' || key === 'cool' || key === 'warn' || key === 'caution'
+  const gated = key === 'quota' || key === 'cool' || key === 'warn' || key === 'caution'
   const dead = key === 'none' || key === 'bad'
   const off = key === 'off'
   const usable = av.usable != null ? !!av.usable : hasToken && !dead && !off
@@ -230,7 +230,7 @@ function classifyAccount(v = {}, now = Date.now()) {
     online: vmOnline(v),
     revoked,
     invalid,
-    limited: gated || key === 'quota' || key === 'sessions' || key === 'warn',
+    limited: gated || key === 'quota' || key === 'warn',
     warned: key === 'caution' || key === 'cool',
     today_revoked: revoked && isShanghaiToday(probedAt, now),
     today_invalid: invalid && isShanghaiToday(probedAt, now),
@@ -276,6 +276,7 @@ export function summarizePoolAvailability(vms = [], now = Date.now(), extras = {
       cost: todayCost,
       errors: Number(today.errors || 0),
       status_429: Number(today.status_429 || 0),
+      status_529: Number(today.status_529 || 0),
       sla: today.sla == null ? null : Number(today.sla),
     },
     accounts,
@@ -435,7 +436,7 @@ export function formatNotifyMessage(event, snap, cfg = DEFAULT_NOTIFY, baseUrl =
     const today = snap.today || {}
     lines.push(`今日 ${fmtUsd(today.cost)} · ${today.requests || 0} req · ${fmtTok(today.tokens)} tok`)
     const sla = today.sla == null ? '' : ` · SLA ${(Number(today.sla) * 100).toFixed(1)}%`
-    lines.push(`错误 ${today.errors || 0} · 429 ${today.status_429 || 0}${sla}`)
+    lines.push(`错误 ${today.errors || 0} · 429 ${today.status_429 || 0} · 529 ${today.status_529 || 0}${sla}`)
   }
   if (event?.type === 'pool_low' && event.min_available) {
     lines.push(`阈值 ${event.min_available}`)

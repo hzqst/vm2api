@@ -660,6 +660,10 @@ test('#A11: an OpenAI pool that stays full answers 429 pool_overloaded', async (
   const held = rt.tryAcquireOpenAISlot(vmId, { concurrency: 1 })
   const args = codexArgs(root, { ensureCodexKernel: async () => ({ ok: true }) })
   args.routing = { pool: { fallback_wait_timeout_ms: 1000 } }
+  const headers = {}
+  args.res.setHeader = (name, value) => {
+    headers[name] = value
+  }
   // Waiter timers are unref'd so a systemd process can idle-exit. Keep one
   // ref'd handle so this isolated file cannot drain before the 1s deadline.
   const keepAlive = setTimeout(() => {}, 15_000)
@@ -668,6 +672,7 @@ test('#A11: an OpenAI pool that stays full answers 429 pool_overloaded', async (
     assert.equal(out.status, 429)
     assert.equal(out.body.error.code, 'pool_overloaded')
     assert.equal(out.body.error.message, '号池负载过高，稍后再试')
+    assert.ok(Number(headers['retry-after']) >= 1)
   } finally {
     clearTimeout(keepAlive)
     held.release()
@@ -1043,5 +1048,65 @@ test('codex passthrough without an inbound session derives a stable fallback ses
   assert.equal(again.envelopes[0].session.session_id, sessionId)
   assert.notEqual(other.envelopes[0].session.session_id, sessionId)
   sticky.db?.close?.()
+  fs.rmSync(root, { recursive: true, force: true })
+})
+
+test('openai.responses stream names each kernel SSE frame after its payload type', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-codex-sse-names-'))
+  writeGptVm(root, 'vm-gpt-a')
+  const writes = []
+  const res = {
+    headersSent: false,
+    write(chunk) {
+      this.headersSent = true
+      writes.push(String(chunk))
+    },
+    end() {},
+  }
+  await handleCodexProtocol({
+    req: { headers: {} },
+    res,
+    protocol: 'openai.responses',
+    ctx: { path: '/v1/responses', body: { model: 'gpt-5.5', input: 'hi', stream: true } },
+    inbound: { stream: true },
+    logBag: {},
+    stats: { errors: 0, requests: 0, by_route: {} },
+    json: (_res, status, body) => {
+      res.statusCode = status
+      res.body = body
+      return body
+    },
+    writeSSEHeaders() {
+      res.headersSent = true
+    },
+    routing: {},
+    projectRoot: root,
+    ops: {
+      writeCodexKernelConfig() {},
+      ensureCodexKernel: async () => ({ ok: true }),
+      streamCodexKernel: async ({ onEvent }) => {
+        // kin-codex-kernel labels every frame "event: response"
+        for (const line of [
+          'event: response',
+          'data: {"type":"response.created","response":{"id":"resp_1"}}',
+          '',
+          'event: response',
+          'data: {"type":"response.output_text.delta","delta":"pong"}',
+          '',
+          'event: response',
+          'data: {"type":"response.completed","response":{"id":"resp_1","status":"completed"}}',
+          '',
+        ]) {
+          await onEvent(line)
+        }
+        return { ok: true, status: 200, terminalState: 'verified' }
+      },
+    },
+  })
+  const out = writes.join('')
+  assert.doesNotMatch(out, /^event: response$/m)
+  assert.match(out, /^event: response\.created\ndata: \{"type":"response\.created"/m)
+  assert.match(out, /^event: response\.output_text\.delta\ndata: /m)
+  assert.match(out, /^event: response\.completed\ndata: /m)
   fs.rmSync(root, { recursive: true, force: true })
 })
