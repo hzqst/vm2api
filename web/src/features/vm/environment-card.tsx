@@ -52,16 +52,20 @@ export function VmEnvironmentCard({
       </p>
       <CardContent className='divide-y pt-0'>
         <Field label='当前时区'>
-          <span className='flex items-center gap-2 text-xs'>
-            <span className='field-host'>{current || '—'}</span>
-            <span className='text-muted-foreground'>
-              {TIMEZONE_SOURCE_LABELS[String(vm.timezone_source || 'auto')] ||
-                '自动'}
+          {current ? (
+            <span className='flex items-center gap-2 text-xs'>
+              <span className='field-host'>{current}</span>
+              <span className='text-muted-foreground'>
+                {TIMEZONE_SOURCE_LABELS[String(vm.timezone_source || 'auto')] ||
+                  '自动'}
+              </span>
+              <span className='field-metric text-muted-foreground'>
+                {zoneNowLabel(current)}
+              </span>
             </span>
-            <span className='field-metric text-muted-foreground'>
-              {zoneNowLabel(current)}
-            </span>
-          </span>
+          ) : (
+            <span className='text-sm'>时区未配置</span>
+          )}
         </Field>
         <Field label='代理出口'>
           <span className='text-xs text-muted-foreground'>

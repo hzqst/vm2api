@@ -1,0 +1,1 @@
+function e(e=`1h`){let t=e===`24h`?864e5:e===`6h`?216e5:36e5,n=Date.now()-t;return new Date(n-n%6e4).toISOString()}export{e as t};

@@ -9,7 +9,7 @@
  * Body passthrough still needs the other official-traffic gates
  * (user_id / tools / official system). oh-my-pi is rejected by system shape.
  *
- * Outbound pin is `OFFICIAL_CLI_VERSION` in `vm-identity.mjs` (`2.1.284`).
+ * Outbound pin is `OFFICIAL_CLI_VERSION` in `vm-identity.mjs` (`2.1.293`).
  * This check accepts any `claude-cli` semver; it does not pin the version.
  */
 

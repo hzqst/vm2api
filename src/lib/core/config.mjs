@@ -10,6 +10,21 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, '..', '..')
 const PROJECT = path.resolve(process.env.KIN_PROJECT_ROOT || path.resolve(ROOT, '..'))
 
+const STREAM_IDLE_TIMEOUT_MIN_MS = 30_000
+const STREAM_IDLE_TIMEOUT_MAX_MS = 3_600_000
+
+/**
+ * Max silence on an upstream stream, shared by the gateway and the slot kernel.
+ * Without eager_input_streaming, upstream buffers a large tool input (a long
+ * Write content) and stays silent for minutes; eager_tool_streaming avoids that.
+ * The panel value (routing failover.stream_idle_timeout_ms) wins over the fallback.
+ */
+export function streamIdleTimeoutMs(routing, fallbackMs = Number(process.env.KIN_STREAM_IDLE_TIMEOUT) || 180_000) {
+  const ms = Number(routing?.failover?.stream_idle_timeout_ms)
+  if (!Number.isFinite(ms) || ms <= 0) return fallbackMs
+  return Math.min(STREAM_IDLE_TIMEOUT_MAX_MS, Math.max(STREAM_IDLE_TIMEOUT_MIN_MS, Math.round(ms)))
+}
+
 /** Live routing.json. KIN_ROUTING_FILE wins; otherwise <project>/src/config/routing.json. */
 export function routingConfigFile(projectRoot = PROJECT) {
   const override = String(process.env.KIN_ROUTING_FILE || '').trim()
@@ -72,7 +87,7 @@ export function loadConfig() {
       // First-byte wait for worker HTTP headers. Matches sub2api
       // gateway.response_header_timeout (600s). Idle is stream_idle_timeout_ms.
       upstream_timeout_ms: Number(process.env.KIN_UPSTREAM_TIMEOUT || 600000),
-      stream_idle_timeout_ms: Number(process.env.KIN_STREAM_IDLE_TIMEOUT || 180000),
+      stream_idle_timeout_ms: streamIdleTimeoutMs(),
       stream_keepalive_ms: Number(process.env.KIN_STREAM_KEEPALIVE || 10000),
       rate_capacity: Number(process.env.KIN_RATE_CAP || 60),
       rate_refill: Number(process.env.KIN_RATE_REFILL || 1),

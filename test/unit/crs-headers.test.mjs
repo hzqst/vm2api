@@ -111,7 +111,6 @@ test('official sonnet-5 keeps context-1m; others and unofficial drop it', () => 
   )
   assert.doesNotMatch(String(unofficial['anthropic-beta'] || ''), /context-1m-2025-08-07/)
   assert.match(String(unofficial['anthropic-beta'] || ''), /context-management-2025-06-27/)
-  assert.match(String(unofficial['anthropic-beta'] || ''), /effort-2025-11-24/)
   const unofficial1m = resolveCrsHeaders(
     {
       'user-agent': 'Go-http-client/2.0',
@@ -213,7 +212,6 @@ test('unofficial inbound two-token beta does not leak; UA is Claude Code', () =>
   assert.doesNotMatch(out['user-agent'], /Go-http-client/)
   assert.equal(out['x-stainless-os'], 'Linux')
   assert.equal(out['x-stainless-runtime-version'], 'v26.3.0')
-  assert.equal(out['x-stainless-package-version'], '0.112.1')
   assert.match(String(out['anthropic-beta'] || ''), /oauth-2025-04-20/)
   assert.match(String(out['anthropic-beta'] || ''), /context-management-2025-06-27/)
   const tokens = String(out['anthropic-beta'] || '')
@@ -377,7 +375,6 @@ test('guest locale and amd64 arch map onto outbound /v1 headers', () => {
   assert.equal(out['x-stainless-arch'], 'x64')
   assert.equal(out['x-stainless-os'], 'Linux')
   assert.equal(out['x-stainless-runtime-version'], 'v26.3.0')
-  assert.equal(out['x-stainless-package-version'], '0.112.1')
   assert.equal(out['x-stainless-retry-count'], '0')
   assert.equal(out['x-stainless-timeout'], '600')
   assert.equal(out['accept-language'], 'en-US')

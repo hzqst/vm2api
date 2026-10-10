@@ -73,7 +73,7 @@ async function runTurn(t, stopReason, apiError = false, httpError = null) {
     ...process.env,
     HOME: home,
     CLAUDE_CONFIG_DIR: home,
-    CLAUDE_CODE_KIN_NATIVE_SLOTS: '1',
+    CLAUDE_CODE_NATIVE_SLOTS: '1',
     ANTHROPIC_API_KEY: 'fixture-key',
     ANTHROPIC_BASE_URL: `http://127.0.0.1:${upstream.address().port}`,
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
@@ -126,10 +126,10 @@ async function runTurn(t, stopReason, apiError = false, httpError = null) {
           continue
         }
         frames.push(frame)
-        if (frame.type === 'kin_slot_ready') {
+        if (frame.type === 'slot_ready') {
           child.stdin.write(
             JSON.stringify({
-              type: 'kin_job_start',
+              type: 'job_start',
               job_id: 'limit-job',
               slot_id: frame.slot_id,
               request: {
@@ -142,21 +142,21 @@ async function runTurn(t, stopReason, apiError = false, httpError = null) {
             }) + '\n',
           )
         }
-        if (frame.type === 'kin_job_done' || frame.type === 'kin_job_error') finish(null, frame)
+        if (frame.type === 'job_done' || frame.type === 'job_error') finish(null, frame)
       }
     })
   })
   return {
     terminal,
     requests,
-    events: frames.filter((frame) => frame.type === 'kin_stream_event').map((frame) => frame.event),
+    events: frames.filter((frame) => frame.type === 'stream_event').map((frame) => frame.event),
   }
 }
 
 for (const stopReason of ['max_tokens', 'end_turn']) {
   test(`native CLI preserves ${stopReason}, generated content and real usage`, { timeout: 20000 }, async (t) => {
     const result = await runTurn(t, stopReason)
-    assert.equal(result.terminal.type, 'kin_job_done')
+    assert.equal(result.terminal.type, 'job_done')
     assert.equal(result.requests.length, 1, 'normal truncation must not retry')
     assert.equal(result.requests[0].max_tokens, 128, 'honor the explicit output limit')
     assert.equal(result.events.find((event) => event.type === 'content_block_delta').delta.text, '1 2 3 4 5')
@@ -176,7 +176,7 @@ for (const stopReason of ['max_tokens', 'end_turn']) {
 
 test('native CLI still fails on a real upstream SSE error', { timeout: 20000 }, async (t) => {
   const result = await runTurn(t, 'max_tokens', true)
-  assert.equal(result.terminal.type, 'kin_job_error')
+  assert.equal(result.terminal.type, 'job_error')
   assert.equal(result.terminal.code, 'upstream_error')
   assert.equal(result.terminal.status, 502)
   assert.equal(result.terminal.error_type, 'api_error')
@@ -197,7 +197,7 @@ for (const [status, type, code] of [
   test(`native CLI reports real HTTP ${status} without a hidden retry or fallback`, { timeout: 20000 }, async (t) => {
     const result = await runTurn(t, null, false, { status, type })
     assert.equal(result.requests.length, 1)
-    assert.equal(result.terminal.type, 'kin_job_error')
+    assert.equal(result.terminal.type, 'job_error')
     assert.equal(result.terminal.code, code)
     assert.equal(result.terminal.status, status)
     assert.equal(result.terminal.error_type, type)

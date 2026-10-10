@@ -1,0 +1,1 @@
+var e={auth:`caution`,request:`caution`,signature:`caution`,rate_limit:`caution`,quota:`warn`,overloaded:`bad`,unavailable:`warn`,timeout:`bad`,credential:`caution`,proxy:`bad`,upstream:`bad`,other:`bad`,distill:`caution`,refusal:`bad`};export{e as t};

@@ -153,6 +153,33 @@ test('2.1.28x /usage text needs session and all-models rows before it is complet
   assert.equal(stats.account_tier, null)
 })
 
+test('2.1.293 print /usage result JSON keeps every utilization field', () => {
+  const payload = {
+    five_hour: { utilization: 12, resets_at: '2026-10-07T20:00:00Z' },
+    seven_day: { utilization: 34, resets_at: '2026-10-12T00:00:00Z' },
+    seven_day_sonnet: { utilization: 8, resets_at: '2026-10-12T00:00:00Z' },
+    seven_day_opus: { utilization: 2, resets_at: '2026-10-12T00:00:00Z' },
+    seven_day_oauth_apps: { utilization: 5, resets_at: '2026-10-12T00:00:00Z' },
+    extra_usage: { is_enabled: true, monthly_limit: 2000, used_credits: 100, utilization: 5 },
+  }
+  const lines = [
+    JSON.stringify({ type: 'system', subtype: 'init' }),
+    JSON.stringify({ type: 'result', subtype: 'success', result: JSON.stringify(payload) }),
+  ].join('\n')
+  const stats = parseOfficialCcStats(lines)
+  assert.equal(stats.ok, true)
+  assert.equal(stats.limits_present, true)
+  assert.equal(stats.five_hour.utilization, 0.12)
+  assert.equal(stats.seven_day.utilization, 0.34)
+  assert.equal(stats.seven_day_sonnet.utilization, 0.08)
+  assert.equal(stats.seven_day_opus.utilization, 0.02)
+  assert.equal(stats.seven_day_oauth_apps.utilization, 0.05)
+  assert.equal(stats.extra_usage.monthly_limit, 2000)
+  assert.equal(stats.extra_usage.used_credits, 100)
+  assert.equal(stats.usage_has_fable, null)
+  assert.equal(stats.account_tier, null)
+})
+
 test('tierFromOauthProfile trusts has_claude_max / organization_type', async () => {
   const { tierFromOauthProfile } = await import('../../src/lib/oauth/official-cc-stats.mjs')
   assert.equal(tierFromOauthProfile({ account: { has_claude_max: true, has_claude_pro: false } }), 'max')

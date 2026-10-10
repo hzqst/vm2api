@@ -49,7 +49,7 @@ import {
 } from '@/features/vm/vm-stats-model'
 
 /** tokens 量级大，K / M / B 缩写比千分位好读。 */
-function fmtTokens(n: number): string {
+export function fmtTokens(n: number): string {
   if (n >= 1e9) return `${(n / 1e9).toFixed(2)}B`
   if (n >= 1e6) return `${(n / 1e6).toFixed(2)}M`
   if (n >= 1e3) return `${(n / 1e3).toFixed(2)}K`
@@ -87,7 +87,7 @@ const ACCENT = {
 } as const
 
 /** 顶部四张渐变指标卡：大数字 + 一行口径说明。 */
-function MetricCard({
+export function MetricCard({
   accent,
   icon,
   label,
@@ -125,7 +125,7 @@ function MetricCard({
 }
 
 /** 带彩色图标头的信息卡，行内左标签右数值。 */
-function InfoCard({
+export function InfoCard({
   tone,
   icon,
   title,
@@ -166,7 +166,7 @@ function InfoCard({
   )
 }
 
-function ChartCard({
+export function ChartCard({
   title,
   meta,
   children,
@@ -227,7 +227,7 @@ function TrendTip({
 }
 
 /** 双轴趋势：面积是费用（左轴），折线是请求数（右轴）。 */
-function TrendChart({ points }: { points: StatsDayPoint[] }) {
+export function TrendChart({ points }: { points: StatsDayPoint[] }) {
   return (
     <div className='h-60'>
       <ResponsiveContainer width='100%' height='100%'>
@@ -321,7 +321,7 @@ function TrendChart({ points }: { points: StatsDayPoint[] }) {
 }
 
 /** 环形图 + 右侧明细表：占比按请求数，表里同时给 tokens 与费用。 */
-function DistributionChart({
+export function DistributionChart({
   rows,
   empty,
 }: {
@@ -414,7 +414,7 @@ function DistributionChart({
 }
 
 /** 入站路径分布：横向条比表格更容易一眼看出主次。 */
-function EndpointBars({ rows }: { rows: VmUsageStatsRank[] }) {
+export function EndpointBars({ rows }: { rows: VmUsageStatsRank[] }) {
   const max = Math.max(1, ...rows.map((r) => r.requests))
   if (!rows.length) {
     return (

@@ -30,6 +30,7 @@ import {
   proxyBindable,
   proxyBoundIds,
   proxyHealthKey,
+  LOCAL_PROXY_HINT,
   proxyHostText,
   proxyIsInvalid,
   proxyIsLocal,
@@ -165,10 +166,19 @@ export function ProxyRow({
                 : 'text-[13px] font-medium',
               local && 'font-sans'
             )}
-            title={proxyHostText(proxy)}
+            title={
+              local
+                ? `${proxyHostText(proxy)} · ${LOCAL_PROXY_HINT}：槽位走所在 VPS（本机或集群节点）自身出口`
+                : proxyHostText(proxy)
+            }
           >
             {proxyHostText(proxy)}
           </span>
+          {local ? (
+            <span className='shrink-0 text-xs text-muted-foreground'>
+              {LOCAL_PROXY_HINT}
+            </span>
+          ) : null}
           {proxy.address_family === 6 ? (
             <span className='shrink-0 text-xs text-muted-foreground'>IPv6</span>
           ) : null}

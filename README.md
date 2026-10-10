@@ -5,7 +5,7 @@
 ### 完全隔离的虚拟机级 AI 订阅转 API 生产网关
 **Next-Generation Fully Isolated VM-Level AI Subscription-to-API Gateway**
 
-[![Release](https://img.shields.io/badge/Release-v1.3.105-blue.svg?style=for-the-badge&logo=github)](https://github.com/dofastted/vm2api/releases)
+[![Release](https://img.shields.io/badge/Release-v1.3.133-blue.svg?style=for-the-badge&logo=github)](https://github.com/dofastted/vm2api/releases)
 [![License](https://img.shields.io/badge/License-Noncommercial-amber.svg?style=for-the-badge)](LICENSE)
 [![Benchmarks](https://img.shields.io/badge/Benchmarks-Clean%20Verified-00C853?style=for-the-badge&logo=shield)](docs/benchmarks/README.md)
 [![Cluster](https://img.shields.io/badge/Cluster-Multi--VPS%20Ready-7928CA?style=for-the-badge&logo=docker)](docs/DEPLOY.md)
@@ -13,6 +13,7 @@
 <p align="center">
   <a href="#-简体中文"><b>🇨🇳 简体中文</b></a> •
   <a href="#-english"><b>🇬🇧 English</b></a> •
+  <a href="https://vm2api.fkcodex.com/zh/"><b>📖 入门文档</b></a> •
   <a href="docs/技术路线.md"><b>🗺️ 技术路线</b></a> •
   <a href="docs/DEPLOY.md"><b>🚀 部署指南</b></a> •
   <a href="docs/benchmarks/README.md"><b>📊 干净度基准</b></a> •
@@ -28,7 +29,7 @@
 <br/>
 
 > [!NOTE]
-> **vm2api** 专为高可靠 AI 订阅转化为生产级标准 API 设计。摒弃传统的简单 HTTP 逆向与易被封禁的公用代理方案，采用**全隔离虚拟机/容器环境 + 官方真实客户端进程常驻 + 真实硬件指纹拟真 + 单槽单独立网络出口 + 智能前置蒸馏拦截**，实现真正稳定、长效、高并发的订阅转 API 基础设施。
+> **vm2api** 专为高可靠 AI 订阅转化为生产级标准 API 设计。摒弃传统的简单 HTTP 逆向与易被封禁的公用代理方案，采用**全隔离虚拟机/容器环境 + 官方真实客户端进程常驻 + 真实硬件指纹拟真 + 单槽单独立网络出口 + 进槽前封控拦截**，实现真正稳定、长效、高并发的订阅转 API 基础设施。
 
 ---
 
@@ -36,11 +37,12 @@
 
 ## 目录
 - [💡 项目概览](#-项目概览)
+- [🆕 近期更新](#-近期更新)
 - [🛡️ 九大核心特性（特色防封与拟真矩阵）](#️-九大核心特性特色防封与拟真矩阵)
   - [0️⃣ 独家 0 提示词注入机制 & 改写引擎](#0️⃣-独家-0-提示词注入机制--改写引擎)
   - [1️⃣ 真实拟真物理机环境](#1️⃣-真实拟真物理机环境)
   - [2️⃣ 官方 Claude Code 真实进程转发](#2️⃣-官方-claude-code-真实进程转发)
-  - [3️⃣ 智能前置拦截与“蒸馏拦截”](#3️⃣-智能前置拦截与蒸馏拦截)
+  - [3️⃣ 封控拦截与风险审计](#3️⃣-封控拦截与风险审计)
   - [4️⃣ 完整的隔离网络环境（1 VM = 1 独立网络出口）](#4️⃣-完整的隔离网络环境1-vm--1-独立网络出口)
   - [5️⃣ 前置协议清洗与多协议统一结构化](#5️⃣-前置协议清洗与多协议统一结构化)
   - [6️⃣ 官方遥测（Telemetry）可控开关](#6️⃣-官方遥测telemetry可控开关)
@@ -62,6 +64,19 @@
 - **真实载体**：Anthropic 采用官方客户端在隔离 VM / 容器内运行**真实系统进程**，而非第三方伪造 HTTP 模拟。
 - **全链路拟真**：从物理机硬件指纹（SMBIOS、MAC、Machine-ID）到独立 SOCKS5 / 本地网络出口，全方位还原真实开发者电脑环境。
 - **极简集成**：向上游输出标准 OpenAI `/v1/chat/completions`、`/v1/responses` 与 Anthropic `/v1/messages` 兼容接口，任何支持标准 API 的前端、Agent 或应用均可无缝接入。
+
+
+## 🆕 近期更新
+
+对照 **1.3.133**。自 1.3.122 起，调用方能直接碰到的变化如下。明细和升级注意见 [CHANGELOG.md](CHANGELOG.md)，操作说明见 [入门文档](https://vm2api.fkcodex.com/zh/)。
+
+- **遥测**只认种子里的 `telemetry_disabled === false`。虚拟机页的遥测开关与这项一致，默认开时显示为开；非必要流量和 DNT 跟着它走，不能单独拨。
+- **入门文档**放在控制台左上角 GitHub 右侧，打开 [vm2api.fkcodex.com/zh](https://vm2api.fkcodex.com/zh/)。
+- **封控拦截**收成管理台「风险审计」。进槽前按蒸馏 → 硬正则 → 拒答缓存 → 决策模型依次拦，过关才出站。见 [下文](#3️⃣-封控拦截与风险审计) 与 [docs/RISK.md](docs/RISK.md)。
+- **本地代理**是槽位所在 VPS 的出口，不是控制面自己的网卡。集群节点上，控制面代发的换票、刷新、测试对话和地理检测也从该节点出去；节点没连上就失败，不改走控制面直连。
+- **模型**页改为卡片矩阵。`claude-haiku-5-5` 的默认上下文、`max_tokens` 和输出上限是 100K；已经改过的管理员值不会被重置。
+- **托管密钥**可以限定平台（全部 / Anthropic / OpenAI）和勾选的槽。打到范围外返回 403。
+- **流空闲**默认 180 秒，在「重试与切号」里改。长工具参数可打开流式下发，避免静默超时。
 
 ---
 
@@ -98,11 +113,21 @@
   <img src="docs/images/vm2api-vm-hardware-network.jpg" alt="VM Hardware & Network Isolation" width="95%" style="border-radius: 10px; margin: 12px 0;" />
 </div>
 
-### 3️⃣ 智能前置拦截与“蒸馏拦截”
-- **反逆向与蒸馏提权拦截**：自动识别并拦截针对大模型的知识蒸馏（Model Distillation）、思维链逆向抓取（CoT Extraction）及恶意提示词攻击，不消耗官方额度。
-- **上游 AUP / Refusal 智能阻断卫士**：
-  - 实时捕获并分析官方请求与响应中的违规特征（Anthropic AUP 政策风险 / `stop_reason=refusal` / `content_filter`）。
-  - 违规特征落库形成智能防护指纹，在网关入口处直接予以拦截，**彻底阻断违规请求触碰官方账号**，从根本上杜绝因敏感 Prompt 导致的账号封禁。
+### 3️⃣ 封控拦截与风险审计
+
+进槽之前，`/v1` 和 `count_tokens` 先过管理台「风险审计」（`/console/#/risk`）。命中即返回错误，不选槽、不打上游。顺序不能调：
+
+| 顺序 | 关 | 拦住什么 | 结果 |
+|:---|:---|:---|:---|
+| 1 | 蒸馏 | 收割模板、题目指纹、套取思维链的结构。OpenAI 平台模型不扫。默认再跳过官方 Claude Code 和 0 注入。 | 403，封 device |
+| 2 | 硬正则 | 色情、破解、破限和自定义正则。蒸馏类正则跟蒸馏总开关：关掉硬正则仍拦这些短语，关掉蒸馏才放行；官方客户端和 0 注入仍扫，OpenAI 不扫。 | 403 |
+| 3 | 拒答缓存 | 上游已经拒过的精确正文、近似正文，以及被封的 device。硬正则和决策模型自己的拦截不写入这张缓存。 | 503 |
+| 4 | 决策模型 | 安全模型逐题打分，低于阈值才拦。打分失败默认放行，并在「放行出站」里标出来。 | 403 |
+| 5 | 放行出站 | 前面都没拦。上游自己的拒答单独列出，用来看漏拦。 | 进入槽位 |
+
+每关可看今日命中和拦截流水。点开一条对正文；误伤就收这道关，不要删槽。判定记在请求日志里。这一版之前的旧日志没有判定，显示为「未经关卡」。
+
+细则：[docs/RISK.md](docs/RISK.md)。
 
 ### 4️⃣ 完整的隔离网络环境（1 VM = 1 独立网络出口）
 - **绝不共享 IP 资源**：系统严格要求**每一个 VM / KVM 槽位必须且只能绑定一条独立的网络出口**才能启动运行（支持专用独立 SOCKS5 代理、高匿出口池或独立本地出站网络）。
@@ -223,11 +248,12 @@ vm2api 内置全栈自适应网关，原生支持以下所有主流生态：
 
 ## Table of Contents
 - [💡 Overview](#-overview)
+- [🆕 Recent changes](#recent-changes)
 - [🛡️ 9 Core Pillars (Anti-Ban & Emulation Matrix)](#️-9-core-pillars-anti-ban--emulation-matrix)
   - [0️⃣ Zero Prompt Injection Engine](#0️⃣-zero-prompt-injection-engine)
   - [1️⃣ Physical Hardware Fingerprint Emulation](#1️⃣-physical-hardware-fingerprint-emulation)
   - [2️⃣ Official Claude Code Native Process Forwarding](#2️⃣-official-claude-code-native-process-forwarding)
-  - [3️⃣ Pre-Interception & "Anti-Distillation" Shield](#3️⃣-pre-interception--anti-distillation-shield)
+  - [3️⃣ Pre-hop risk gates](#3️⃣-pre-hop-risk-gates)
   - [4️⃣ Completely Isolated Network (1 VM = 1 Egress)](#4️⃣-completely-isolated-network-1-vm--1-egress)
   - [5️⃣ Deep Protocol Cleansing & Multi-Inbound Structuring](#5️⃣-deep-protocol-cleansing--multi-inbound-structuring)
   - [6️⃣ Configurable Official Telemetry](#6️⃣-configurable-official-telemetry)
@@ -246,8 +272,23 @@ Traditional methods of converting AI subscriptions into API endpoints via simple
 
 - **Universal Support**: Seamlessly converts **Anthropic (Claude Pro / Team / Enterprise / Max)** and **OpenAI (ChatGPT / Codex)** subscriptions into robust standard APIs.
 - **Genuine Client Process**: Runs the **authentic official Claude Code CLI system process** inside an isolated VM / container instance instead of fragile HTTP emulation.
-- **High-Fidelity Emulation**: From physical SMBIOS, NIC MAC, and Machine-ID to dedicated per-slot network egress and smart upstream AUP guards.
+- **High-Fidelity Emulation**: From physical SMBIOS, NIC MAC, and Machine-ID to dedicated per-slot network egress and pre-hop risk gates.
 - **Standard Compatibility**: Provides drop-in replacements for Anthropic `/v1/messages` and OpenAI `/v1/chat/completions` / `/v1/responses`.
+
+
+## Recent changes (1.3.133)
+
+Since 1.3.122, the caller-visible changes are:
+
+- **Telemetry** reads only `telemetry_disabled === false`. The VM switch matches that bit and is on for the default; nonessential traffic and DNT follow it.
+- **Intro docs** sit to the right of GitHub in the console sidebar and open [vm2api.fkcodex.com/zh](https://vm2api.fkcodex.com/zh/).
+- **Risk gates** run before a slot is chosen: distill, hard regex, refusal cache, decision model, then egress. See [below](#3️⃣-pre-hop-risk-gates) and [docs/RISK.md](docs/RISK.md).
+- **Local proxy** is the VPS that owns the slot. On a cluster node, ticket refresh, test chat, and geo also leave through that node. A disconnected node fails instead of falling back to the control plane.
+- **Models** are a card matrix. Haiku 5.5 defaults to a 100K context and output cap; an admin override is kept.
+- **Keys** can be limited to Anthropic or OpenAI and to selected slots. A call outside that scope returns 403.
+- **Stream idle** defaults to 180 seconds under retry settings. Long tool arguments can be streamed.
+
+Details: [CHANGELOG.md](CHANGELOG.md). Guide: [vm2api.fkcodex.com/zh](https://vm2api.fkcodex.com/zh/).
 
 ---
 
@@ -274,9 +315,19 @@ Traditional methods of converting AI subscriptions into API endpoints via simple
   <sub><i>Production live dashboard: Multi-slot fleet status, 20-concurrency subagent scheduling, 5h/7d quota window telemetry, and cost accounting (sanitized).</i></sub>
 </div>
 
-### 3️⃣ Pre-Interception & "Anti-Distillation" Shield
-- **Reverse-Extraction & Distillation Prevention**: Automatically drops requests attempting model distillation or Chain-of-Thought scraping before upstream credits are consumed.
-- **Upstream AUP & Refusal Guard**: Real-time detection and caching of upstream AUP violations and `stop_reason=refusal` patterns. Dangerous prompts are quarantined and blocked at the gateway entry, safeguarding accounts from termination.
+### 3️⃣ Pre-hop risk gates
+
+`/v1` and `count_tokens` pass the console **Risk** page (`/console/#/risk`) before any slot is chosen. A hit returns an error and does not spend upstream quota. The order is fixed:
+
+| Order | Gate | What it stops | Result |
+|:---|:---|:---|:---|
+| 1 | Distill | Harvest templates, problem fingerprints, and chain-of-thought extraction shapes. OpenAI platform models are skipped. Official Claude Code and zero-injection are skipped by default. | 403, and the device is banned |
+| 2 | Hard regex | NSFW, cracking, jailbreak, and custom patterns. Distill-category patterns follow the distill switch, not the hard-regex switch, and still scan official clients and zero-injection. OpenAI platform models skip that category. | 403 |
+| 3 | Refusal cache | Exact text, similar text, and devices the upstream has already refused. Hard-regex and decision-model blocks are not stored here. | 503 |
+| 4 | Decision model | A safety model scores the text and blocks only below the threshold. If scoring fails, the request is allowed by default and marked on the pass column. | 403 |
+| 5 | Passed egress | Everything the gates allowed. The upstream's own refusals are listed separately, so a miss is visible. | Enters a slot |
+
+Open a hit and read the body. A false positive means tighten that gate, not delete the slot. Requests from before this recording show as unchecked. Full rules: [docs/RISK.md](docs/RISK.md).
 
 ### 4️⃣ Completely Isolated Network (1 VM = 1 Egress)
 - **Zero Cross-Account Contamination**: Every VM slot is strictly bound to its own dedicated SOCKS5 proxy or local egress gateway. 

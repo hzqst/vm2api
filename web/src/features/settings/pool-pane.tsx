@@ -61,6 +61,8 @@ const FAILOVER_DEFAULTS = {
   oauth_401_cooldown_ms: 120000,
   same_account_retry_max_hop_ms: 10000,
   signature_repair: false,
+  stream_idle_timeout_ms: 180000,
+  eager_tool_streaming: false,
 }
 
 function numOf(source: Obj, key: string, fallback: number): number {
@@ -524,6 +526,8 @@ export function PoolPane({
           failoverDraft.same_account_retry_max_hop_ms,
         signature_repair: failoverDraft.signature_repair,
         delivery_mode: failoverDraft.delivery_mode,
+        stream_idle_timeout_ms: failoverDraft.stream_idle_timeout_ms,
+        eager_tool_streaming: failoverDraft.eager_tool_streaming,
       })
     } else {
       onPoolChange({
@@ -853,6 +857,46 @@ export function PoolPane({
                     })
                   }
                 />
+                <SliderSetting
+                  id='failover-stream-idle'
+                  label='流空闲超时'
+                  desc='上游流连续无事件超过此时长即断开；大文件 Write 会被上游整段缓冲，过短会误断。保存后各槽 kernel 会在没有请求时自动重启以应用新值。'
+                  value={numOf(
+                    failoverDraft,
+                    'stream_idle_timeout_ms',
+                    FAILOVER_DEFAULTS.stream_idle_timeout_ms
+                  )}
+                  min={30000}
+                  max={3600000}
+                  step={30000}
+                  format={fmtDuration}
+                  fallback={FAILOVER_DEFAULTS.stream_idle_timeout_ms}
+                  presets={[180000, 300000, 600000, 900000, 1800000]}
+                  onChange={(value) =>
+                    updateDraft('failover', {
+                      stream_idle_timeout_ms: value,
+                    })
+                  }
+                />
+                <div className='flex items-center justify-between gap-4 rounded-md border px-3 py-2.5'>
+                  <div>
+                    <Label htmlFor='failover-eager-tool-streaming'>
+                      工具参数流式下发
+                    </Label>
+                    <p className='text-xs leading-5 text-muted-foreground'>
+                      给所有自定义工具加 eager_input_streaming（官方 Claude Code
+                      直连官方地址并开启细粒度工具流式时的形态），大文件 Write
+                      内容边生成边下发，不再长时间静默。经中转的客户端本身不带此字段；客户端自带的设置优先。
+                    </p>
+                  </div>
+                  <Switch
+                    id='failover-eager-tool-streaming'
+                    checked={failoverDraft.eager_tool_streaming === true}
+                    onCheckedChange={(value) =>
+                      updateDraft('failover', { eager_tool_streaming: value })
+                    }
+                  />
+                </div>
                 <SliderSetting
                   id='failover-oauth-cooldown'
                   label='OAuth 401 冷却'

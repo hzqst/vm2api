@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { VIEW_TITLES } from '@/config/nav'
+import { VIEW_DESCRIPTIONS, VIEW_TITLES } from '@/config/nav'
 import type { OpsWindow } from '@/types/panel-overview'
 import type { Vm } from '@/types/panel-vm'
 import {
@@ -24,7 +24,6 @@ import { Card, CardContent } from '@/components/ui/card'
 import { PageHeader } from '@/components/page-header'
 import { QueryGate } from '@/components/query-gate'
 import { logStatsQueryOptions } from '@/features/logs/queries'
-import { BillingStrip } from '@/features/overview/billing-strip'
 import { ErrorCollectionSummary } from '@/features/overview/error-collection-summary'
 import {
   HealthBar,
@@ -39,7 +38,6 @@ import {
   dashboardQueryOptions,
   usageQueryOptions,
 } from '@/features/overview/queries'
-import { StatisticsChartCard } from '@/features/overview/statistics-chart-card'
 import { TrafficOps } from '@/features/overview/traffic-ops'
 
 type AlertTone = 'caution' | 'warn' | 'bad'
@@ -145,7 +143,10 @@ export function OverviewPage() {
   if (errs > 0) alerts.push({ t: `错误 ${errs}`, to: '/logs', tone: 'bad' })
 
   return (
-    <PageHeader title={VIEW_TITLES.overview}>
+    <PageHeader
+      title={VIEW_TITLES.overview}
+      description={VIEW_DESCRIPTIONS.overview}
+    >
       <QueryGate
         loading={dash.isLoading}
         error={dash.error || (d.error ? new Error(d.error) : null)}
@@ -184,69 +185,59 @@ export function OverviewPage() {
 
           <PoolQuota vms={vms} />
 
-          <div className='grid gap-3 xl:grid-cols-3'>
-            <StatisticsChartCard className='xl:col-span-2' />
-            <div className='grid grid-cols-2 gap-3 lg:grid-cols-4 xl:grid-cols-1'>
-              <KpiCard
-                icon={ShieldCheck}
-                label='可用账号'
-                value={
-                  <>
-                    {available}
-                    <small className='ml-1 text-[13px] font-medium text-muted-foreground'>
-                      / {withToken}
-                    </small>
-                  </>
-                }
-                ringPct={
-                  withToken ? (available / Math.max(withToken, 1)) * 100 : 0
-                }
-                tone='good'
-              />
-              <KpiCard
-                icon={Server}
-                label='在线'
-                value={
-                  <>
-                    {running}
-                    <small className='ml-1 text-[13px] font-medium text-muted-foreground'>
-                      / {vms.length}
-                    </small>
-                  </>
-                }
-                ringPct={vms.length ? (running / vms.length) * 100 : 0}
-                tone='good'
-              />
-              <KpiCard
-                icon={Gauge}
-                label='5h 峰值'
-                value={
-                  <>
-                    {peak5.toFixed(0)}
-                    <small className='ml-1 text-[13px] font-medium text-muted-foreground'>
-                      %
-                    </small>
-                  </>
-                }
-                ringPct={peak5}
-              />
-              <KpiCard
-                icon={Activity}
-                label={`请求 · 缓存 ${cachePct == null ? '—' : `${cachePct.toFixed(0)}%`}`}
-                value={fmtNum(reqs)}
-                hint={`Tokens ${fmtNum(tokensIn)}/${fmtNum(tokensOut)}`}
-                ringPct={cachePct}
-                tone='good'
-              />
-            </div>
+          <div className='grid grid-cols-2 gap-3 lg:grid-cols-4'>
+            <KpiCard
+              icon={ShieldCheck}
+              label='可用账号'
+              value={
+                <>
+                  {available}
+                  <small className='ml-1 text-[13px] font-medium text-muted-foreground'>
+                    / {withToken}
+                  </small>
+                </>
+              }
+              ringPct={
+                withToken ? (available / Math.max(withToken, 1)) * 100 : 0
+              }
+              tone='good'
+            />
+            <KpiCard
+              icon={Server}
+              label='在线'
+              value={
+                <>
+                  {running}
+                  <small className='ml-1 text-[13px] font-medium text-muted-foreground'>
+                    / {vms.length}
+                  </small>
+                </>
+              }
+              ringPct={vms.length ? (running / vms.length) * 100 : 0}
+              tone='good'
+            />
+            <KpiCard
+              icon={Gauge}
+              label='5h 峰值'
+              value={
+                <>
+                  {peak5.toFixed(0)}
+                  <small className='ml-1 text-[13px] font-medium text-muted-foreground'>
+                    %
+                  </small>
+                </>
+              }
+              ringPct={peak5}
+            />
+            <KpiCard
+              icon={Activity}
+              label={`请求 · 缓存 ${cachePct == null ? '—' : `${cachePct.toFixed(0)}%`}`}
+              value={fmtNum(reqs)}
+              hint={`Tokens ${fmtNum(tokensIn)}/${fmtNum(tokensOut)}`}
+              ringPct={cachePct}
+              tone='good'
+            />
           </div>
-
-          <BillingStrip
-            billing={d.billing}
-            vms={vms}
-            fallbackToday={Number(summary.today_cost ?? totals.today_cost ?? 0)}
-            fallbackTotal={Number(summary.total_cost ?? totals.total_cost ?? 0)}
-          />
 
           <TrafficOps ops={ops} showModels />
 

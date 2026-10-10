@@ -745,10 +745,36 @@ export function normalizeVmFilter(f: string): string {
   return f || 'all'
 }
 
+type ProxyRef = {
+  host?: string
+  port?: number | string
+  id?: string
+  scheme?: string
+  kind?: string
+  label?: string | null
+}
+
+/** 本地代理 = 槽位所在 VPS 自身出口，按那台 VPS 标 `local:<IP>`；不知道是哪台写「当前VPS」。 */
+export function localProxyText(vpsIp?: string | null): string {
+  return `local:${vpsIp?.trim() || '当前VPS'}`
+}
+
+function isLocalProxyRef(proxy: ProxyRef): boolean {
+  return (
+    proxy.id === 'px-local' ||
+    proxy.scheme === 'local' ||
+    proxy.kind === 'local' ||
+    proxy.host === 'local'
+  )
+}
+
+/** `vpsIp` 只作用于本地代理：它的出口随槽位所在 VPS 变。 */
 export function proxyHostLabel(
-  proxy: { host?: string; port?: number | string; id?: string } | undefined
+  proxy: ProxyRef | undefined,
+  vpsIp?: string | null
 ): string {
   if (!proxy) return '—'
+  if (isLocalProxyRef(proxy)) return localProxyText(vpsIp)
   if (proxy.host) {
     const host =
       proxy.host.includes(':') && !proxy.host.startsWith('[')
@@ -761,16 +787,10 @@ export function proxyHostLabel(
 
 /** 带代理名称的地址：`名称 · host:port`；没起名就退回 proxyHostLabel()。 */
 export function proxyNamedLabel(
-  proxy:
-    | {
-        host?: string
-        port?: number | string
-        id?: string
-        label?: string | null
-      }
-    | undefined
+  proxy: ProxyRef | undefined,
+  vpsIp?: string | null
 ): string {
-  const host = proxyHostLabel(proxy)
+  const host = proxyHostLabel(proxy, vpsIp)
   const name = proxy?.label?.trim()
   return name && host !== '—' ? `${name} · ${host}` : host
 }

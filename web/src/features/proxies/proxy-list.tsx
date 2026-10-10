@@ -233,7 +233,7 @@ export function ProxyList({
           <p className='text-sm text-muted-foreground'>
             {all.length
               ? '没有符合条件的代理。'
-              : '还没有代理。在左侧粘贴 SOCKS5 行导入，或添加本地出口。'}
+              : '还没有代理。在左侧粘贴 SOCKS5 行导入，或添加本地代理。'}
           </p>
           {all.length && (query || filter !== 'all') ? (
             <Button

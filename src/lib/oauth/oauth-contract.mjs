@@ -17,7 +17,7 @@ export const FULL_OAUTH_SCOPE =
   'user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload'
 export const BROWSER_AUTHORIZE_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36'
-export const TOKEN_UA = 'claude-cli/2.1.284 (external, sdk-cli)'
+export const TOKEN_UA = 'claude-cli/2.1.293 (external, sdk-cli)'
 export const BOOTSTRAP_UA = TOKEN_UA
 export const BETA_OAUTH = 'oauth-2025-04-20'
 
@@ -28,7 +28,7 @@ export const OFFICIAL_CLI_HEADERS = Object.freeze({
   'x-stainless-arch': 'x64',
   'x-stainless-runtime': 'node',
   'x-stainless-runtime-version': 'v26.3.0',
-  'x-stainless-package-version': '0.112.1',
+  'x-stainless-package-version': '0.128.0',
   'x-stainless-retry-count': '0',
   'x-stainless-timeout': '600',
 })

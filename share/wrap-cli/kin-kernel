@@ -1,5 +1,17 @@
 #!/bin/sh
 DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+if [ -z "$JOB_IDLE_SECS" ]; then
+  CONF=
+  PREV=
+  for ARG in "$@"; do
+    [ "$PREV" = "--config" ] && CONF=$ARG
+    PREV=$ARG
+  done
+  if [ -n "$CONF" ] && [ -r "$CONF" ]; then
+    IDLE=$(grep -o '"idle_timeout_seconds": *[0-9]*' "$CONF" | head -n 1 | tr -dc '0-9')
+    [ -n "$IDLE" ] && [ "$IDLE" -gt 0 ] && export JOB_IDLE_SECS="$IDLE"
+  fi
+fi
 BIN="$DIR/kin-kernel.bin"
 LOADER="$DIR/glibc239/ld-linux-x86-64.so.2"
 if [ -x "$LOADER" ] && [ -x "$BIN" ]; then

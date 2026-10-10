@@ -118,6 +118,36 @@ test('setup-token count_tokens hops and returns input_tokens', async () => {
   assert.equal(cap.calls[0].body.five_hour, undefined)
 })
 
+test('a platform-scoped key cannot count tokens on the other platform and peeks only its VMs', async () => {
+  const scopedReq = (group_type) => ({
+    apiKeyKind: 'managed',
+    apiKeyRecord: { group_type, allowed_vms: '["vm-02"]' },
+  })
+  const cap = jsonCapture()
+  const seen = []
+  const deps = {
+    json: cap.json,
+    requireAuth: () => true,
+    readBody: async () => ({ model: 'claude-sonnet-5', messages: [{ role: 'user', content: 'hi' }] }),
+    cfg: { limits: { max_body_bytes: 1024 } },
+    stickyRouter: { extractPoolKey: () => null },
+    getPoolScheduler: () => ({
+      peekAccount: async (args) => {
+        seen.push(args.keyScope)
+        return { ok: true, vmId: 'vm-02', accountId: 'acc-2', vm: { credential_mode: 'setup-token' }, exec: {} }
+      },
+    }),
+    countTokensViaWorker: async () => ({ ok: true, status: 200, body: { input_tokens: 3 } }),
+  }
+  await handleUserCountTokens(scopedReq('openai'), {}, deps)
+  assert.equal(cap.calls[0].status, 403)
+  assert.equal(cap.calls[0].body.error.code, 'key_group_mismatch')
+  assert.equal(seen.length, 0)
+  await handleUserCountTokens(scopedReq('anthropic'), {}, deps)
+  assert.equal(cap.calls[1].status, 200)
+  assert.deepEqual(seen[0], { group_type: 'anthropic', allowed_vms: ['vm-02'], vm_pool_id: null })
+})
+
 test('distill count_tokens returns distill_blocked and never peeks or hops', async () => {
   const cap = jsonCapture()
   let peeked = false

@@ -41,6 +41,7 @@ const FABLE_51_LEGACY_ID = 'claude-fable-5.1'
 const OPUS_55_ID = 'claude-opus-5-5'
 const OPUS_55_LEGACY_ID = 'claude-opus-5.5'
 const SONNET_55_ID = 'claude-sonnet-5-5'
+const HAIKU_55_ID = 'claude-haiku-5-5'
 const OPUS_55_COMPUTER_FROM = 'computer_20251124'
 const OPUS_55_COMPUTER_TO = 'computer_toolset_20260801'
 
@@ -53,6 +54,17 @@ const CAP_HAIKU = {
   supports_interleaved: false,
   supports_effort: false,
   supports_context_management: false,
+}
+
+const CAP_HAIKU_55 = {
+  context_window: 100000,
+  supports_1m: false,
+  thinking_mode: 'adaptive_or_enabled',
+  supports_adaptive: true,
+  requires_adaptive: false,
+  supports_interleaved: true,
+  supports_effort: true,
+  supports_context_management: true,
 }
 
 const CAP_SONNET45 = {
@@ -172,6 +184,28 @@ export function seedDefaultPolicy() {
     aliases: [],
   })
 
+  // Claude Code 2.1.293. Native 1M; no context-1m beta and no gateway id.
+  // budget_tokens is rejected. disabled thinking stays only at high or below.
+  add(HAIKU_55_ID, {
+    display_name: 'Haiku 5.5',
+    family: 'haiku',
+    sort: 12,
+    capabilities: CAP_HAIKU_55,
+    betas: {
+      required: ['claude-code-20250219', 'oauth-2025-04-20', 'interleaved-thinking-2025-05-14'],
+      drop: [CONTEXT_1M],
+      pass_context_1m: false,
+    },
+    params: {
+      max_tokens_default: 100000,
+      max_tokens_cap: 100000,
+      on_adaptive: 'passthrough',
+      on_enabled: 'passthrough',
+      default_effort: 'medium',
+    },
+    aliases: [],
+  })
+
   add('claude-sonnet-4-5-20250929', {
     display_name: 'Sonnet 4.5',
     family: 'sonnet',
@@ -192,7 +226,11 @@ export function seedDefaultPolicy() {
       drop: [CONTEXT_1M],
       pass_context_1m: false,
     },
-    params: { max_tokens_default: 16384, max_tokens_cap: 64000, on_adaptive: 'passthrough' },
+    params: {
+      max_tokens_default: 16384,
+      max_tokens_cap: 64000,
+      on_adaptive: 'passthrough',
+    },
     aliases: [],
   })
 
@@ -206,7 +244,11 @@ export function seedDefaultPolicy() {
       drop: [CONTEXT_1M],
       pass_context_1m: false,
     },
-    params: { max_tokens_default: 32000, max_tokens_cap: 128000, on_adaptive: 'passthrough' },
+    params: {
+      max_tokens_default: 32000,
+      max_tokens_cap: 128000,
+      on_adaptive: 'passthrough',
+    },
     aliases: [],
   })
 
@@ -484,6 +526,7 @@ export function familyOfModelId(id = '') {
 function heuristicCapabilities(modelId = '') {
   const m = String(modelId).toLowerCase()
   if (/^(gpt-|codex-)/i.test(m)) return { ...CAP_CODEX }
+  if (/claude-haiku-5/.test(m)) return { ...CAP_HAIKU_55 }
   if (m.includes('haiku') || /claude-3[.-]/.test(m)) return { ...CAP_HAIKU }
   if (/claude-(sonnet|opus)-4-5/.test(m)) return { ...CAP_SONNET45 }
   if (/claude-(opus|sonnet|fable|mythos)-5/.test(m) || /claude-opus-4-[78]/.test(m)) {
@@ -499,7 +542,7 @@ export function loadModelPolicy({ force = false } = {}) {
     const repo = new SettingsRepo()
     const stored = repo.get(SETTINGS_KEY, null)
     if (stored) {
-      const persisted = persistOpus55Model(repo, stored)
+      const persisted = persistHaiku55Model(repo, persistOpus55Model(repo, stored))
       policy = normalizePolicy(persisted)
       policy.source = policy.source || 'settings'
     } else {
@@ -535,6 +578,43 @@ function persistOpus55Model(repo, stored) {
   }
   if (!dirty) return stored
   const next = { ...stored, models, aliases }
+  try {
+    repo.set(SETTINGS_KEY, next)
+  } catch {
+    return next
+  }
+  return next
+}
+
+/** Append or migrate Haiku 5.5 onto an existing settings row. Does not reset other models. */
+function persistHaiku55Model(repo, stored) {
+  if (!stored || typeof stored !== 'object') return stored
+  const seed = seedDefaultPolicy()
+  const desired = seed.models[HAIKU_55_ID]
+  const models = stored.models && typeof stored.models === 'object' ? { ...stored.models } : {}
+  const current = models[HAIKU_55_ID]
+  let dirty = false
+  if (!current) {
+    models[HAIKU_55_ID] = desired
+    dirty = true
+  } else {
+    const wasOldSeed =
+      Number(current.capabilities?.context_window) === 1_000_000 &&
+      Number(current.params?.max_tokens_default) === 128_000 &&
+      Number(current.params?.max_tokens_cap) === 128_000
+    if (wasOldSeed) {
+      models[HAIKU_55_ID] = deepMergeEntry(current, {
+        capabilities: { context_window: desired.capabilities.context_window },
+        params: {
+          max_tokens_default: desired.params.max_tokens_default,
+          max_tokens_cap: desired.params.max_tokens_cap,
+        },
+      })
+      dirty = true
+    }
+  }
+  if (!dirty) return stored
+  const next = { ...stored, models }
   try {
     repo.set(SETTINGS_KEY, next)
   } catch {
@@ -749,6 +829,26 @@ export function isOpus55Model(model = '') {
   return /^claude-opus-5(?:-5|\.5)(?=-|$)/i.test(bare || '')
 }
 
+export function isHaiku55Model(model = '') {
+  const bare = String(model || '')
+    .split('[')[0]
+    .split('/')
+    .filter(Boolean)
+    .pop()
+  return /^claude-haiku-5(?:-5|\.5)(?=-|$)/i.test(bare || '')
+}
+
+function applyHaiku55Thinking(body) {
+  if (!body.thinking || typeof body.thinking !== 'object') return body
+  const type = String(body.thinking.type || '').toLowerCase()
+  const effort = String(body.output_config?.effort || '').toLowerCase()
+  const disabledBlocked = type === 'disabled' && (effort === 'xhigh' || effort === 'max')
+  if (type === 'enabled' || body.thinking.budget_tokens != null || disabledBlocked) {
+    body.thinking = adaptiveOnlyThinking(body.thinking)
+  }
+  return body
+}
+
 /**
  * Opus 5.5 and Sonnet 5.5 reject forced tool choice and legacy thinking.
  * Keep the existing auto + strict compatibility policy; strict constrains
@@ -758,6 +858,10 @@ export function isOpus55Model(model = '') {
 export function applyModelRequestRules(body = {}) {
   if (!body || typeof body !== 'object') return body
   const canonical = resolvePolicyModelId(body.model)
+  if (isHaiku55Model(body.model) || canonical === HAIKU_55_ID) {
+    if (canonical === HAIKU_55_ID) body.model = canonical
+    return applyHaiku55Thinking(body)
+  }
   const opus55 = isOpus55Model(body.model)
   if (!opus55 && canonical !== SONNET_55_ID) return body
   if (canonical === OPUS_55_ID || canonical === SONNET_55_ID) body.model = canonical
@@ -830,7 +934,10 @@ export function applyBetaPolicyToHeader(
 
 export function unofficialMimicryBetaHeader(modelId = '') {
   const caps = getCapabilities(modelId)
-  if (caps?.supports_context_management === false || /haiku/i.test(String(modelId || ''))) {
+  if (
+    caps?.supports_context_management === false ||
+    (/haiku/i.test(String(modelId || '')) && !/haiku-5/i.test(String(modelId || '')))
+  ) {
     return HAIKU_BETA_HEADER
   }
   return joinBetas(fullClaudeCodeMimicryBetas().filter((t) => t !== CONTEXT_1M))

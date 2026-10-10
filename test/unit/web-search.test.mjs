@@ -60,11 +60,11 @@ test('promptRequestsWebSearch matches 搜索 / search / web search only', () => 
   assert.equal(promptRequestsWebSearch('列出你目前可以调用的所有工具'), false)
 })
 
-test('shouldInjectClaudeWebSearch is prompt-gated; false flag always wins', () => {
+test('shouldInjectClaudeWebSearch ignores search keywords; false flag always wins', () => {
   const ask = { messages: [{ role: 'user', content: '帮我搜索天气' }] }
   const hello = { messages: [{ role: 'user', content: 'hello' }] }
   assert.equal(shouldInjectClaudeWebSearch({ clientClass: 'hermes', body: hello }), false)
-  assert.equal(shouldInjectClaudeWebSearch({ clientClass: 'hermes', body: ask }), true)
+  assert.equal(shouldInjectClaudeWebSearch({ clientClass: 'hermes', body: ask }), false)
   assert.equal(
     shouldInjectClaudeWebSearch({
       headers: { 'user-agent': 'kin-console-test/1.0' },
@@ -113,10 +113,10 @@ test('replayed search history keeps the tool armed on a silent follow-up', () =>
   assert.equal(shouldInjectClaudeWebSearch({ clientClass: 'hermes', body: plain }), false)
 })
 
-test('tool_choice none still skips inject even when the prompt asks to search', () => {
+test('tool_choice none still skips inject even when search is explicitly on', () => {
   assert.equal(
     shouldInjectClaudeWebSearch({
-      body: { messages: [{ role: 'user', content: 'search news' }], tool_choice: { type: 'none' } },
+      body: { messages: [{ role: 'user', content: 'search news' }], tool_choice: { type: 'none' }, web_search: true },
     }),
     true,
   )
@@ -134,7 +134,7 @@ test('OpenAI web_search type is not dropped during convert', () => {
   assert.equal(tools[1].name, 'lookup')
 })
 
-test('OpenAI path injects native web_search only when the prompt asks', () => {
+test('OpenAI path does not inject web_search just because the prompt says search', () => {
   const hello = toClaudeMessages('openai.chat', {
     model: 'claude-sonnet-5',
     messages: [{ role: 'user', content: 'hi' }],
@@ -151,14 +151,21 @@ test('OpenAI path injects native web_search only when the prompt asks', () => {
     model: 'claude-sonnet-5',
     messages: [{ role: 'user', content: 'search the latest docs' }],
   })
-  const out = ensureClaudeWebSearch(asked.claude, {
+  const keywordOnly = ensureClaudeWebSearch(asked.claude, {
     enabled: shouldInjectClaudeWebSearch({
       headers: { 'user-agent': 'OpenAI/Python 1.40' },
       body: asked.claude,
     }),
   })
-  assert.ok(hasClaudeWebSearch(out.tools))
-  assert.deepEqual(out.tools.at(-1), CLAUDE_WEB_SEARCH_TOOL)
+  assert.equal(hasClaudeWebSearch(keywordOnly.tools), false)
+  const forced = ensureClaudeWebSearch(asked.claude, {
+    enabled: shouldInjectClaudeWebSearch({
+      headers: { 'user-agent': 'OpenAI/Python 1.40', 'x-kin-web-search': 'true' },
+      body: asked.claude,
+    }),
+  })
+  assert.ok(hasClaudeWebSearch(forced.tools))
+  assert.deepEqual(forced.tools.at(-1), CLAUDE_WEB_SEARCH_TOOL)
 })
 
 test('dropWebSearchFlag and sanitize drop the KIN-only top key', () => {
@@ -187,6 +194,23 @@ test('rewriteToolNames skips Anthropic server tools', () => {
   assert.equal(result.body.tools[0].name, 'web_search')
   assert.equal(result.body.tools[0].type, 'web_search_20250305')
   assert.match(result.body.tools[1].name, /^kin_tool_/)
+})
+
+test('custom tool sanitizer keeps eager_input_streaming true and false', () => {
+  for (const eager of [true, false]) {
+    const out = officialMessagesBody({
+      model: 'claude-opus-5-5',
+      messages: [{ role: 'user', content: 'hi' }],
+      tools: [{ name: 'Write', input_schema: { type: 'object', properties: {} }, eager_input_streaming: eager }],
+    })
+    assert.equal(out.tools[0].eager_input_streaming, eager)
+  }
+  const omitted = officialMessagesBody({
+    model: 'claude-opus-5-5',
+    messages: [{ role: 'user', content: 'hi' }],
+    tools: [{ name: 'Write', input_schema: { type: 'object', properties: {} } }],
+  })
+  assert.equal(Object.hasOwn(omitted.tools[0], 'eager_input_streaming'), false)
 })
 
 test('isWebSearchTool / isAnthropicServerTool', () => {

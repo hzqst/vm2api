@@ -168,9 +168,10 @@ export function promptRequestsWebSearch(text) {
 }
 
 /**
- * Inject when the last user prompt asks to search, when the caller replays
- * search history, or on an explicit true flag. Off when official or
- * body/header false. tool_choice=none is enforced in ensureClaudeWebSearch.
+ * Inject on an explicit true flag or when the caller replays search history.
+ * A bare "search" / "搜索" in the latest user text must not add or remove the
+ * tool: that rewrites the tool prefix and breaks the prompt cache. Off when
+ * official or body/header false. tool_choice=none is enforced in ensureClaudeWebSearch.
  */
 export function shouldInjectClaudeWebSearch({ officialClient, clientClass, headers, body } = {}) {
   if (officialClient || clientClass === 'claude_code_official') return false
@@ -178,7 +179,7 @@ export function shouldInjectClaudeWebSearch({ officialClient, clientClass, heade
   const hdr = headers?.[WEB_SEARCH_HEADER] ?? headers?.['X-Kin-Web-Search']
   if (isTrueFlag(hdr) || isTrueFlag(body?.web_search)) return true
   if (historyHasWebSearchArtifacts(body)) return true
-  return promptRequestsWebSearch(lastUserPromptText(body))
+  return false
 }
 
 function toolChoiceNone(toolChoice) {
@@ -240,8 +241,8 @@ export function toAnthropicCustomTool(tool) {
   if (tool.cache_control) out.cache_control = tool.cache_control
   const strict = fn?.strict ?? tool.strict
   if (typeof strict === 'boolean') out.strict = strict
-  // Claude Code defers most tools and loads them through ToolSearch.
   if (tool.defer_loading === true) out.defer_loading = true
+  if (typeof tool.eager_input_streaming === 'boolean') out.eager_input_streaming = tool.eager_input_streaming
   return out
 }
 

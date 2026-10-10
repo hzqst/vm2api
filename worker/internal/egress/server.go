@@ -28,6 +28,9 @@ type Config struct {
 	ListenDNS     string   `json:"listen_dns"`
 	DNSUpstream   string   `json:"dns_upstream"`
 	DNSEmptyTypes []uint16 `json:"dns_empty_types,omitempty"`
+	// DomainForward sends a unique helper DNS answer as a SOCKS hostname.
+	// Off by default: the original IP literal is unchanged.
+	DomainForward bool `json:"domain_forward,omitempty"`
 }
 
 // IdleClose is how long a splice may sit with no bytes before both sides
@@ -35,9 +38,10 @@ type Config struct {
 const IdleClose = 7 * time.Minute
 
 const (
-	classIdleClose = "idle_close"
-	classSpliceRST = "splice_rst"
-	classSocksDial = "socks_dial"
+	classIdleClose       = "idle_close"
+	classSpliceRST       = "splice_rst"
+	classSocksDial       = "socks_dial"
+	classAmbiguousDomain = "ambiguous_domain"
 )
 
 type spliceError struct {
@@ -83,6 +87,7 @@ type Server struct {
 	http      *http.Client
 	upstreams []string
 	preferred atomic.Int32
+	domains   domainTable
 }
 
 // parseDNSUpstreams splits a comma-separated dns_upstream value.
@@ -198,14 +203,18 @@ func (s *Server) handleTCP(ctx context.Context, conn net.Conn) {
 }
 
 func (s *Server) ForwardTCP(ctx context.Context, client net.Conn, dest string) error {
-	up, err := s.dialer.DialContext(ctx, "tcp", dest)
+	dialDest, err := s.dialDest(dest)
 	if err != nil {
-		return &spliceError{class: classSocksDial, dest: dest, err: err}
+		return err
+	}
+	up, err := s.dialer.DialContext(ctx, "tcp", dialDest)
+	if err != nil {
+		return &spliceError{class: classSocksDial, dest: dialDest, err: err}
 	}
 	defer up.Close()
 	kinproxy.ApplyTCPKeepAlive(client)
 	kinproxy.ApplyTCPKeepAlive(up)
-	return spliceIdle(client, up, dest, IdleClose)
+	return spliceIdle(client, up, dialDest, IdleClose)
 }
 
 func splice(a, b net.Conn) error {
@@ -410,6 +419,9 @@ func (s *Server) ResolveDNS(ctx context.Context, query []byte) ([]byte, error) {
 		reply, err := s.resolveOne(attemptCtx, upstream, query)
 		cancel()
 		if err == nil {
+			if s.cfg.DomainForward {
+				s.domains.observe(reply, time.Now())
+			}
 			if idx != start {
 				s.preferred.Store(int32(idx))
 				log.Printf("kin-egress dns upstream switched to %s", upstream)

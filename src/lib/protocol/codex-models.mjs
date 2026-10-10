@@ -13,6 +13,9 @@ import { isSyncableGptCatalogId } from './gpt-ids.mjs'
 export { SKIP_GPT, GPT_ID_PREFIX, isGptSeriesId, isSyncableGptCatalogId } from './gpt-ids.mjs'
 
 export const CODEX_MODELS_URL = 'https://chatgpt.com/backend-api/codex/models'
+// Codex web search (`web.run`): the CLI posts to `{base_url}/alpha/search`; under ChatGPT login
+// that base is https://chatgpt.com/backend-api/codex.
+export const CODEX_SEARCH_URL = 'https://chatgpt.com/backend-api/codex/alpha/search'
 export const CHATGPT_MODELS_URL = CODEX_MODELS_URL
 export const CHATGPT_MODELS_URLS = Object.freeze([CODEX_MODELS_URL])
 export const CODEX_OAUTH_TOKEN_URL = 'https://auth.openai.com/oauth/token'
@@ -168,11 +171,11 @@ async function readFetchBody(res) {
   return null
 }
 
-export function makeProxyFetch(proxyUrl, timeoutMs = 15000) {
+export function makeProxyFetch(proxyUrl, timeoutMs = 15000, { maxMs = 30000 } = {}) {
   const px = String(proxyUrl || '')
     .trim()
     .replace(/^socks5:\/\//i, 'socks5h://')
-  const ms = Math.min(Math.max(Number(timeoutMs) || 15000, 3000), 30000)
+  const ms = Math.min(Math.max(Number(timeoutMs) || 15000, 3000), maxMs)
   return (url, init = {}) => {
     // Build the agent before arming the timer, so a bad proxy URL throws without leaking it.
     const agent = px ? createProxyAgent(px) : undefined

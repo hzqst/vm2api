@@ -13,6 +13,10 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { dashboardQueryOptions } from '@/features/overview/queries'
+import {
+  telemetryEnabled,
+  telemetrySeedFlags,
+} from '@/features/vm/telemetry-policy'
 
 export function TelemetryPane() {
   const dash = useQuery(dashboardQueryOptions())
@@ -20,17 +24,7 @@ export function TelemetryPane() {
   const vms: Vm[] = dash.data?.vms || []
   const apply = async (ids: string[] | null, enabled: boolean) => {
     const list = ids || vms.map((v) => v.id)
-    const body = enabled
-      ? {
-          telemetry_disabled: false,
-          disable_nonessential_traffic: true,
-          do_not_track: false,
-        }
-      : {
-          telemetry_disabled: true,
-          disable_nonessential_traffic: false,
-          do_not_track: true,
-        }
+    const body = telemetrySeedFlags(enabled)
     let ok = 0
     let fail = 0
     for (const id of list) {
@@ -79,7 +73,7 @@ export function TelemetryPane() {
           </TableHeader>
           <TableBody>
             {vms.map((vm) => {
-              const on = vm.seed_policy?.telemetry_disabled === false
+              const on = telemetryEnabled(vm.seed_policy)
               return (
                 <TableRow key={vm.id}>
                   <TableCell>{vm.id}</TableCell>

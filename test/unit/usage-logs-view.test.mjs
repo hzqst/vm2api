@@ -151,6 +151,22 @@ test('muting follows RequestLogStore: settings default, explicit list, include_m
   assert.deepEqual(classes(settings, { exclude_error_class: 'quota' }), ['auth', 'ok'])
 })
 
+test('summary cache hit rate counts Claude writes and keeps Codex input inclusive on both summary paths', () => {
+  const db = freshDb()
+  seed(db, [
+    { input_tokens: 20, cache_read_tokens: 80_000, cache_creation_tokens: 20_000 },
+    { via: 'codex-kernel', model: 'gpt-5.4', input_tokens: 100, cache_read_tokens: 80 },
+  ])
+  // Claude prompt 100020 + Codex prompt 100 (cached already inside input).
+  const want = 80_080 / 100_120
+  const sqlPath = new UsageLogsView(db).summary({})
+  const scanPath = new UsageLogsView(db, { mutedErrorClasses: ['auth', 'quota'] }).summary({})
+  for (const summary of [sqlPath, scanPath]) {
+    assert.equal(summary.totalRequests, 2)
+    assert.ok(Math.abs(summary.cacheHitRate - want) < 1e-9, String(summary.cacheHitRate))
+  }
+})
+
 test('provider chains for a page come from one request_attempts query, ordered by attempt', () => {
   const db = freshDb()
   const [a, b, c] = seed(db, [

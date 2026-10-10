@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { VIEW_TITLES } from '@/config/nav'
+import { VIEW_DESCRIPTIONS, VIEW_TITLES } from '@/config/nav'
 import type { LeaderboardScope, StatsDimension } from '@/types/panel-statistics'
 import { Activity, Clock, DollarSign, TrendingUp } from 'lucide-react'
 import { formatCurrency, formatDuration } from '@/lib/usage-format'
@@ -35,7 +35,10 @@ const CARD_ACCENTS = ['primary', 'purple', 'blue'] as const
 export function StatisticsPage() {
   const me = useQuery(meQueryOptions())
   return (
-    <PageHeader title={VIEW_TITLES.statistics}>
+    <PageHeader
+      title={VIEW_TITLES.statistics}
+      description={VIEW_DESCRIPTIONS.statistics}
+    >
       <QueryGate loading={me.isLoading} error={me.error}>
         <StatisticsDashboard isUser={me.data?.role === 'user'} />
       </QueryGate>

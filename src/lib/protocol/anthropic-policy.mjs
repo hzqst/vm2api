@@ -200,13 +200,21 @@ export const MID_CONVERSATION_SYSTEM_BETA = 'mid-conversation-system-2026-04-07'
 export function modelSupportsContextManagement(modelId = '') {
   const caps = getCapabilities(modelId)
   if (caps?.supports_context_management === false) return false
-  if (/haiku/i.test(String(modelId || ''))) return false
+  const id = String(modelId || '')
+  if (/haiku/i.test(id) && !/haiku-5/i.test(id)) return false
   return true
 }
 
-/** Haiku 400s `role 'system' is not supported on this model`. */
+/**
+ * Docs list: Fable 5 / 5.1, Mythos 5 / 5.1, Opus 5.5 / 5 / 4.8, Sonnet 5.5, Haiku 5.5.
+ * Sonnet 5, Haiku 4.5 and other Claude 4.x reject mid-conversation `role=system` (400).
+ */
 export function modelSupportsMidConversationSystem(modelId = '') {
-  return !/haiku/i.test(String(modelId || ''))
+  const id = String(modelId || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\[1m\]$/i, '')
+  return /^claude-(?:(?:fable|mythos)-5(?:[-.]1)?|opus-(?:5(?:[-.]5)?|4[-.]8)|(?:sonnet|haiku)-5[-.]5)(?:-|$)/.test(id)
 }
 
 /**

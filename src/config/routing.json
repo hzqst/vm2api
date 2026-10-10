@@ -77,7 +77,9 @@
     "max_account_switches": 10,
     "max_same_account_retries": 1,
     "same_account_retry_delay_ms": 500,
-    "total_retry_deadline_ms": 120000
+    "total_retry_deadline_ms": 120000,
+    "stream_idle_timeout_ms": 180000,
+    "eager_tool_streaming": false
   },
   "inference": {
     "engine": "rust",
@@ -85,6 +87,24 @@
     "session_slots": 20
   },
   "codex": {
+    "enabled": true,
+    "protocols": {
+      "openai.responses": { "mode": "native", "enabled": true },
+      "openai.chat": { "mode": "convert", "enabled": true },
+      "openai.completions": { "mode": "convert", "enabled": true },
+      "anthropic.messages": { "mode": "reject", "enabled": false }
+    },
+    "convert": {
+      "chat_to_codex": true,
+      "completions_to_codex": true,
+      "anthropic_to_codex": false
+    },
+    "clients": {
+      "official_codex": "allow",
+      "openai_compatible": "allow",
+      "claude_code": "reject",
+      "unknown": "allow"
+    },
     "quota": {
       "limit_5h": 1,
       "limit_7d": 1,
@@ -186,24 +206,19 @@
       "chat_id": ""
     }
   },
-  "codex": {
-    "enabled": true,
-    "protocols": {
-      "openai.responses": { "mode": "native", "enabled": true },
-      "openai.chat": { "mode": "convert", "enabled": true },
-      "openai.completions": { "mode": "convert", "enabled": true },
-      "anthropic.messages": { "mode": "reject", "enabled": false }
+  "vm": {
+    "default_runtime": "docker",
+    "memory": "512m",
+    "vcpus": 2,
+    "disk_gb": 20,
+    "cpu_model": "host",
+    "smbios": {
+      "manufacturer": "Dell Inc.",
+      "product": "OptiPlex 7090",
+      "version": "1.0",
+      "family": "OptiPlex"
     },
-    "convert": {
-      "chat_to_codex": true,
-      "completions_to_codex": true,
-      "anthropic_to_codex": false
-    },
-    "clients": {
-      "official_codex": "allow",
-      "openai_compatible": "allow",
-      "claude_code": "reject",
-      "unknown": "allow"
-    }
+    "mac_oui": "52:54:00",
+    "allow_tcg": false
   }
 }

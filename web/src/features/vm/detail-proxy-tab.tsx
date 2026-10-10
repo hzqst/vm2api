@@ -1,7 +1,7 @@
 import { Link } from '@tanstack/react-router'
 import type { Vm, VmProxySnap } from '@/types/panel-vm'
 import { cn } from '@/lib/utils'
-import { proxyHostLabel, proxyNamedLabel } from '@/lib/vm-status'
+import { localProxyText, proxyHostLabel } from '@/lib/vm-status'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import {
@@ -14,11 +14,17 @@ import {
 import { TabsContent } from '@/components/ui/tabs'
 import { StatusMark } from '@/components/status-mark'
 import { HealthDonut } from '@/features/overview/health-gauge'
-import { proxyStatusLabel } from '@/features/proxies/proxy-sort'
+import {
+  LOCAL_PROXY_HINT,
+  proxyIsLocal,
+  proxyLabel,
+  proxyStatusLabel,
+} from '@/features/proxies/proxy-sort'
 import {
   proxyFieldClass,
   proxyLatencyTone,
 } from '@/features/proxies/proxy-tone'
+import { useVpsIp } from '@/features/proxies/use-vps-ip'
 import { Field } from '@/features/vm/detail-section-primitives'
 import { proxyHealthOf } from '@/features/vm/proxy-health'
 
@@ -27,6 +33,8 @@ type VmProxyTabProps = {
   proxy: VmProxySnap
   boundId: string
   free: VmProxySnap[]
+  /** 整个池：本机槽的本地代理 IP 取自池里本地代理行的出口地理。 */
+  pool: VmProxySnap[]
   bindId: string
   onBindIdChange: (id: string) => void
   onUnbind: () => void
@@ -42,6 +50,7 @@ export function VmProxyTab(props: VmProxyTabProps) {
     proxy,
     boundId,
     free,
+    pool,
     bindId,
     onBindIdChange,
     onUnbind,
@@ -51,15 +60,24 @@ export function VmProxyTab(props: VmProxyTabProps) {
     onGeo,
   } = props
   const health = proxyHealthOf(vm, proxy)
+  const local = !!boundId && proxyIsLocal(proxy)
+  const vpsIp = useVpsIp(vm.node_id, pool)
+  // 本地代理行的地理是控制面那台；节点槽从节点出网，那份地理不代表它。
+  const nodeLocal = local && !!vm.node_id
+  const selectedId = bindId || free[0]?.id || ''
 
   return (
     <TabsContent value='proxy' className='space-y-3 pt-4'>
       <Card>
         <CardHeader className='pb-2'>
-          <CardTitle className='text-sm'>绑定的 SOCKS5</CardTitle>
+          <CardTitle className='text-sm'>
+            {local ? '绑定的本地代理' : '绑定的 SOCKS5'}
+          </CardTitle>
         </CardHeader>
         <p className='px-6 pb-2 text-xs text-muted-foreground'>
-          出站经这条代理的 egress 网关。槽内不 Dial SOCKS。
+          {local
+            ? `${LOCAL_PROXY_HINT}：槽内流量与控制面代发请求（换票、刷新、测试）都从 ${localProxyText(vpsIp)} 出网。`
+            : '出站经这条代理的 egress 网关。槽内不 Dial SOCKS。'}
         </p>
         <CardContent className='flex flex-wrap gap-6 pt-0'>
           <HealthDonut score={health.score} label='健康' size={80} />
@@ -74,7 +92,7 @@ export function VmProxyTab(props: VmProxyTabProps) {
             ) : null}
             <Field label='地址'>
               <span className='field-host text-xs'>
-                {proxyHostLabel(proxy)}
+                {proxyHostLabel(proxy, vpsIp)}
               </span>
             </Field>
             <Field label='状态'>
@@ -105,7 +123,11 @@ export function VmProxyTab(props: VmProxyTabProps) {
             </Field>
             <Field label='认证'>{proxy.has_auth ? '有' : '无'}</Field>
             <Field label='出口'>
-              {proxy.geo?.country || proxy.geo?.timezone ? (
+              {nodeLocal ? (
+                <span className='text-xs text-muted-foreground'>
+                  随节点出口（时区按节点出口地理同步）
+                </span>
+              ) : proxy.geo?.country || proxy.geo?.timezone ? (
                 <span className='flex flex-wrap items-center gap-1.5'>
                   {[proxy.geo.country_code || proxy.geo.country, proxy.geo.city]
                     .filter(Boolean)
@@ -170,7 +192,7 @@ export function VmProxyTab(props: VmProxyTabProps) {
               size='sm'
               variant='outline'
               onClick={onGeo}
-              disabled={!!proxy.blocked_reason}
+              disabled={!!proxy.blocked_reason || nodeLocal}
             >
               测地理
             </Button>
@@ -180,7 +202,7 @@ export function VmProxyTab(props: VmProxyTabProps) {
           </>
         ) : null}
         <Button size='sm' variant='outline' onClick={onAllocate}>
-          分配空闲 SOCKS5
+          分配空闲出口
         </Button>
         <Button size='sm' variant='ghost' asChild>
           <Link to='/settings/$tab' params={{ tab: 'socks5' }}>
@@ -190,29 +212,28 @@ export function VmProxyTab(props: VmProxyTabProps) {
       </div>
       {free.length ? (
         <div className='flex gap-2'>
-          <Select
-            value={bindId || free[0].id || ''}
-            onValueChange={onBindIdChange}
-          >
+          <Select value={selectedId} onValueChange={onBindIdChange}>
             <SelectTrigger className='w-64'>
-              <SelectValue placeholder='选择 SOCKS5' />
+              <SelectValue placeholder='选择出口' />
             </SelectTrigger>
             <SelectContent>
               {free.map((p) => (
                 <SelectItem key={p.id} value={p.id || ''}>
-                  {proxyNamedLabel(p)}
+                  {proxyLabel(p, vpsIp)}
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
-          <Button size='sm' onClick={onBind}>
+          <Button
+            size='sm'
+            onClick={onBind}
+            disabled={!selectedId || selectedId === boundId}
+          >
             绑定
           </Button>
         </div>
       ) : (
-        <p className='text-sm text-muted-foreground'>
-          池里没有可绑的空闲 SOCKS5
-        </p>
+        <p className='text-sm text-muted-foreground'>池里没有可绑的空闲出口</p>
       )}
     </TabsContent>
   )

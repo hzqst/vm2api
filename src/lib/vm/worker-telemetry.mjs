@@ -8,7 +8,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { loadVmIdentity, OFFICIAL_CLI_VERSION } from '../identity/vm-identity.mjs'
 import { acceptLanguageFromLocale } from '../identity/crs-headers.mjs'
-import { defaultSeedPolicy } from '../protocol/seed-policy.mjs'
+import { defaultSeedPolicy, isTelemetryEnabled } from '../protocol/seed-policy.mjs'
 import { DEFAULT_BETA_HEADER } from '../protocol/claude-code-betas.mjs'
 import { snapshotOauth } from './execution-context.mjs'
 import {
@@ -53,7 +53,7 @@ function telemetryHeaders(identity) {
     'x-stainless-arch': fp.stainless_arch || 'x64',
     'x-stainless-runtime': fp.stainless_runtime || 'node',
     'x-stainless-runtime-version': fp.stainless_runtime_version || 'v26.3.0',
-    'x-stainless-package-version': fp.stainless_package_version || '0.112.1',
+    'x-stainless-package-version': fp.stainless_package_version || '0.128.0',
   }
   if (identity.sessionId) headers['x-claude-code-session-id'] = identity.sessionId
   if (lang) headers['accept-language'] = lang
@@ -65,7 +65,7 @@ function telemetryHeaders(identity) {
 
 export function buildWorkerTelemetry(vm, projectRoot) {
   const seed = defaultSeedPolicy(vm?.seed_policy || {})
-  if (seed.telemetry_disabled !== false) {
+  if (!isTelemetryEnabled(seed)) {
     return { enabled: false }
   }
   const homeDir = projectRoot && vm?.id ? path.join(projectRoot, 'vms', vm.id, 'cli-home') : ''

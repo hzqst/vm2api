@@ -136,6 +136,12 @@ test('materializeWrapCli installs glibc wrapper over kernel.bin', () => {
     assert.equal(result.ok, true)
     const wrapper = fs.readFileSync(path.join(dest, 'kin-kernel'), 'utf8')
     assert.match(wrapper, /glibc239/)
+    // Job watchdog follows kernel.json idle_timeout_seconds unless env already set it.
+    // The kernel reads the unprefixed JOB_IDLE_SECS.
+    assert.match(wrapper, /if \[ -z "\$JOB_IDLE_SECS" \]/)
+    assert.match(wrapper, /"idle_timeout_seconds"/)
+    assert.match(wrapper, /export JOB_IDLE_SECS=/)
+    assert.doesNotMatch(wrapper, /KIN_JOB_IDLE_SECS/)
     assert.equal(fs.existsSync(path.join(dest, 'kin-kernel.bin')), true)
   } finally {
     fs.rmSync(project, { recursive: true, force: true })

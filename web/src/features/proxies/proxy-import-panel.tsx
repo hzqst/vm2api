@@ -73,7 +73,7 @@ export function ProxyImportPanel({ hasLocal }: { hasLocal: boolean }) {
         body: JSON.stringify({}),
       }),
     onSuccess: async (data) => {
-      toast.success(data.created ? '已添加本地出口' : '本地出口已存在')
+      toast.success(data.created ? '已添加本地代理' : '本地代理已存在')
       await refresh()
     },
     onError: (error: Error) => toast.error(error.message),
@@ -137,10 +137,10 @@ export function ProxyImportPanel({ hasLocal }: { hasLocal: boolean }) {
           onClick={() => addLocal.mutate()}
           disabled={addLocal.isPending || hasLocal}
           loading={addLocal.isPending}
-          title='不走 SOCKS5，槽位经宿主机默认路由出站'
+          title='当前VPS的本地代理：不走 SOCKS5，槽位经所在 VPS（本机或集群节点）自身出口出站'
         >
           <House aria-hidden='true' />
-          {hasLocal ? '已有本地出口' : '本地出口'}
+          {hasLocal ? '已有本地代理' : '本地代理'}
         </Button>
       </div>
       {outcome ? <ImportSummary outcome={outcome} /> : null}

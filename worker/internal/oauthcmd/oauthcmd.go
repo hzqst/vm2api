@@ -214,13 +214,13 @@ func userAgent(cfg config.Config) string {
 	if version := strings.TrimSpace(cfg.Telemetry.Identity.CLIVersion); version != "" {
 		return "claude-cli/" + version + " (external, cli)"
 	}
-	return "claude-cli/2.1.284 (external, cli)"
+	return "claude-cli/2.1.293 (external, cli)"
 }
 
 func claudeResetUserAgent(cfg config.Config) string {
 	version := strings.TrimSpace(cfg.Telemetry.Identity.CLIVersion)
 	if version == "" {
-		version = "2.1.284"
+		version = "2.1.293"
 	}
 	return "claude-cli/" + version + " (external, cli)"
 }

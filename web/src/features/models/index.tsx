@@ -10,9 +10,9 @@ import { Input } from '@/components/ui/input'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { EmptyState } from '@/components/empty-state'
 import { PageHeader } from '@/components/page-header'
-import { TableSkeleton } from '@/components/page-skeletons'
 import { QueryGate } from '@/components/query-gate'
 import { modelPolicyQueryOptions } from '@/features/models/queries'
+import { EntryStrip } from './entry-strip'
 import { ModelAdvanced } from './model-advanced'
 import { ModelRow } from './model-row'
 import {
@@ -249,6 +249,8 @@ export function ModelsPage() {
   return (
     <PageHeader
       title={VIEW_TITLES.models}
+      description='对外模型目录、模型参数、覆写别名与官方计费配置。'
+      fluid
       extra={
         <div className='flex flex-wrap gap-2'>
           {claudePool ? (
@@ -299,154 +301,182 @@ export function ModelsPage() {
         </div>
       }
     >
+      <EntryStrip />
       <QueryGate
         loading={q.isLoading}
         error={q.error}
         skeleton={
           <div className='space-y-3'>
-            <div className='h-9 w-56 rounded-lg bg-muted' />
-            <div className='grid gap-2 sm:grid-cols-4'>
-              {Array.from({ length: 4 }).map((_, i) => (
-                <div key={i} className='h-16 rounded-lg bg-muted' />
+            <div className='h-32 rounded-2xl bg-muted' />
+            <div className='grid gap-3 md:grid-cols-2 xl:grid-cols-3'>
+              {Array.from({ length: 6 }).map((_, i) => (
+                <div key={i} className='h-44 rounded-xl bg-muted' />
               ))}
             </div>
-            <TableSkeleton rows={8} columns={7} />
           </div>
         }
       >
-        <div className='mb-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between'>
-          <div className='min-w-0 space-y-2'>
-            <Tabs
-              value={catalogPlatform}
-              onValueChange={(value) => {
-                if (value === 'anthropic' || value === 'openai')
-                  switchPlatform(value)
-              }}
-            >
-              <TabsList aria-label='模型号池'>
-                <TabsTrigger value='anthropic' className='cursor-pointer px-4'>
-                  Claude
-                </TabsTrigger>
-                <TabsTrigger value='openai' className='cursor-pointer px-4'>
-                  GPT
-                </TabsTrigger>
-              </TabsList>
-            </Tabs>
-            <p className='max-w-xl text-sm text-muted-foreground'>{poolHint}</p>
-          </div>
-        </div>
-        {dirty ? (
-          <p
-            role='status'
-            className='mb-3 flex items-center gap-2 rounded-lg border border-[color:var(--status-caution)]/40 bg-[color:var(--status-caution)]/10 px-3 py-2 text-sm text-foreground'
-          >
-            <AlertTriangle className='size-4 shrink-0 text-[color:var(--status-caution)]' />
-            有未保存更改。离开页面或切换号池前请先保存。
-          </p>
-        ) : null}
-        <div className='mb-4 grid grid-cols-2 gap-2 sm:grid-cols-4'>
-          <PoolStat label='配置' value={stats.configured} />
-          <PoolStat label='启用' value={stats.enabled} />
-          <PoolStat label='对外' value={stats.live} />
-          <PoolStat
-            label={claudePool ? '1M beta' : '未对外'}
-            value={
-              claudePool
-                ? stats.pass1m
-                : all.filter((m) => !effectiveIds.has(m.id)).length
-            }
-          />
-        </div>
-        <div className='mb-3 flex flex-col gap-2 rounded-lg border border-border/70 bg-card p-2 sm:flex-row sm:flex-wrap sm:items-center'>
-          <Input
-            className='w-full sm:w-56'
-            type='search'
-            placeholder='搜索模型 / 别名…'
-            aria-label='搜索模型'
-            value={qtext}
-            onChange={(e) => setQtext(e.target.value)}
-          />
-          <div className='flex flex-wrap gap-1.5'>
-            {families.map((f) => (
-              <Button
-                key={f}
-                size='sm'
-                className='cursor-pointer'
-                variant={family === f ? 'default' : 'outline'}
-                onClick={() => setFamily(f)}
-              >
-                {f === 'all' ? '全部' : f}
-              </Button>
-            ))}
-          </div>
-          {claudePool ? (
-            <div className='flex flex-wrap gap-1.5 sm:border-l sm:border-border/70 sm:pl-2'>
-              {BETA_FILTERS.map(([id, lab]) => (
-                <Button
-                  key={id}
-                  size='sm'
-                  className='cursor-pointer'
-                  variant={beta === id ? 'secondary' : 'ghost'}
-                  onClick={() => setBeta(id)}
+        <div className='space-y-4'>
+          <section className='rounded-2xl border border-border/70 bg-card p-4 shadow-sm'>
+            <div className='grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end'>
+              <div className='min-w-0 space-y-3'>
+                <Tabs
+                  value={catalogPlatform}
+                  onValueChange={(value) => {
+                    if (value === 'anthropic' || value === 'openai') {
+                      switchPlatform(value)
+                    }
+                  }}
                 >
-                  {lab}
-                </Button>
-              ))}
-            </div>
-          ) : null}
-          <div className='flex flex-wrap gap-1.5 sm:ms-auto'>
-            <Button
-              size='sm'
-              variant='ghost'
-              className='cursor-pointer'
-              onClick={() => batch('enable')}
-            >
-              全开
-            </Button>
-            <Button
-              size='sm'
-              variant='ghost'
-              className='cursor-pointer'
-              onClick={() => batch('disable')}
-            >
-              全关
-            </Button>
-            <Button
-              size='sm'
-              variant='ghost'
-              className='cursor-pointer'
-              onClick={() => batch('invert')}
-            >
-              反选
-            </Button>
-          </div>
-        </div>
-        {visible.length === 0 ? (
-          <EmptyState
-            reason={
-              qtext || family !== 'all' || beta !== 'all'
-                ? '无匹配模型。改搜索或筛选条件。'
-                : claudePool
-                  ? '暂无模型配置。可先同步 Worker 目录。'
-                  : '暂无 GPT 模型。可先同步 GPT 目录。'
-            }
-          />
-        ) : (
-          <div className='overflow-x-auto rounded-lg border border-border/70 bg-card'>
-            <div className='min-w-[920px]'>
-              <div className='flex h-9 items-center border-b border-border/70 bg-muted/60 text-[11px] font-medium tracking-wide text-muted-foreground'>
-                <div className='w-14 shrink-0 pl-3'>启用</div>
-                <div className='min-w-[180px] flex-[1.6] px-1.5'>模型</div>
-                <div className='min-w-[70px] flex-[0.6] px-1.5'>窗口</div>
-                {claudePool ? (
-                  <div className='min-w-[140px] flex-[0.9] px-1.5'>
-                    官方 1M beta
-                  </div>
-                ) : null}
-                <div className='min-w-[110px] flex-[0.9] px-1.5'>Thinking</div>
-                <div className='min-w-[70px] flex-[0.6] px-1.5'>目录</div>
-                <div className='w-10 shrink-0 pr-2' />
+                  <TabsList aria-label='模型平台'>
+                    <TabsTrigger
+                      value='anthropic'
+                      className='cursor-pointer px-4'
+                    >
+                      Anthropic
+                    </TabsTrigger>
+                    <TabsTrigger value='openai' className='cursor-pointer px-4'>
+                      OpenAI
+                    </TabsTrigger>
+                  </TabsList>
+                </Tabs>
+                <div className='max-w-3xl space-y-1'>
+                  <h3 className='text-xl font-semibold tracking-tight'>
+                    {claudePool
+                      ? 'Claude 官方模型矩阵'
+                      : 'GPT / Codex 官方模型矩阵'}
+                  </h3>
+                  <p className='text-sm leading-6 text-muted-foreground'>
+                    {poolHint}
+                  </p>
+                </div>
               </div>
+              <div className='grid grid-cols-2 gap-2 sm:grid-cols-4 lg:w-[28rem]'>
+                <PoolStat label='配置' value={stats.configured} />
+                <PoolStat label='启用' value={stats.enabled} />
+                <PoolStat label='对外' value={stats.live} />
+                <PoolStat
+                  label={claudePool ? '1M beta' : '未对外'}
+                  value={
+                    claudePool
+                      ? stats.pass1m
+                      : all.filter((m) => !effectiveIds.has(m.id)).length
+                  }
+                />
+              </div>
+            </div>
+          </section>
+
+          {dirty ? (
+            <p
+              role='status'
+              className='flex items-center gap-2 rounded-xl border border-[color:var(--status-caution)]/40 bg-[color:var(--status-caution)]/10 px-3 py-2 text-sm text-foreground'
+            >
+              <AlertTriangle className='size-4 shrink-0 text-[color:var(--status-caution)]' />
+              有未保存更改。离开页面或切换平台前请先保存。
+            </p>
+          ) : null}
+
+          {claudePool ? (
+            <section className='rounded-2xl border border-primary/20 bg-primary/[0.035] p-4'>
+              <div className='grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center'>
+                <div className='space-y-1'>
+                  <h3 className='font-semibold'>Haiku 5.5 · 100K 实用模型</h3>
+                  <p className='text-sm leading-6 text-muted-foreground'>
+                    默认策略把 claude-haiku-5-5 的上下文窗口、默认
+                    max_tokens、输出上限统一收敛到 100K，避免超过官方 Haiku 5.5
+                    长上下文计费阈值。
+                  </p>
+                </div>
+                <Button
+                  variant='outline'
+                  onClick={() => {
+                    setQtext('claude-haiku-5-5')
+                    setFamily('all')
+                    setBeta('all')
+                    setExpanded('claude-haiku-5-5')
+                  }}
+                >
+                  打开 Haiku 5.5
+                </Button>
+              </div>
+            </section>
+          ) : null}
+
+          <section className='rounded-2xl border border-border/70 bg-card p-3 shadow-sm'>
+            <div className='grid gap-2 lg:grid-cols-[18rem_minmax(0,1fr)_auto] lg:items-center'>
+              <Input
+                className='w-full'
+                type='search'
+                placeholder='搜索模型 / 别名…'
+                aria-label='搜索模型'
+                value={qtext}
+                onChange={(e) => setQtext(e.target.value)}
+              />
+              <div className='flex flex-wrap gap-1.5'>
+                {families.map((f) => (
+                  <Button
+                    key={f}
+                    size='sm'
+                    className='cursor-pointer'
+                    variant={family === f ? 'default' : 'outline'}
+                    onClick={() => setFamily(f)}
+                  >
+                    {f === 'all' ? '全部' : f}
+                  </Button>
+                ))}
+                {claudePool
+                  ? BETA_FILTERS.map(([id, lab]) => (
+                      <Button
+                        key={id}
+                        size='sm'
+                        className='cursor-pointer'
+                        variant={beta === id ? 'secondary' : 'ghost'}
+                        onClick={() => setBeta(id)}
+                      >
+                        {lab}
+                      </Button>
+                    ))
+                  : null}
+              </div>
+              <div className='flex flex-wrap gap-1.5 lg:justify-end'>
+                <Button
+                  size='sm'
+                  variant='ghost'
+                  onClick={() => batch('enable')}
+                >
+                  全开
+                </Button>
+                <Button
+                  size='sm'
+                  variant='ghost'
+                  onClick={() => batch('disable')}
+                >
+                  全关
+                </Button>
+                <Button
+                  size='sm'
+                  variant='ghost'
+                  onClick={() => batch('invert')}
+                >
+                  反选
+                </Button>
+              </div>
+            </div>
+          </section>
+
+          {visible.length === 0 ? (
+            <EmptyState
+              reason={
+                qtext || family !== 'all' || beta !== 'all'
+                  ? '无匹配模型。改搜索或筛选条件。'
+                  : claudePool
+                    ? '暂无模型配置。可先同步 Worker 目录。'
+                    : '暂无 GPT 模型。可先同步 GPT 目录。'
+              }
+            />
+          ) : (
+            <div className='grid gap-3 md:grid-cols-2 xl:grid-cols-3'>
               {visible.map((m) => (
                 <ModelRow
                   key={m.id}
@@ -461,19 +491,21 @@ export function ModelsPage() {
                       rec.enabled = on
                     })
                   }
+                  onModel={(fn) => patchModel(m.id, fn)}
                   onParam={(key, value) => setParam(m.id, key, value)}
                   onPass1m={(mode) => setPass1m(m.id, mode)}
                 />
               ))}
             </div>
-          </div>
-        )}
-        <ModelAdvanced
-          pol={draft}
-          claudePool={claudePool}
-          onCatalogMode={setCatalog}
-          onDefaults={patchDefaults}
-        />
+          )}
+
+          <ModelAdvanced
+            pol={draft}
+            claudePool={claudePool}
+            onCatalogMode={setCatalog}
+            onDefaults={patchDefaults}
+          />
+        </div>
       </QueryGate>
     </PageHeader>
   )
@@ -481,13 +513,11 @@ export function ModelsPage() {
 
 function PoolStat({ label, value }: { label: string; value: number }) {
   return (
-    <div className='rounded-lg border border-border/70 bg-card px-3 py-2'>
+    <div className='rounded-xl border border-border/70 bg-background/60 px-3 py-2'>
       <div className='text-[11px] font-medium tracking-wide text-muted-foreground'>
         {label}
       </div>
-      <div className='mt-0.5 text-lg font-semibold text-foreground tabular-nums'>
-        {value}
-      </div>
+      <div className='field-count mt-1 text-lg font-semibold'>{value}</div>
     </div>
   )
 }

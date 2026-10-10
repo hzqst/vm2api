@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { VIEW_TITLES } from '@/config/nav'
+import { VIEW_DESCRIPTIONS, VIEW_TITLES } from '@/config/nav'
 import type { UsageAccountRow } from '@/types/panel-usage'
 import type { Vm } from '@/types/panel-vm'
 import { credTypeFromMode } from '@/lib/cred-type'
@@ -247,7 +247,7 @@ export function UsagePage() {
   }
 
   return (
-    <PageHeader title={VIEW_TITLES.usage}>
+    <PageHeader title={VIEW_TITLES.usage} description={VIEW_DESCRIPTIONS.usage}>
       <QueryGate
         loading={usage.isLoading}
         error={

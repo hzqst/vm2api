@@ -15,6 +15,8 @@
  * the panel can re-reveal a key for copying after creation.
  */
 
+import { keyScopeFromRecord, normalizeKeyScope } from './key-scope.mjs'
+import { VmPoolsRepo } from '../db/repos/vm-pools-repo.mjs'
 import crypto from 'node:crypto'
 import { resolveStoreDb } from '../db/database.mjs'
 import { ApiKeysRepo } from '../db/repos/api-keys-repo.mjs'
@@ -33,6 +35,13 @@ function clampInt(n, min, max, fallback) {
 
 function nowIso() {
   return new Date().toISOString()
+}
+function storedKeyScope(scope) {
+  return {
+    group_type: scope.group_type,
+    allowed_vms: JSON.stringify(scope.allowed_vms),
+    vm_pool_id: scope.vm_pool_id || null,
+  }
 }
 
 export function generateApiKey(prefix = KEY_PREFIX) {
@@ -98,6 +107,7 @@ export function publicKeyView(rec, { reveal = false } = {}) {
     tokens_in: rec.tokens_in || 0,
     tokens_out: rec.tokens_out || 0,
     category: rec.category === 'api' ? 'api' : 'oauth',
+    ...keyScopeFromRecord(rec),
     inflight: undefined, // filled by store.snapshot
   }
 }
@@ -151,9 +161,16 @@ export class ApiKeyStore {
   }
 
   list({ reveal = false } = {}) {
+    const names = new Map()
+    try {
+      for (const pool of new VmPoolsRepo(this.db).list()) names.set(pool.id, pool.name)
+    } catch {
+      // A database opened before migration 034 still lists keys.
+    }
     return this.repo.list().map((k) => {
       const v = publicKeyView(k, { reveal })
       v.inflight = this.inflight.get(k.id) || 0
+      if (v.vm_pool_id) v.vm_pool_name = names.get(v.vm_pool_id) || null
       return v
     })
   }
@@ -228,6 +245,13 @@ export class ApiKeyStore {
       tokens_in: 0,
       tokens_out: 0,
       category: String(input.category || 'oauth').toLowerCase() === 'api' ? 'api' : 'oauth',
+      ...storedKeyScope(
+        normalizeKeyScope({
+          group_type: input.group_type,
+          allowed_vms: input.allowed_vms,
+          ...(Object.prototype.hasOwnProperty.call(input, 'vm_pool_id') ? { vm_pool_id: input.vm_pool_id } : {}),
+        }),
+      ),
     }
     if (rec.expires_at && Number.isNaN(Date.parse(rec.expires_at))) {
       throw Object.assign(new Error('invalid expires_at'), { code: 'invalid_expires_at' })
@@ -279,6 +303,8 @@ export class ApiKeyStore {
     if (patch.category != null) {
       rec.category = String(patch.category).toLowerCase() === 'api' ? 'api' : 'oauth'
     }
+    const scope = normalizeKeyScope(patch, { partial: true, current: rec })
+    if (scope) Object.assign(rec, storedKeyScope(scope))
     rec.updated_at = nowIso()
     return this.repo.update(rec)
   }

@@ -20,9 +20,43 @@ test('dated and calling ids map to the official band', () => {
   assert.equal(resolvePricingKey('claude-opus-5'), 'opus-5')
   assert.equal(resolvePricingKey('claude-fable-5'), 'fable-5')
   assert.equal(resolvePricingKey('claude-haiku-4-5-20251001'), 'haiku-4.5')
+  assert.equal(resolvePricingKey('claude-haiku-5-5'), 'haiku-5.5')
   assert.equal(resolvePricingKey('claude-sonnet-4-6'), 'sonnet-4.6')
   assert.equal(resolvePricingKey('claude-opus-4-6'), 'opus-4.5')
   assert.equal(resolvePricingKey('claude-opus-4-1-20250805'), 'opus-4')
+})
+
+test('Haiku 5.5 bills base rates under 100K and the premium band above', () => {
+  const base = calculateCost(
+    {
+      input_tokens: 50_000,
+      output_tokens: 1_000_000,
+      cache_read_tokens: 0,
+      cache_creation_tokens: 50_000,
+      cache_ttl: '1h',
+    },
+    'claude-haiku-5-5',
+  )
+  assert.equal(base.long_context, false)
+  assert.equal(base.input_cost, 0.005)
+  assert.equal(base.output_cost, 0.5)
+  assert.equal(base.cache_creation_cost, 0.01)
+  const premium = calculateCost(
+    {
+      input_tokens: 1_000_000,
+      output_tokens: 1_000_000,
+      cache_read_tokens: 1_000_000,
+      cache_creation_tokens: 1_000_000,
+      cache_ttl: '5m',
+    },
+    'claude-haiku-5-5',
+  )
+  assert.equal(premium.pricing_key, 'haiku-5.5')
+  assert.equal(premium.long_context, true)
+  assert.equal(premium.input_cost, 0.5)
+  assert.equal(premium.output_cost, 2.5)
+  assert.equal(premium.cache_read_cost, 0.05)
+  assert.equal(premium.cache_creation_cost, 0.625)
 })
 
 test('Opus 5 official: $5 / $25 / cache 5m $6.25 / 1h $10 / read $0.50 per MTok', () => {

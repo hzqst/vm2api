@@ -180,7 +180,7 @@ func TestResetStatusRequestsCedarEmber(t *testing.T) {
 		_, _ = writer.Write([]byte(`{"cedar_ember":{"eligible":false,"grants":[]}}`))
 	}))
 	defer server.Close()
-	configPath, credPath := testConfig(t, server.URL, server.URL+"/oauth/token", map[string]string{"User-Agent": "claude-code/2.1.284"})
+	configPath, credPath := testConfig(t, server.URL, server.URL+"/oauth/token", map[string]string{"User-Agent": "claude-code/2.1.293"})
 	saveCredential(t, credPath, credential.Credential{AccessToken: "access-live", ExpiresAt: time.Now().Add(time.Hour).UnixMilli()})
 	var output bytes.Buffer
 	if code := Run([]string{"reset-status", "--config", configPath}, strings.NewReader(""), &output); code != 0 {
@@ -189,7 +189,7 @@ func TestResetStatusRequestsCedarEmber(t *testing.T) {
 	if gotPath != "/api/oauth/usage?cedar_ember=1&skip_spend=1" || gotBeta != "oauth-2025-04-20" || gotApp != "cli" {
 		t.Fatalf("path=%q beta=%q app=%q", gotPath, gotBeta, gotApp)
 	}
-	if gotUA != "claude-cli/2.1.284 (external, cli)" {
+	if gotUA != "claude-cli/2.1.293 (external, cli)" {
 		t.Fatalf("user-agent=%q", gotUA)
 	}
 }

@@ -71,9 +71,9 @@ export function inferTierFromOfficialStats(text = '', structured = {}) {
 }
 
 /**
- * `claude -p /usage --output-format stream-json --verbose` prints one JSON
- * event per line. The synthetic assistant event carries `usage_report`
- * (server limits[] verbatim); the final `result` event carries the text.
+ * `claude /usage --print --output-format stream-json` prints one JSON event
+ * per line. 2.1.293 puts the GET /api/oauth/usage body in the result event.
+ * Older builds put server limits[] on a synthetic assistant `usage_report`.
  */
 export function officialUsageEvents(raw) {
   if (typeof raw !== 'string') return null
@@ -93,6 +93,28 @@ export function officialUsageEvents(raw) {
   const report = events.map((e) => e.usage_report).find((r) => r && typeof r === 'object') || null
   const result = [...events].reverse().find((e) => e.type === 'result') || null
   return { report, result }
+}
+
+/** Raw Utilization object printed by print-mode `/usage`. */
+export function cliUtilizationFromText(text) {
+  const trimmed = String(text || '').trim()
+  if (!trimmed.startsWith('{')) return null
+  try {
+    const doc = JSON.parse(trimmed)
+    if (!doc || typeof doc !== 'object' || Array.isArray(doc)) return null
+    if (
+      doc.five_hour ||
+      doc.seven_day ||
+      doc.seven_day_sonnet ||
+      doc.seven_day_opus ||
+      doc.seven_day_oauth_apps ||
+      doc.extra_usage ||
+      typeof doc.error === 'string'
+    ) {
+      return doc
+    }
+  } catch {}
+  return null
 }
 
 /** Map server limits[] rows onto the /api/oauth/usage window shape. */
@@ -142,7 +164,8 @@ export function parseOfficialCcStats(raw) {
   const events = officialUsageEvents(raw)
   if (events) {
     const fromReport = usageFromLimits(events.report?.rate_limits)
-    const base = parseOfficialCcStats(fromReport || events.result || '')
+    const fromResult = cliUtilizationFromText(typeof events.result?.result === 'string' ? events.result.result : '')
+    const base = parseOfficialCcStats(fromReport || fromResult || events.result || '')
     // null limits = the CLI answered from a cached/seeded read without the
     // server rows; that is where Max accounts lose the Fable window.
     return { ...base, limits_present: base.limits_present === true }
@@ -155,6 +178,8 @@ export function parseOfficialCcStats(raw) {
       if (parsed && typeof parsed === 'object') structured = parsed
     } catch {}
   }
+  const embedded = cliUtilizationFromText(typeof structured?.result === 'string' ? structured.result : '')
+  if (embedded) return parseOfficialCcStats(embedded)
   if (!structured || !(structured.five_hour || structured.seven_day || structured.limits)) {
     const fromText = usageFromText(officialStatsText(raw))
     if (fromText) {
@@ -197,6 +222,8 @@ export function parseOfficialCcStats(raw) {
     five_hour: fiveHour,
     seven_day: sevenDay,
     seven_day_sonnet: fromOfficialApi?.seven_day_sonnet || fromNested?.seven_day_sonnet || null,
+    seven_day_opus: fromOfficialApi?.seven_day_opus || fromNested?.seven_day_opus || null,
+    seven_day_oauth_apps: fromOfficialApi?.seven_day_oauth_apps || fromNested?.seven_day_oauth_apps || null,
     seven_day_oi: sevenDayOi,
     extra_usage: extra,
     usage_has_fable: fromOfficialApi?.usage_has_fable ?? fromNested?.usage_has_fable ?? null,
@@ -207,6 +234,7 @@ export function parseOfficialCcStats(raw) {
     ok: !!(fiveHour || sevenDay || sevenDayOi || extra || accountTier),
     account_tier: limitsPresent ? accountTier : null,
     limits_present: limitsPresent,
+    error: typeof structured?.error === 'string' ? structured.error : null,
     source: 'official-cc-usage-cli',
     text_len: text.length,
     ...usage,

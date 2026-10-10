@@ -39,6 +39,7 @@ import { isCodexVm } from '../vm/vm-kind.mjs'
 import { detectInboundPlatform } from '../protocol/platform-detect.mjs'
 import { resolveCredentialScheduleLevel } from './credential-weight.mjs'
 import { PLATFORM_SCOPE, normalizeOwnerId, vmMatchesOwnerScope } from '../admin/resource-owner.mjs'
+import { keyAllowsVm } from '../admin/key-scope.mjs'
 import {
   kernelFaults,
   rustKernelBusy,
@@ -369,6 +370,7 @@ export class PoolScheduler extends EventEmitter {
     familyVmId = null,
     deviceVmId = null,
     ownerScope = PLATFORM_SCOPE,
+    keyScope = null,
     stickyKeys = null,
   } = {}) {
     const startedAt = Date.now()
@@ -408,7 +410,14 @@ export class PoolScheduler extends EventEmitter {
     })
     for (;;) {
       if (signal?.aborted) throw makeAbortError()
-      const candidates = await this.eligibleCandidates({ model, excluded: blocked, signal, pinVmId, ownerScope })
+      const candidates = await this.eligibleCandidates({
+        model,
+        excluded: blocked,
+        signal,
+        pinVmId,
+        ownerScope,
+        keyScope,
+      })
       // A gated family home (quota, credential, excluded) is a migration
       // signal for the caller. Busy is not: it still yields a candidate.
       const familyVm = familyVmId ? String(familyVmId).trim() : ''
@@ -524,6 +533,7 @@ export class PoolScheduler extends EventEmitter {
     familyVmId = null,
     deviceVmId = null,
     ownerScope = PLATFORM_SCOPE,
+    keyScope = null,
   } = {}) {
     const startedAt = Date.now()
     const failoverDeadline = Number(deadline) || Number.POSITIVE_INFINITY
@@ -566,7 +576,7 @@ export class PoolScheduler extends EventEmitter {
       for (;;) {
         if (signal?.aborted) throw makeAbortError()
         if (ticket?.granted) return finish(ticket.granted)
-        candidates = await this.eligibleCandidates({ model, excluded, signal, ownerScope })
+        candidates = await this.eligibleCandidates({ model, excluded, signal, ownerScope, keyScope })
         // A grant can land while eligibility was being re-read.
         if (ticket?.granted) return finish(ticket.granted)
         if (familyVm && !candidates.some((candidate) => candidate.vmId === familyVm)) familyGated = true
@@ -825,7 +835,14 @@ export class PoolScheduler extends EventEmitter {
     return { cleared: false, vmId: bound.vmId, match }
   }
 
-  async eligibleCandidates({ model, excluded = new Set(), signal, pinVmId = null, ownerScope = PLATFORM_SCOPE } = {}) {
+  async eligibleCandidates({
+    model,
+    excluded = new Set(),
+    signal,
+    pinVmId = null,
+    ownerScope = PLATFORM_SCOPE,
+    keyScope = null,
+  } = {}) {
     const now = Date.now()
     this.runtimeRepo?.clearExpired?.(now)
     const summaries = listVms(this.projectRoot)
@@ -841,6 +858,7 @@ export class PoolScheduler extends EventEmitter {
       if (!vm) continue
       if (!pin && platformMismatch(model, vm)) continue
       if (!vmMatchesOwnerScope(vm, ownerScope)) continue
+      if (!keyAllowsVm(keyScope, vm)) continue
       const accountId = accountIdOf(vm, this.projectRoot)
       if (!accountId || excluded.has(accountId) || excluded.has(vm.id)) continue
       const state = this.runtimeRepo?.get?.(accountId) || null
@@ -1288,8 +1306,8 @@ export class PoolScheduler extends EventEmitter {
   }
 
   /** Read-only current account. Never bind, unbind, or reserve. */
-  async peekAccount({ model, stickyKey = null, signal, ownerScope = PLATFORM_SCOPE } = {}) {
-    const candidates = await this.eligibleCandidates({ model, signal, ownerScope })
+  async peekAccount({ model, stickyKey = null, signal, ownerScope = PLATFORM_SCOPE, keyScope = null } = {}) {
+    const candidates = await this.eligibleCandidates({ model, signal, ownerScope, keyScope })
     if (!candidates.length) {
       const empty = emptyPoolFailure(model, candidates)
       return { ok: false, code: empty.reason, retry_after_ms: empty.retry_after_ms }

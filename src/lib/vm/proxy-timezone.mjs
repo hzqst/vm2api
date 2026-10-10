@@ -7,6 +7,8 @@
  * unless the operator pinned one by hand (`vm.timezone_source === 'manual'`).
  */
 import { validTimezone } from '../core/timezone.mjs'
+import { isLocalEgressProxy } from './egress.mjs'
+import { slotHost } from './slot-host.mjs'
 import { getVm, persistVmTimezone } from './vm-registry.mjs'
 
 /**
@@ -29,11 +31,27 @@ export async function syncVmTimezoneFromProxy(
   if (!force && vm.timezone_source === 'manual') return skip('timezone_pinned')
 
   const bound = proxyId || vm.proxy?.id || null
-  let timezone = bound ? proxyPool.proxyTimezone(bound) : proxyPool.timezoneForVm(id)
-  if (!timezone && detect && bound) {
-    const detected = await proxyPool.detectGeo(bound)
-    if (!detected?.ok) return skip(detected?.error || 'geo_lookup_failed')
-    timezone = validTimezone(detected.geo?.timezone)
+  const boundRow = vm.proxy?.id === bound ? vm.proxy : { id: bound }
+  const host = slotHost(vm)
+  let timezone = ''
+  if (bound && host.nodeId && isLocalEgressProxy(boundRow)) {
+    // px-local's row geo is the control plane's; this slot leaves from its node.
+    let url
+    try {
+      url = host.localExitProxyUrl(vm)
+    } catch (err) {
+      return skip(err?.code || 'node_egress_unavailable')
+    }
+    const exit = await proxyPool.exitGeo(`node:${host.nodeId}`, url, { detect })
+    if (!exit.ok) return skip(exit.error)
+    timezone = validTimezone(exit.geo?.timezone)
+  } else {
+    timezone = bound ? proxyPool.proxyTimezone(bound) : proxyPool.timezoneForVm(id)
+    if (!timezone && detect && bound) {
+      const detected = await proxyPool.detectGeo(bound)
+      if (!detected?.ok) return skip(detected?.error || 'geo_lookup_failed')
+      timezone = validTimezone(detected.geo?.timezone)
+    }
   }
   if (!timezone) return skip('proxy_timezone_unknown')
   if (vm.timezone === timezone) {

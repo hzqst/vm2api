@@ -65,6 +65,7 @@ export function modelSupportsAdaptiveThinking(model = '') {
     .toLowerCase()
     .split('[')[0]
   if (!m) return false
+  if (/haiku-5/.test(m)) return true
   if (m.includes('haiku')) return false
   if (/claude-3[.-]/.test(m)) return false
   // 4.5 family

@@ -24,6 +24,7 @@ import {
 } from '../identity/identity-rewrite.mjs'
 import { resolveCrsHeaders } from '../identity/crs-headers.mjs'
 import { hasClaudeCode1mSuffix } from './context-1m.mjs'
+import { withRequestProtocolBetas } from './claude-code-betas.mjs'
 import {
   refreshOfficialSystemEnvironment,
   stampBillingPromptId,
@@ -200,10 +201,11 @@ export function prepareCliHopBody(
   body = applyMessageBreakpoints(body, normalizeCacheTtl(cacheTtl), 'rewrite')
   return body
 }
-/** Wrap CLI process is spawned as sonnet-5/adaptive. Haiku rejects thinking. */
+/** Only legacy Haiku rejects thinking; Haiku 5.5 supports adaptive thinking. */
 export function pinHaikuCliThinking(body = {}) {
   if (!body || typeof body !== 'object') return body
-  if (!/haiku/i.test(String(body.model || ''))) return body
+  const model = String(body.model || '')
+  if (!/haiku/i.test(model) || /haiku-5/i.test(model)) return body
   return { ...body, thinking: { type: 'disabled' } }
 }
 
@@ -392,6 +394,10 @@ export function prepareOutboundEnvelope({
     const beta = ensureFastModeBeta(headers['anthropic-beta'] || '', prepared.body)
     if (beta) headers['anthropic-beta'] = beta
   }
+  headers['anthropic-beta'] = withRequestProtocolBetas(
+    String(headers['anthropic-beta'] || '').split(','),
+    prepared.body,
+  ).join(',')
   const body = sealClaudeCodeCch(sanitizeAnthropicBodyForBetaTokens(prepared.body, headers?.['anthropic-beta'] || ''))
   return { body, headers, toolNames: prepared.toolNames }
 }

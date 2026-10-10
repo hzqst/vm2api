@@ -3,6 +3,7 @@ import { Globe } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { proxyHostLabel, proxyNamedLabel } from '@/lib/vm-status'
 import { proxySurfaceClass, vmProxyTone } from '@/features/proxies/proxy-tone'
+import { useVpsIp } from '@/features/proxies/use-vps-ip'
 
 function latencyDigits(ms: number): string {
   const n = Math.round(ms)
@@ -19,13 +20,15 @@ export function ProxyChip({
   className?: string
   compact?: boolean
 }) {
-  const host = proxyHostLabel(vm.proxy)
+  // 本机槽的本地代理 IP 就是它绑定行（px-local）测出的出口 IP；节点槽取节点地址。
+  const vpsIp = useVpsIp(vm.node_id, vm.proxy ? [vm.proxy] : [])
+  const host = proxyHostLabel(vm.proxy, vpsIp)
   const tone = vmProxyTone(vm)
   const blocked = vm.proxy?.blocked_reason === 'ipv6_disabled'
   const lat = blocked ? null : vm.proxy?.latency_ms
   const bound = host !== '—'
   // 芯片窄，起了名就只显示名称；完整的「名称 · 地址」放进 title。
-  const named = proxyNamedLabel(vm.proxy)
+  const named = proxyNamedLabel(vm.proxy, vpsIp)
   const label = bound
     ? vm.proxy?.label?.trim() || host
     : tone === 'danger'

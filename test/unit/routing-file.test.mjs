@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { readRoutingConfigFile, routingConfigFile } from '../../src/lib/core/config.mjs'
+import { readRoutingConfigFile, routingConfigFile, streamIdleTimeoutMs } from '../../src/lib/core/config.mjs'
 
 function withEnv(key, value, fn) {
   const prev = process.env[key]
@@ -60,6 +60,19 @@ test('readRoutingConfigFile fails when the file is missing', () => {
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
   }
+})
+
+test('streamIdleTimeoutMs prefers the panel value, then the caller fallback', () => {
+  withEnv('KIN_STREAM_IDLE_TIMEOUT', '', () => {
+    assert.equal(streamIdleTimeoutMs(), 180_000)
+    assert.equal(streamIdleTimeoutMs({ failover: {} }, 2000), 2000)
+    assert.equal(streamIdleTimeoutMs({ failover: { stream_idle_timeout_ms: 900_000 } }, 2000), 900_000)
+    assert.equal(streamIdleTimeoutMs({ failover: { stream_idle_timeout_ms: 'bad' } }), 180_000)
+    assert.equal(streamIdleTimeoutMs({ failover: { stream_idle_timeout_ms: 1 } }), 30_000)
+  })
+  withEnv('KIN_STREAM_IDLE_TIMEOUT', '240000', () => {
+    assert.equal(streamIdleTimeoutMs(null), 240_000)
+  })
 })
 
 test('readRoutingConfigFile identifies invalid JSON', () => {

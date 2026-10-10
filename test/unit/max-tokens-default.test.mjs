@@ -6,6 +6,7 @@ import { toClaudeMessages } from '../../src/lib/protocol/convert.mjs'
 
 test('missing max_tokens follows official per-model defaults', () => {
   assert.equal(defaultMaxTokensForModel('claude-haiku-4-5'), 8192)
+  assert.equal(defaultMaxTokensForModel('claude-haiku-5-5'), 100000)
   assert.equal(defaultMaxTokensForModel('claude-sonnet-5'), 64000)
   assert.equal(defaultMaxTokensForModel('claude-sonnet-5-5'), 128000)
   assert.equal(defaultMaxTokensForModel('claude-opus-5'), 32000)

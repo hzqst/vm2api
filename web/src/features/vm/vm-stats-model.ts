@@ -1,4 +1,4 @@
-import type { VmUsageStats, VmUsageStatsDay } from '@/types/panel-vm'
+import type { VmUsageStatsDay } from '@/types/panel-vm'
 
 const DAY_MS = 86_400_000
 
@@ -35,7 +35,7 @@ export type VmStatsSummary = {
  * 与 sub2api 的 `actual_days_used` 同一口径——空闲天不稀释均值。
  */
 export function summarizeUsageStats(
-  stats: VmUsageStats | null | undefined,
+  stats: { days: number; history: VmUsageStatsDay[] } | null | undefined,
   now = Date.now()
 ): { points: StatsDayPoint[]; summary: VmStatsSummary } | null {
   if (!stats) return null

@@ -201,3 +201,25 @@ test('keys persist in sqlite across store re-open (same dataDir)', () => {
   assert.equal(store2.authenticate(rec.key).ok, true)
   assert.ok(fs.existsSync(path.join(dir, 'kin.db')), 'kin.db file exists')
 })
+
+test('group_type all is the default and a platform group keeps its VM list', () => {
+  const store = tmpStore()
+  const open = store.create({ name: 'global' })
+  assert.equal(store.list()[0].group_type, 'all')
+  assert.deepEqual(store.list()[0].allowed_vms, [])
+  const scoped = store.create({ name: 'claude', group_type: 'anthropic', allowed_vms: ['vm-01', 'vm-03'] })
+  assert.equal(store.getById(scoped.id).group_type, 'anthropic')
+  assert.equal(
+    store
+      .list()
+      .find((k) => k.id === scoped.id)
+      .allowed_vms.join(','),
+    'vm-01,vm-03',
+  )
+  const widened = store.update(scoped.id, { group_type: 'all' })
+  assert.equal(widened.group_type, 'all')
+  assert.equal(widened.allowed_vms, '[]')
+  assert.throws(() => store.create({ name: 'bare', group_type: 'openai' }), /至少勾选一台 VM/)
+  store.update(open.id, { status: 'disabled' })
+  assert.equal(store.getById(open.id).group_type, 'all')
+})

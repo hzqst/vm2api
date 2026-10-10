@@ -26,6 +26,7 @@ import {
   sortedProxiesByAvailability,
 } from '@/features/proxies/proxy-sort'
 import { proxiesQueryOptions } from '@/features/proxies/queries'
+import { useVpsIp } from '@/features/proxies/use-vps-ip'
 
 type ImportResp = {
   added?: number
@@ -76,7 +77,14 @@ function parseSocksHint(text: string): { host: string; port: string } | null {
  * 两条路都通向「绑到本槽」——下拉选池中现成的，或粘贴新行直接导入并绑定。
  * 对齐 index.html 第 2 步（renderImport 的 import-block 之二）。
  */
-export function ImportProxyStep({ vmId }: { vmId: string }) {
+export function ImportProxyStep({
+  vmId,
+  nodeId,
+}: {
+  vmId: string
+  /** 槽位所在节点；本地代理按它标 `local:<IP>`。 */
+  nodeId?: string | null
+}) {
   const px = useQuery(proxiesQueryOptions())
   const qc = useQueryClient()
   const pasteRef = useRef<HTMLTextAreaElement>(null)
@@ -95,6 +103,7 @@ export function ImportProxyStep({ vmId }: { vmId: string }) {
   // 的入库序，直接铺出来会把失效和绑满的混在中间，选起来要靠眼睛筛。
   const options = sortedProxiesByAvailability(proxies, vmId, poolLimit)
   const bound = proxies.find((p) => proxyBoundIds(p).includes(vmId)) || null
+  const vpsIp = useVpsIp(nodeId, proxies)
 
   const refresh = () =>
     Promise.all([
@@ -181,16 +190,13 @@ export function ImportProxyStep({ vmId }: { vmId: string }) {
           onValueChange={(id) => bindOne.mutate(id)}
           disabled={pending || !proxies.length}
         >
-          <SelectTrigger
-            className='min-w-[220px] flex-1'
-            aria-label='选择 SOCKS5'
-          >
+          <SelectTrigger className='min-w-[220px] flex-1' aria-label='选择出口'>
             <SelectValue
               placeholder={
                 proxies.length
                   ? bound
                     ? '已绑定，可改选'
-                    : '选择 SOCKS5'
+                    : '选择出口（本地代理 / SOCKS5）'
                   : '代理池为空'
               }
             />
@@ -207,7 +213,7 @@ export function ImportProxyStep({ vmId }: { vmId: string }) {
                   value={p.id || ''}
                   disabled={!here && (full || bad)}
                 >
-                  {proxyOptionLabel(p, poolLimit)}
+                  {proxyOptionLabel(p, poolLimit, vpsIp)}
                   {full ? ' · 已绑满' : ''}
                 </SelectItem>
               )
@@ -218,7 +224,7 @@ export function ImportProxyStep({ vmId }: { vmId: string }) {
           <StatusMark
             tone={{
               key: 'proxy',
-              text: `${proxyLabel(bound)} · ${proxyStatusLabel(bound)}${
+              text: `${proxyLabel(bound, vpsIp)} · ${proxyStatusLabel(bound)}${
                 bound.latency_ms != null ? ` ${bound.latency_ms}ms` : ''
               }`,
               cls: bound.blocked_reason

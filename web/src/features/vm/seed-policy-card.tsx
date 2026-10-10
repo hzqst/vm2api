@@ -3,11 +3,12 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
+import {
+  telemetryEnabled,
+  telemetrySeedFlags,
+} from '@/features/vm/telemetry-policy'
 
-export const SEED_FLAGS: [string, string][] = [
-  ['telemetry_disabled', '关闭遥测'],
-  ['disable_nonessential_traffic', '关非必要流量'],
-  ['do_not_track', 'DNT'],
+const REJECT_FLAGS: [string, string][] = [
   ['reject_client_settings', '拒客户端 settings'],
   ['reject_client_metadata_identity', '拒客户端身份'],
 ]
@@ -16,23 +17,17 @@ type SeedPolicy = Record<string, boolean>
 
 export const SEED_PRESETS: Record<string, SeedPolicy> = {
   standard: {
-    telemetry_disabled: false,
-    disable_nonessential_traffic: true,
-    do_not_track: false,
+    ...telemetrySeedFlags(true),
     reject_client_settings: true,
     reject_client_metadata_identity: true,
   },
   open: {
-    telemetry_disabled: false,
-    disable_nonessential_traffic: true,
-    do_not_track: false,
+    ...telemetrySeedFlags(true),
     reject_client_settings: false,
     reject_client_metadata_identity: false,
   },
   strict: {
-    telemetry_disabled: true,
-    disable_nonessential_traffic: false,
-    do_not_track: true,
+    ...telemetrySeedFlags(false),
     reject_client_settings: true,
     reject_client_metadata_identity: true,
   },
@@ -44,45 +39,30 @@ const PRESET_LABELS: [string, string, string][] = [
   ['strict', '关闭遥测', '关遥测 + DNT；非必要流量=0'],
 ]
 
-/**
- * Nonessential traffic is the inverse of the telemetry switch:
- * telemetry on → disable_nonessential_traffic true (env 1);
- * telemetry off → false (env 0). DNT still cannot stay on while telemetry is on.
- */
+/** Mirrors follow the telemetry bit. Reject flags are left alone. */
 export function alignTelemetryDraft(draft: SeedPolicy): SeedPolicy {
-  if (draft.telemetry_disabled) {
-    return { ...draft, disable_nonessential_traffic: false }
-  }
-  return {
-    ...draft,
-    disable_nonessential_traffic: true,
-    do_not_track: false,
-  }
+  return { ...draft, ...telemetrySeedFlags(telemetryEnabled(draft)) }
 }
 
-const TELEMETRY_LOCKED = new Set([
-  'disable_nonessential_traffic',
-  'do_not_track',
-])
-
 /**
- * 预设名 → 提交给后端的种子策略。`theme: 'dark'` 是 index.html `seedPolicyOf`
- * 里的固定值（非用户可选项），原样保留。
+ * 预设名 → 提交给后端的种子策略。`theme: 'dark'` 是固定值（非用户可选项）。
  */
 export function seedPolicyOf(name: string): Record<string, boolean | string> {
   return { ...(SEED_PRESETS[name] || SEED_PRESETS.standard), theme: 'dark' }
 }
 
 export function matchSeedPreset(policy: Record<string, unknown>): string {
+  const on = telemetryEnabled(policy)
   for (const [name, preset] of Object.entries(SEED_PRESETS)) {
-    if (SEED_FLAGS.every(([k]) => !!preset[k] === !!policy[k])) return name
+    if (telemetryEnabled(preset) !== on) continue
+    if (REJECT_FLAGS.every(([k]) => !!preset[k] === !!policy[k])) return name
   }
   return 'custom'
 }
 
 function normalize(policy: Record<string, unknown>): SeedPolicy {
-  const out: SeedPolicy = {}
-  for (const [k] of SEED_FLAGS) {
+  const out: SeedPolicy = { ...telemetrySeedFlags(telemetryEnabled(policy)) }
+  for (const [k] of REJECT_FLAGS) {
     out[k] = k in policy ? !!policy[k] : !!SEED_PRESETS.standard[k]
   }
   return out
@@ -108,8 +88,11 @@ export function SeedPolicyCard({
   }, [policy])
 
   const current = matchSeedPreset(draft)
-  const dirty = SEED_FLAGS.some(([k]) => !!draft[k] !== !!normalize(policy)[k])
-  const telemetryOn = draft.telemetry_disabled !== true
+  const saved = normalize(policy)
+  const dirty =
+    telemetryEnabled(draft) !== telemetryEnabled(saved) ||
+    REJECT_FLAGS.some(([k]) => !!draft[k] !== !!saved[k])
+  const on = telemetryEnabled(draft)
 
   return (
     <Card>
@@ -148,38 +131,39 @@ export function SeedPolicyCard({
         </div>
 
         <div className='space-y-2 border-t pt-3'>
-          {SEED_FLAGS.map(([key, label]) => {
-            const locked =
-              key === 'disable_nonessential_traffic' ||
-              (telemetryOn && TELEMETRY_LOCKED.has(key))
-            return (
-              <div
-                key={key}
-                className='flex items-center justify-between gap-3'
-              >
-                <Label htmlFor={`seed-${key}`} className='text-sm font-normal'>
-                  {label}
-                </Label>
-                <Switch
-                  id={`seed-${key}`}
-                  checked={!!draft[key]}
-                  disabled={saving || locked}
-                  onCheckedChange={(v) => {
-                    if (key === 'telemetry_disabled') {
-                      setDraft(
-                        alignTelemetryDraft({ ...draft, telemetry_disabled: v })
-                      )
-                      return
-                    }
-                    setDraft({ ...draft, [key]: v })
-                  }}
-                />
-              </div>
-            )
-          })}
+          <div className='flex items-center justify-between gap-3'>
+            <Label htmlFor='seed-telemetry' className='text-sm font-normal'>
+              遥测
+            </Label>
+            <Switch
+              id='seed-telemetry'
+              checked={on}
+              disabled={saving}
+              onCheckedChange={(v) =>
+                setDraft(
+                  alignTelemetryDraft({ ...draft, telemetry_disabled: !v })
+                )
+              }
+            />
+          </div>
+          {REJECT_FLAGS.map(([key, label]) => (
+            <div key={key} className='flex items-center justify-between gap-3'>
+              <Label htmlFor={`seed-${key}`} className='text-sm font-normal'>
+                {label}
+              </Label>
+              <Switch
+                id={`seed-${key}`}
+                checked={!!draft[key]}
+                disabled={saving}
+                onCheckedChange={(v) => setDraft({ ...draft, [key]: v })}
+              />
+            </div>
+          ))}
         </div>
         <p className='text-xs text-muted-foreground'>
-          遥测打开时非必要流量固定为 1，DNT 关掉。遥测关闭时非必要流量固定为 0。
+          {on
+            ? '遥测开：非必要流量=1，DNT 关。这两项跟着遥测走，不能单独拨。'
+            : '遥测关：非必要流量=0，DNT 开。这两项跟着遥测走，不能单独拨。'}
           {syncTelemetry
             ? ' 外部初装「同步遥测」开着，下次换票会按那份配置把本槽遥测重新打开。'
             : ' 外部初装「同步遥测」关着，换票不会改写这里的遥测开关。'}

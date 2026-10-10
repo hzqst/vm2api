@@ -77,6 +77,7 @@ import { ClusterNodesRepo } from './lib/db/repos/cluster-nodes-repo.mjs'
 import { ClusterManager } from './lib/cluster/cluster-manager.mjs'
 import { createClusterRoutes } from './lib/cluster/cluster-routes.mjs'
 import { bindPlacement } from './lib/cluster/placement.mjs'
+import { startNodeEgressSocks } from './lib/cluster/node-egress-socks.mjs'
 import { createSlotShell } from './lib/vm/slot-shell.mjs'
 
 import {
@@ -772,7 +773,7 @@ const importCommit = createImportCommit({
 
 const { commitImportedOauth, requireSlotProxy, officialCcStatsHandler } = importCommit
 
-const { handleProtocol } = createHandleProtocol({
+const { handleProtocol, handleSearch } = createHandleProtocol({
   json,
   writeSSEHeaders,
   readBody,
@@ -814,6 +815,7 @@ const clusterManager = new ClusterManager({
   vmsOnNode: (nodeId) => listVms(cfg.paths.project).filter((vm) => vm.node_id === nodeId),
 })
 bindPlacement({ manager: clusterManager, projectRoot: cfg.paths.project })
+await startNodeEgressSocks({ clientFor: (nodeId) => clusterManager.client(nodeId) })
 clusterManager.start()
 clusterManager.restoreSlotRelays()
 if (proxyPool.snapshot().config.ipv6_enabled !== true) {
@@ -1042,6 +1044,9 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'POST' && (p === '/v1/messages' || p === '/messages')) {
       return await handleProtocol(req, res, 'anthropic.messages', p)
+    }
+    if (req.method === 'POST' && (p === '/v1/alpha/search' || p === '/alpha/search')) {
+      return await handleSearch(req, res, p)
     }
 
     json(res, 404, { error: { message: `not found: ${p}` } })

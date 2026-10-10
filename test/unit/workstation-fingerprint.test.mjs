@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { normalizeTimezone, US_TIMEZONES } from '../../src/lib/core/timezone.mjs'
+import { normalizeTimezone } from '../../src/lib/core/timezone.mjs'
 import {
   applyGeneratedFingerprint,
   DEVICE_ID_RE,
@@ -25,7 +25,7 @@ test('generateWorkstationFingerprint emits a coherent linux pack', () => {
   assert.equal(pack.sku, '4c8g')
   assert.equal(pack.linux_kernel, '6.8.0-51-generic')
   assert.equal(pack.locale, 'en_US.UTF-8')
-  assert.match(pack.timezone, /^America\//)
+  assert.equal(pack.timezone, '')
   assert.equal(pack.source, 'generated')
   assert.equal(isGeneratedHostname(pack.hostname), true)
   assert.equal(isHexDeviceId(pack.device_id), true)
@@ -47,13 +47,9 @@ test('collision retries until unused hostname', () => {
   assert.notEqual(second.guest_machine_id, first.guest_machine_id)
 })
 
-test('timezone is not a dead index mapping', () => {
-  const seen = new Set()
-  for (let i = 0; i < 24; i++) {
-    const pack = generateWorkstationFingerprint({ id: 'vm-05', kernel: 'ubuntu-24.04' })
-    seen.add(pack.timezone)
-  }
-  assert.ok(seen.size >= 2)
+test('missing timezone stays unset instead of a random US zone', () => {
+  const pack = generateWorkstationFingerprint({ id: 'vm-05', kernel: 'ubuntu-24.04' })
+  assert.equal(pack.timezone, '')
 })
 
 test('explicit America timezone is kept', () => {
@@ -74,10 +70,10 @@ test('explicit Tokyo timezone survives fingerprint generation and slot normaliza
   assert.equal(pack.locale, 'en_US.UTF-8')
 })
 
-test('invalid fingerprint timezone retains the existing US random fallback', () => {
+test('invalid fingerprint timezone stays unset', () => {
   for (const timezone of ['', 'Asia/Not_A_Zone', 'America/Not_A_Zone', '+09:00']) {
     const pack = generateWorkstationFingerprint({ id: 'vm-01', timezone })
-    assert.ok(US_TIMEZONES.includes(pack.timezone))
+    assert.equal(pack.timezone, '')
   }
 })
 

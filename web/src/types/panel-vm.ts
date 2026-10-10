@@ -51,8 +51,12 @@ export type VmProxySnap = {
   created_at?: string
   kind?: 'local' | 'socks5' | string
   scheme?: string
-  /** 出口地理位置；从未检测过为 null。 */
+  /** 透明 TCP 把唯一 DNS 应答改写成 SOCKS 主机名。默认关。 */
+  domain_forward?: boolean
+  /** 出口地理位置（IPv4）；从未检测过为 null。 */
   geo?: ProxyGeo | null
+  /** 公网 IPv6 出口地理位置；从未检测过为 null。 */
+  geo_v6?: ProxyGeo | null
 }
 
 export type InferenceEngine = 'auto' | 'go' | 'rust'
@@ -103,6 +107,42 @@ export type VmCircuit = {
   /** 毫秒时间戳；仅 open 时有值 */
   open_until: number | null
   open_ms: number
+}
+
+/** 槽位执行形态。缺省按 docker 展示。 */
+export type RuntimeType = 'docker' | 'kvm'
+
+/** `GET /cluster/local` 与 `GET /vms/create-options` 的 KVM 探测。 */
+export type KvmProbe = {
+  ok: boolean
+  accel: 'kvm' | 'tcg' | null
+  error: string | null
+}
+
+/** `GET /api/panel/vms/create-options` 剥壳后的 payload（`api()` 已拆 `data`）。 */
+export type VmCreateOptions = {
+  vm: unknown
+  kvm: KvmProbe
+}
+
+export type VmSmbios = {
+  manufacturer?: string
+  product?: string
+  version?: string
+  family?: string
+  serial?: string
+  uuid?: string
+}
+
+/** 创建时固化到槽位的机器规格。旧槽可能缺省。 */
+export type VmMachine = {
+  memory?: string
+  vcpus?: number
+  disk_gb?: number
+  cpu_model?: string
+  mac?: string
+  smbios?: VmSmbios
+  disk_serial?: string
 }
 
 export type Vm = {
@@ -216,6 +256,11 @@ export type Vm = {
   dataplane?: 'wrap' | 'cc' | 'crag' | null
   resolved_dataplane?: 'wrap' | 'cc' | 'crag' | null
   kernel?: string
+  /** docker | kvm。缺省按 docker 展示。 */
+  runtime_type?: RuntimeType | null
+  /** 创建时固化的机器规格；旧槽可能缺省。 */
+  machine?: VmMachine | null
+
   region?: string
   /** 槽位环境时区（容器 `TZ` + persona `# Environment`）。 */
   timezone?: string | null

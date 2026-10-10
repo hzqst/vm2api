@@ -19,7 +19,19 @@ test('standardSeedPolicy is telemetry on; defaultSeedPolicy stays off for omitte
   assert.equal(standardSeedPolicy().do_not_track, false)
   assert.equal(standardSeedPolicy({ telemetry_disabled: true }).telemetry_disabled, true)
   assert.equal(standardSeedPolicy({ telemetry_disabled: true }).disable_nonessential_traffic, false)
+  assert.equal(standardSeedPolicy({ telemetry_disabled: true }).do_not_track, true)
   assert.equal(standardSeedPolicy({ grove_enabled: true }).grove_enabled, false)
+  const contradicted = defaultSeedPolicy({
+    telemetry_disabled: false,
+    disable_nonessential_traffic: false,
+    do_not_track: true,
+  })
+  assert.equal(contradicted.telemetry_disabled, false)
+  assert.equal(contradicted.disable_nonessential_traffic, true)
+  assert.equal(contradicted.do_not_track, false)
+  const off = buildSeedSettingsEnv({ telemetry_disabled: true, do_not_track: false })
+  assert.equal(off.DO_NOT_TRACK, '1')
+  assert.equal(buildSeedSettingsEnv({ telemetry_disabled: false, do_not_track: true }).DO_NOT_TRACK, undefined)
 })
 
 test('stripLegacyScriptEnv drops kill-switch and leftover Anthropic hop keys', () => {

@@ -1,6 +1,9 @@
+import { useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import type { Vm } from '@/types/panel-vm'
 import {
   BarChart3,
+  Download,
   Link2,
   MoreHorizontal,
   Play,
@@ -18,8 +21,10 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import { meQueryOptions } from '@/features/auth/queries'
 import { restrictionTitle } from '@/features/vm/clear-restriction'
 import { useVmActions } from '@/features/vm/vm-actions-context'
+import { VmPackageDialog } from '@/features/vm/vm-package-dialog'
 
 /** 无法刷新时给出原因，与详情页 refreshBlocked 文案一致。 */
 export function refreshBlockedReason(vm: Vm): string {
@@ -41,72 +46,90 @@ export function VmActionMenu({
   className?: string
 }) {
   const actions = useVmActions()
+  const me = useQuery(meQueryOptions())
+  const [packOpen, setPackOpen] = useState(false)
   const blocked = refreshBlockedReason(vm)
   const restricted = restrictionTitle(vm)
+  const admin = me.data?.role === 'admin'
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button
-          size='icon'
-          variant='ghost'
-          className={cn('size-7 text-muted-foreground', className)}
-          aria-label={`更多操作 ${vm.id}`}
+    <>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            size='icon'
+            variant='ghost'
+            className={cn('size-7 text-muted-foreground', className)}
+            aria-label={`更多操作 ${vm.id}`}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <MoreHorizontal className='size-4' />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent
+          align='end'
+          className='w-44'
           onClick={(e) => e.stopPropagation()}
         >
-          <MoreHorizontal className='size-4' />
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent
-        align='end'
-        className='w-44'
-        onClick={(e) => e.stopPropagation()}
-      >
-        <DropdownMenuItem onSelect={() => actions.openTest(vm)}>
-          <Play className='text-[color:var(--status-ok)]' />
-          测试链接
-        </DropdownMenuItem>
-        <DropdownMenuItem onSelect={() => actions.openStats(vm)}>
-          <BarChart3 className='text-[color:var(--tier-pro-solid)]' />
-          查看统计
-        </DropdownMenuItem>
-        <DropdownMenuItem onSelect={() => actions.openReauth(vm)}>
-          <Link2 />
-          重新授权
-        </DropdownMenuItem>
-        <DropdownMenuItem
-          disabled={Boolean(blocked) || actions.refreshingId === vm.id}
-          title={blocked || undefined}
-          onSelect={() => actions.refreshToken(vm)}
-        >
-          <RefreshCw />
-          刷新令牌
-        </DropdownMenuItem>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem
-          disabled={!restricted || actions.recoveringId === vm.id}
-          title={restricted ?? '当前没有冷却或熔断'}
-          onSelect={() => actions.recover(vm)}
-        >
-          <RotateCcw />
-          恢复状态
-        </DropdownMenuItem>
-        {actions.reset || actions.remove ? <DropdownMenuSeparator /> : null}
-        {actions.reset ? (
-          <DropdownMenuItem onSelect={() => actions.reset?.(vm)}>
-            <RotateCcw />
-            重置槽位
+          <DropdownMenuItem onSelect={() => actions.openTest(vm)}>
+            <Play className='text-[color:var(--status-ok)]' />
+            测试链接
           </DropdownMenuItem>
-        ) : null}
-        {actions.remove ? (
+          <DropdownMenuItem onSelect={() => actions.openStats(vm)}>
+            <BarChart3 className='text-[color:var(--tier-pro-solid)]' />
+            查看统计
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => actions.openReauth(vm)}>
+            <Link2 />
+            重新授权
+          </DropdownMenuItem>
           <DropdownMenuItem
-            variant='destructive'
-            onSelect={() => actions.remove?.(vm)}
+            disabled={Boolean(blocked) || actions.refreshingId === vm.id}
+            title={blocked || undefined}
+            onSelect={() => actions.refreshToken(vm)}
           >
-            <Trash2 />
-            删除
+            <RefreshCw />
+            刷新令牌
           </DropdownMenuItem>
-        ) : null}
-      </DropdownMenuContent>
-    </DropdownMenu>
+          {admin ? (
+            <DropdownMenuItem onSelect={() => setPackOpen(true)}>
+              <Download />
+              打包 JSON
+            </DropdownMenuItem>
+          ) : null}
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            disabled={!restricted || actions.recoveringId === vm.id}
+            title={restricted ?? '当前没有冷却或熔断'}
+            onSelect={() => actions.recover(vm)}
+          >
+            <RotateCcw />
+            恢复状态
+          </DropdownMenuItem>
+          {actions.reset || actions.remove ? <DropdownMenuSeparator /> : null}
+          {actions.reset ? (
+            <DropdownMenuItem onSelect={() => actions.reset?.(vm)}>
+              <RotateCcw />
+              重置槽位
+            </DropdownMenuItem>
+          ) : null}
+          {actions.remove ? (
+            <DropdownMenuItem
+              variant='destructive'
+              onSelect={() => actions.remove?.(vm)}
+            >
+              <Trash2 />
+              删除
+            </DropdownMenuItem>
+          ) : null}
+        </DropdownMenuContent>
+      </DropdownMenu>
+      {admin ? (
+        <VmPackageDialog
+          vmId={vm.id}
+          open={packOpen}
+          onOpenChange={setPackOpen}
+        />
+      ) : null}
+    </>
   )
 }

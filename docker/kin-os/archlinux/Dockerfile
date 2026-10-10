@@ -7,7 +7,7 @@ RUN pacman -Sy --noconfirm --needed ca-certificates curl git tzdata python bash 
  && (getent passwd 999 >/dev/null || useradd -u 999 -g 987 -d /home/kincli -m -s /bin/bash kincli) \
  && mkdir -p /home/kincli && chown 999:987 /home/kincli \
  && echo "archlinux" > /etc/kin-os \
- && echo "claude-code=2.1.284" > /etc/kin-claude
+ && echo "claude-code=2.1.293" > /etc/kin-claude
 WORKDIR /home/kincli
 USER 999:987
 CMD ["sleep", "infinity"]

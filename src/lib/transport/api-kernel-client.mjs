@@ -82,7 +82,7 @@ export function forwardApi({
       'content-type': 'application/json',
       'content-length': String(payload.length),
     }
-    if (token) reqHeaders['x-kin-internal-token'] = token
+    if (token) reqHeaders['x-internal-token'] = token
     const started = Date.now()
     const attempt = (left) => {
       const req = http.request(

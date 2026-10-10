@@ -12,7 +12,7 @@
 import { getDb } from '../database.mjs'
 import { DEFAULT_MUTED_ERROR_CLASSES, enrichLogRow, excludeErrorClassSql } from '../../admin/error-class.mjs'
 import { reportTimezone, zonedDayStartMs } from '../../core/timezone.mjs'
-import { ERROR_PRED, SUCCESS_PRED, ownerPred } from './usage-log-preds.mjs'
+import { ERROR_PRED, PROMPT_TOKENS_SQL, SUCCESS_PRED, ownerPred } from './usage-log-preds.mjs'
 
 const LIST_LIMIT_DEFAULT = 50
 const LIST_LIMIT_MAX = 100
@@ -483,6 +483,7 @@ export class UsageLogsView {
                COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
                COALESCE(SUM(cache_creation_5m_tokens), 0) AS cache_creation_5m_tokens,
                COALESCE(SUM(cache_creation_1h_tokens), 0) AS cache_creation_1h_tokens,
+               COALESCE(SUM(${PROMPT_TOKENS_SQL}), 0) AS prompt_tokens,
                AVG(duration_ms) AS avg_duration_ms,
                AVG(first_token_ms) AS avg_ttft_ms
         FROM usage_logs ${cond}
@@ -491,7 +492,9 @@ export class UsageLogsView {
       return toSummary(row)
     }
     const rows = this.db
-      .prepare(`SELECT * FROM usage_logs ${cond} ORDER BY created_at DESC, id DESC LIMIT ?`)
+      .prepare(
+        `SELECT *, (${PROMPT_TOKENS_SQL}) AS prompt_tokens FROM usage_logs ${cond} ORDER BY created_at DESC, id DESC LIMIT ?`,
+      )
       .all(...params, SUMMARY_SCAN_CAP)
       .map(enrichLogRow)
       .filter(keep)
@@ -507,6 +510,7 @@ export class UsageLogsView {
       cache_read_tokens: 0,
       cache_creation_5m_tokens: 0,
       cache_creation_1h_tokens: 0,
+      prompt_tokens: 0,
     }
     let durSum = 0
     let durN = 0
@@ -524,6 +528,7 @@ export class UsageLogsView {
         'cache_read_tokens',
         'cache_creation_5m_tokens',
         'cache_creation_1h_tokens',
+        'prompt_tokens',
       ])
         acc[k] += num(r[k])
       if (r.duration_ms != null) {
@@ -756,7 +761,7 @@ function toSummary(row) {
   const output = num(row.output_tokens)
   const cacheCreation = num(row.cache_creation_tokens)
   const cacheRead = num(row.cache_read_tokens)
-  const lookups = input + cacheRead
+  const prompt = num(row.prompt_tokens)
   return {
     totalRequests: num(row.requests),
     successRequests: num(row.success),
@@ -770,7 +775,7 @@ function toSummary(row) {
     totalCacheReadTokens: cacheRead,
     totalCacheCreation5mTokens: num(row.cache_creation_5m_tokens),
     totalCacheCreation1hTokens: num(row.cache_creation_1h_tokens),
-    cacheHitRate: lookups > 0 ? cacheRead / lookups : 0,
+    cacheHitRate: prompt > 0 ? Math.min(1, cacheRead / prompt) : 0,
     avgDurationMs: row.avg_duration_ms == null ? null : Math.round(Number(row.avg_duration_ms)),
     avgTtftMs: row.avg_ttft_ms == null ? null : Math.round(Number(row.avg_ttft_ms)),
   }

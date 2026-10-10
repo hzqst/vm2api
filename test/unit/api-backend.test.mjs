@@ -9,7 +9,7 @@ import { StickyRouter } from '../../src/lib/pool/sticky-router.mjs'
 import { CRS_OFFICIAL_AGENT_PROMPT } from '../../src/lib/identity/crs-persona.mjs'
 import { sessionIdFromOutboundBody } from '../../src/lib/identity/identity-rewrite.mjs'
 import { DEFAULT_AGENT_STANDING } from '../../src/lib/identity/persona-template.mjs'
-import { resolveInferenceBackend, messagesUrl } from '../../src/lib/pool/api-protocol.mjs'
+import { resolveInferenceBackend, messagesUrl, runApiInference } from '../../src/lib/pool/api-protocol.mjs'
 
 function fakeResponse() {
   return { headersSent: false, on() {}, once() {}, off() {}, write() {}, end() {} }
@@ -804,5 +804,141 @@ test('one-shot test call skips the session seat but keeps its sticky key', async
     assert.equal(turn.skipSessionSeat, false)
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('Responses API backend keeps parallel done-only tools in one stream state', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-api-tools-'))
+  const socket = path.join(root, 'run', 'api-kernel.sock')
+  fs.mkdirSync(path.dirname(socket), { recursive: true })
+  const items = [0, 1].map((index) => ({
+    type: 'function_call',
+    id: `fc_${index}`,
+    call_id: `call_${index}`,
+    name: 'edit',
+    arguments: JSON.stringify({ path: `${index}.txt` }),
+  }))
+  const events = [
+    ...items.map((item, index) => ({
+      type: 'response.output_item.added',
+      output_index: index,
+      item: { ...item, arguments: '' },
+    })),
+    ...items.map((item, index) => ({
+      type: 'response.function_call_arguments.done',
+      output_index: index,
+      item_id: item.id,
+      arguments: item.arguments,
+    })),
+    { type: 'response.completed', response: { output: items } },
+  ]
+  const kernel = http.createServer((req, res) => {
+    req.resume()
+    req.on('end', () => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' })
+      res.end(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join('') + 'data: [DONE]\n\n')
+    })
+  })
+  await new Promise((resolve) => kernel.listen(socket, resolve))
+  let wire = ''
+  const res = {
+    headersSent: false,
+    write: (chunk) => {
+      wire += chunk
+    },
+  }
+  try {
+    const result = await runApiInference({
+      cfg: { paths: { data: root } },
+      res,
+      protocol: 'openai.chat',
+      clientStream: true,
+      deliveryMode: 'verified',
+      convertedBody: { model: 'claude-opus-5-5', messages: [{ role: 'user', content: 'edit' }] },
+      inbound: {},
+      converters: {
+        writeSSEHeaders: () => {
+          res.headersSent = true
+        },
+      },
+      scheduler: {
+        pick: () => ({
+          ok: true,
+          endpoint: { id: 'ep', kind: 'openai', protocol: 'openai', base_url: 'https://fixture.invalid' },
+          key: { id: 'key', api_key: 'fixture' },
+          upstream_model: 'gpt-5.4',
+        }),
+      },
+    })
+    assert.equal(result.ok, true)
+    const chunks = wire
+      .split('\n\n')
+      .filter((line) => line.startsWith('data: {'))
+      .map((line) => JSON.parse(line.slice(6)))
+    const calls = chunks.flatMap((chunk) => chunk.choices[0].delta.tool_calls || [])
+    for (let index = 0; index < items.length; index++) {
+      const tool = calls.filter((call) => call.index === index)
+      assert.equal(tool.find((call) => call.id)?.id, items[index].call_id)
+      assert.deepEqual(JSON.parse(tool.map((call) => call.function?.arguments || '').join('')), {
+        path: `${index}.txt`,
+      })
+    }
+    assert.equal(chunks.at(-1).choices[0].finish_reason, 'tool_calls')
+    assert.equal(wire.split('data: [DONE]').length - 1, 1)
+  } finally {
+    kernel.closeAllConnections()
+    await new Promise((resolve) => kernel.close(resolve))
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('Responses API backend returns 502 for conflicting tool arguments when the client is not streaming', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-api-tools-ns-'))
+  const socket = path.join(root, 'run', 'api-kernel.sock')
+  fs.mkdirSync(path.dirname(socket), { recursive: true })
+  const events = [
+    {
+      type: 'response.output_item.added',
+      output_index: 0,
+      item: { type: 'function_call', id: 'fc_0', call_id: 'call_0', name: 'edit', arguments: '' },
+    },
+    { type: 'response.function_call_arguments.delta', output_index: 0, item_id: 'fc_0', delta: '{"path":"a' },
+    { type: 'response.function_call_arguments.done', output_index: 0, item_id: 'fc_0', arguments: '{"path":"b.txt"}' },
+    { type: 'response.completed', response: { output: [] } },
+  ]
+  const kernel = http.createServer((req, res) => {
+    req.resume()
+    req.on('end', () => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' })
+      res.end(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join('') + 'data: [DONE]\n\n')
+    })
+  })
+  await new Promise((resolve) => kernel.listen(socket, resolve))
+  try {
+    const result = await runApiInference({
+      cfg: { paths: { data: root } },
+      res: { headersSent: false, write: () => {} },
+      protocol: 'anthropic.messages',
+      clientStream: false,
+      deliveryMode: 'verified',
+      convertedBody: { model: 'claude-opus-5-5', messages: [{ role: 'user', content: 'edit' }] },
+      inbound: {},
+      converters: { writeSSEHeaders: () => {} },
+      scheduler: {
+        pick: () => ({
+          ok: true,
+          endpoint: { id: 'ep', kind: 'openai', protocol: 'openai', base_url: 'https://fixture.invalid' },
+          key: { id: 'key', api_key: 'fixture' },
+          upstream_model: 'gpt-5.4',
+        }),
+      },
+    })
+    assert.equal(result.ok, false)
+    assert.equal(result.status, 502)
+    assert.equal(result.body.error.code, 'tool_arguments_mismatch')
+  } finally {
+    kernel.closeAllConnections()
+    await new Promise((resolve) => kernel.close(resolve))
+    fs.rmSync(root, { recursive: true, force: true })
   }
 })

@@ -41,7 +41,7 @@ for (const verdict of ['block', 'severity'])
       })
       assert.equal(classifyClaudeRequestPurpose(input), null)
       const withBilling = structuredClone(input)
-      withBilling.system.unshift({ type: 'text', text: 'x-anthropic-billing-header: cc_version=2.1.284;' })
+      withBilling.system.unshift({ type: 'text', text: 'x-anthropic-billing-header: cc_version=2.1.293;' })
       assert.deepEqual(classifyClaudeRequestPurpose(withBilling, { officialTraffic: true }), {
         purpose: 'auto_mode_classifier',
         format: 'xml',

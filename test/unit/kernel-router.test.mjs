@@ -32,6 +32,7 @@ import {
   resetWrapRecycleState,
   beginWrapHop,
   endWrapHop,
+  requestKernelReloadWhenIdle,
 } from '../../src/lib/transport/rust-kernel-supervisor.mjs'
 import { rustKernelPaths, isNeedsRefreshResult } from '../../src/lib/transport/rust-kernel-client.mjs'
 import { OFFICIAL_CLI_VERSION } from '../../src/lib/identity/vm-identity.mjs'
@@ -201,12 +202,12 @@ unixTest('dispatchStreamInference uses rust socket when ready', async () => {
   const prev = process.env.KIN_KERNEL_BIN
   process.env.KIN_KERNEL_BIN = '/bin/true'
   const fx = await kernelFixture((req, res) => {
-    assert.equal(req.headers['x-kin-internal-token'], 'internal-test')
+    assert.equal(req.headers['x-internal-token'], 'internal-test')
     res.writeHead(200, {
       'content-type': 'text/event-stream',
-      trailer: 'x-kin-usage, x-kin-stop-reason',
-      'x-kin-terminal-state': 'verified',
-      'x-kin-model': 'claude-haiku-4-5-20251001',
+      trailer: 'x-usage, x-stop-reason',
+      'x-terminal-state': 'verified',
+      'x-model': 'claude-haiku-4-5-20251001',
     })
     res.write('event: message_start\n')
     res.write('data: {"type":"message_start","message":{"type":"message","role":"assistant","content":[]}}\n\n')
@@ -215,14 +216,14 @@ unixTest('dispatchStreamInference uses rust socket when ready', async () => {
     res.write('event: message_stop\n')
     res.write('data: {"type":"message_stop"}\n\n')
     res.addTrailers({
-      'x-kin-usage': JSON.stringify({
+      'x-usage': JSON.stringify({
         input_tokens: 12,
         output_tokens: 4,
         cache_read_input_tokens: 3,
         cache_creation_input_tokens: 5,
         cache_creation: { ephemeral_5m_input_tokens: 2, ephemeral_1h_input_tokens: 3 },
       }),
-      'x-kin-stop-reason': 'end_turn',
+      'x-stop-reason': 'end_turn',
     })
     res.end()
   })
@@ -272,7 +273,7 @@ unixTest('needs_refresh retries once via Go ensure', async () => {
       )
       return
     }
-    res.writeHead(200, { 'content-type': 'application/json', 'x-kin-terminal-state': 'verified' })
+    res.writeHead(200, { 'content-type': 'application/json', 'x-terminal-state': 'verified' })
     res.end(JSON.stringify({ type: 'message', role: 'assistant', content: [] }))
   })
   try {
@@ -357,7 +358,7 @@ unixTest('unhealthy rust does not fall back to go', async () => {
   const server = http.createServer((_req, res) => {
     res.writeHead(200, {
       'content-type': 'text/event-stream',
-      'x-kin-terminal-state': 'verified',
+      'x-terminal-state': 'verified',
     })
     res.write('event: message_stop\n')
     res.write('data: {"type":"message_stop"}\n\n')
@@ -636,6 +637,32 @@ test('writeKernelConfig separates container paths from host socket paths', () =>
   fs.rmSync(root, { recursive: true, force: true })
 })
 
+test('writeKernelConfig idle timeout follows the panel stream idle timeout', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-kernel-idle-cfg-'))
+  const prev = process.env.KIN_STREAM_IDLE_TIMEOUT
+  const idleOf = (opts) =>
+    JSON.parse(fs.readFileSync(writeKernelConfig(root, { id: 'vm-09' }, { token: 'tok', ...opts }).configPath, 'utf8'))
+      .idle_timeout_seconds
+  try {
+    delete process.env.KIN_STREAM_IDLE_TIMEOUT
+    // Default stays 180s; the panel raises it when needed.
+    assert.equal(idleOf({ routing: {} }), 180)
+    process.env.KIN_STREAM_IDLE_TIMEOUT = '900000'
+    assert.equal(idleOf({ routing: {} }), 900)
+    // Panel value wins over env and is clamped to 30s..60min.
+    assert.equal(idleOf({ routing: { failover: { stream_idle_timeout_ms: 1_200_000 } } }), 1200)
+    assert.equal(idleOf({ routing: { failover: { stream_idle_timeout_ms: 5000 } } }), 30)
+    assert.equal(idleOf({ routing: { failover: { stream_idle_timeout_ms: 99_999_999 } } }), 3600)
+    // Partial callers without routing keep the last written value.
+    idleOf({ routing: { failover: { stream_idle_timeout_ms: 1_200_000 } } })
+    assert.equal(idleOf({}), 1200)
+  } finally {
+    if (prev === undefined) delete process.env.KIN_STREAM_IDLE_TIMEOUT
+    else process.env.KIN_STREAM_IDLE_TIMEOUT = prev
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('writeKernelConfig cli-hop writes local_cli without secrets', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-kernel-cli-hop-cfg-'))
   const written = writeKernelConfig(
@@ -909,6 +936,47 @@ test('recycleWrapIfIdle bounces unknown and stale hops, skips fresh', async () =
   assert.equal(stale.skipped, false)
   assert.deepEqual(restarts, ['vm-05', 'vm-05'])
   resetWrapRecycleState()
+})
+
+test('requestKernelReloadWhenIdle restarts only once no job runs', async () => {
+  resetWrapRecycleState()
+  const exec = { vmId: 'vm-07', vm: { id: 'vm-07' } }
+  const restarts = []
+  const restart = async (target) => {
+    restarts.push(target.vmId)
+    return { ok: true }
+  }
+  const idle = { ok: true, ready_slots: WRAP_SLOT_MAX, closed_slots: 0 }
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 5))
+  try {
+    // Idle kernel: restart right away.
+    let req = requestKernelReloadWhenIdle(exec, { restart, health: async () => idle })
+    assert.deepEqual(await req.done, { ok: true })
+    assert.deepEqual(restarts, ['vm-07'])
+
+    // A job from another caller holds a slot: poll until it frees up.
+    let status = { ok: true, ready_slots: WRAP_SLOT_MAX - 1, closed_slots: 0 }
+    req = requestKernelReloadWhenIdle(exec, { restart, health: async () => status, pollMs: 10 })
+    await tick()
+    assert.deepEqual(restarts, ['vm-07'])
+    status = idle
+    // The poll timer is unref'd so a pending reload never holds the server open;
+    // ref'd ticks keep this test's loop alive until it fires.
+    for (let i = 0; i < 200 && restarts.length < 2; i++) await tick()
+    await req.done
+    assert.deepEqual(restarts, ['vm-07', 'vm-07'])
+
+    // A hop in this process: wait for its end even if the kernel looks idle.
+    beginWrapHop(exec)
+    req = requestKernelReloadWhenIdle(exec, { restart, health: async () => idle, pollMs: 60_000 })
+    await tick()
+    assert.deepEqual(restarts, ['vm-07', 'vm-07'])
+    endWrapHop(exec)
+    await req.done
+    assert.deepEqual(restarts, ['vm-07', 'vm-07', 'vm-07'])
+  } finally {
+    resetWrapRecycleState()
+  }
 })
 
 test('wrapSlotCount always pre-opens max native slots', () => {

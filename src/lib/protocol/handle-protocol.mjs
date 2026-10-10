@@ -3,6 +3,8 @@
  * server wiring; this factory owns convert → pool → Go/Rust hop → client.
  */
 import { applyIntercept } from '../core/intercept.mjs'
+import { streamIdleTimeoutMs as idleTimeoutFromRouting } from '../core/config.mjs'
+import { applyEagerToolStreaming } from './eager-tool-streaming.mjs'
 import {
   inboundRefusalDeviceId,
   isRefusalGuardEnabled,
@@ -35,7 +37,7 @@ import {
 import { sanitizeInboundBody, defaultSeedPolicy } from './seed-policy.mjs'
 import { fingerprintRequest } from './client-fingerprint.mjs'
 import { validateOfficialModel } from './models.mjs'
-import { handleCodexProtocol } from './handle-codex.mjs'
+import { handleCodexProtocol, handleCodexSearch } from './handle-codex.mjs'
 import { detectInboundPlatform } from './platform-detect.mjs'
 import { normalizeCodexRouting } from './codex-route.mjs'
 import { hasClaudeCode1mSuffix } from './context-1m.mjs'
@@ -51,6 +53,7 @@ import { classifyClaudeRequestPurpose, prepareClassifierBody, classifierRequestS
 import { summarizeBody, redactHeaders, presentedApiKeyForLog } from '../admin/request-log.mjs'
 import { reasoningEffortOf, sessionIdForLog } from './log-fields.mjs'
 import { ownerScopeFromRequest } from '../admin/resource-owner.mjs'
+import { keyScopeFromRequest, vmPoolDenial } from '../admin/key-scope.mjs'
 import {
   resolveInferenceEngine,
   resolveOfficialCcInference,
@@ -106,6 +109,7 @@ import {
   personaModeFromRoutingFile,
 } from '../identity/crs-persona.mjs'
 import { createDownstreamKeepalive } from './stream-keepalive.mjs'
+import { createAnthropicStreamTracker, isRecoverableTruncation } from './stream-truncation.mjs'
 import {
   hidePersonaUsageInSseLine,
   hidePersonaUsageOnMessage,
@@ -253,13 +257,17 @@ export function createHandleProtocol(deps) {
       devices: deviceRepo(),
       requestId,
     })
-    if (!decision) return false
+    if (!decision || decision.action !== 'block') {
+      if (decision?.intercept) logBag.intercept = decision.intercept
+      return false
+    }
     stats.errors++
     logBag.via = decision.via
     logBag.attempt_count = 0
     logBag.final_state = decision.final_state
     logBag.error_code = decision.error?.body?.error?.code || null
     logBag.error_message = decision.errorMessage || decision.error?.body?.error?.message || null
+    logBag.intercept = decision.intercept || null
     json(res, decision.error.status, decision.error.body)
     return true
   }
@@ -385,7 +393,7 @@ export function createHandleProtocol(deps) {
       noGoFallback,
       ensureCredential: (exec) => ensureWorkerCredential(exec),
       onEvent: async (line) => {
-        if (/kin_response_headers/.test(String(line))) return
+        if (/response_headers/.test(String(line))) return
         applyClaudeSSELineToMessage(restoreToolNamesInSSELine(line, toolNames), assembler)
       },
     })
@@ -566,6 +574,32 @@ export function createHandleProtocol(deps) {
       logBag.error_code = errorResult.body?.error?.code || 'model_not_supported'
       logBag.error_message = errorResult.body?.error?.message || null
       return json(res, errorResult.status, errorResult.body)
+    }
+    const keyScope = keyScopeFromRequest(req)
+    const poolDenial = vmPoolDenial(keyScope)
+    if (poolDenial) {
+      stats.errors++
+      const errorResult = makeError({
+        type: ErrorType.PERMISSION,
+        code: ErrorCode.VM_POOL_UNAVAILABLE,
+        message: poolDenial.message,
+        status: 403,
+      })
+      logBag.error_code = ErrorCode.VM_POOL_UNAVAILABLE
+      logBag.error_message = errorResult.body?.error?.message || null
+      return json(res, 403, errorResult.body)
+    }
+    if (keyScope.group_type !== 'all' && keyScope.group_type !== platform.platform) {
+      stats.errors++
+      const errorResult = makeError({
+        type: ErrorType.PERMISSION,
+        code: ErrorCode.KEY_GROUP_MISMATCH,
+        message: `此密钥仅可调用 ${keyScope.group_type}`,
+        status: 403,
+      })
+      logBag.error_code = ErrorCode.KEY_GROUP_MISMATCH
+      logBag.error_message = errorResult.body?.error?.message || null
+      return json(res, 403, errorResult.body)
     }
     // Codex returns before conversion. Distill does not apply to OpenAI platform models.
     // Refusal still scans here so a cached refusal never reaches a slot.
@@ -824,6 +858,7 @@ export function createHandleProtocol(deps) {
         }),
       })
     }
+    ctx.body = applyEagerToolStreaming(ctx.body, getRouting())
     const personaIn = ctx.body
     if (!requestContext)
       ctx.body = applyCrsUnofficialPersona(ctx.body, {
@@ -956,7 +991,10 @@ export function createHandleProtocol(deps) {
     const streamKeepaliveMs = Number(
       getRouting()?.failover?.stream_keepalive_ms ?? cfg.limits.stream_keepalive_ms ?? 15_000,
     )
-    const streamIdleTimeoutMs = Number(cfg.limits.stream_idle_timeout_ms || 180_000)
+    const streamIdleTimeoutMs = idleTimeoutFromRouting(
+      getRouting(),
+      Number(cfg.limits.stream_idle_timeout_ms) || 180_000,
+    )
     const managedKey = req.apiKeyRecord || null
     if (managedKey) {
       const gate = apiKeyStore.acquire(managedKey)
@@ -979,6 +1017,7 @@ export function createHandleProtocol(deps) {
     const clientAbort = bindClientAbort(req, res)
 
     const clientStream = isClientStream(inbound, req.headers)
+    const streamTracker = clientStream && protocol === 'anthropic.messages' ? createAnthropicStreamTracker() : null
     const upstreamStream = true
     const requestedDelivery = String(
       req.headers['x-kin-delivery'] || getRouting()?.failover?.delivery_mode || 'realtime',
@@ -1016,6 +1055,7 @@ export function createHandleProtocol(deps) {
         familyVmId,
         pinVmId,
         ownerScope,
+        keyScope,
         countUsage: !healthReal,
         stream: upstreamStream,
         deliveryMode,
@@ -1261,11 +1301,12 @@ export function createHandleProtocol(deps) {
                 onCommit()
               },
               onEvent: async (line) => {
-                if (/kin_response_headers/.test(String(line))) return
+                if (/response_headers/.test(String(line))) return
                 line = restoreToolNamesInSSELine(line, attemptMeta?.toolNames || {})
                 if (personaHideTokens) line = hidePersonaUsageInSseLine(line, personaHideTokens, cacheTtl)
                 keepalive.observeLine(line)
                 if (protocol === 'anthropic.messages') {
+                  streamTracker?.observe(line)
                   if (!res.headersSent) writeSSEHeaders(res)
                   res.write(String(line).endsWith('\n') ? String(line) : String(line) + '\n')
                   return
@@ -1379,6 +1420,8 @@ export function createHandleProtocol(deps) {
         stats.errors++
         logBag.error_code = result?.body?.error?.code || 'stream_incomplete'
         logBag.error_message = result?.body?.error?.message || 'Stream did not reach a verified terminal state'
+        const closing = isRecoverableTruncation(result) && !res.writableEnded ? streamTracker?.closingEvents() : null
+        if (closing) res.write(closing)
       }
       rememberRefusal({ inbound, body: ctx.body, headers: req.headers, result, logBag, requestId: logCtx.request_id })
       return res.end()
@@ -1415,5 +1458,86 @@ export function createHandleProtocol(deps) {
     return json(res, 200, ctx.body)
   }
 
-  return { handleProtocol, mapProtocolClientError, applyProtocolIntercept, streamAndAssembleClaudeMessage }
+  /** POST /v1/alpha/search (Codex web search): same logging, auth and body handling as handleProtocol. */
+  async function handleSearch(req, res, pathName) {
+    const protocol = 'openai.search'
+    const logCtx = requestLog.start(req, { protocol, pathName })
+    res._kinRequestId = logCtx.request_id
+    requestLog.tapResponse?.(logCtx, res)
+    const logBag = {
+      protocol,
+      model: null,
+      stream: false,
+      inbound_summary: null,
+      upstream_status: null,
+      vm_id: null,
+      account_id: null,
+      usage: null,
+      error_code: null,
+      error_message: null,
+      via: 'codex-search',
+      attempt_count: null,
+      final_state: null,
+    }
+    res.on('finish', () => {
+      try {
+        const groupId = req.apiKeyRecord?.group_id ?? 1
+        requestLog.finish(logCtx, {
+          status: res.statusCode || 0,
+          api_key_kind: req.apiKeyKind || null,
+          api_key_id: req.apiKeyRecord?.id || null,
+          user_id: req.apiKeyRecord?.user_id ?? null,
+          group_id: groupId,
+          rate_multiplier: deps.groupsRepo.rateMultiplier(groupId),
+          ...logBag,
+        })
+      } catch {}
+    })
+    if (!requireAuth(req, res)) {
+      logBag.error_code = req.authError?.code || ErrorCode.INVALID_API_KEY
+      logBag.error_message = req.authError?.message || 'Invalid credentials'
+      logBag.api_key_presented = presentedApiKeyForLog(req.presentedApiKey)
+      return
+    }
+    let body
+    try {
+      body = await readBody(req, cfg.limits.max_body_bytes)
+    } catch (error) {
+      stats.errors++
+      logBag.error_code = error?.body?.error?.code || ErrorCode.INVALID_JSON
+      logBag.error_message = error?.body?.error?.message || String(error?.message || error)
+      if (error?.body?.error) return json(res, error.status || 400, error.body)
+      return json(
+        res,
+        400,
+        makeError({
+          type: ErrorType.INVALID_REQUEST,
+          code: ErrorCode.INVALID_JSON,
+          message: String(error?.message || error),
+          status: 400,
+        }).body,
+      )
+    }
+    logBag.model = typeof body?.model === 'string' ? body.model : null
+    logBag.inbound_summary = summarizeBody(body)
+    return handleCodexSearch({
+      req,
+      res,
+      body,
+      logBag,
+      stats,
+      json,
+      routing: getRouting() || {},
+      projectRoot: cfg.paths.project,
+      stickyRouter,
+    })
+  }
+
+  return {
+    handleProtocol,
+    handleSearch,
+    mapProtocolClientError,
+    applyProtocolIntercept,
+    streamAndAssembleClaudeMessage,
+  }
 }

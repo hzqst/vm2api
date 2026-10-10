@@ -291,3 +291,120 @@ test('kernel Responses frames are re-emitted under their payload type', () => {
     ].join('\n'),
   )
 })
+
+test('parallel done-only tools retain complete JSON, stable indexes and one terminal frame', () => {
+  const state = createChatSseState()
+  const items = [0, 1].map((index) => ({
+    type: 'function_call',
+    id: `fc_${index}`,
+    call_id: `call_${index}`,
+    name: 'edit',
+    arguments: JSON.stringify({ path: `${index}.txt`, text: '你好' }),
+  }))
+  const events = [
+    ...items.map((item, index) => ({
+      type: 'response.output_item.added',
+      output_index: index,
+      item: { ...item, arguments: '' },
+    })),
+    { type: 'response.function_call_arguments.done', output_index: 0, item_id: 'fc_0', arguments: items[0].arguments },
+    { type: 'response.output_item.done', output_index: 1, item: items[1] },
+    { type: 'response.function_call_arguments.done', output_index: 0, arguments: items[0].arguments },
+    { type: 'response.completed', response: { output: items } },
+  ]
+  const output = events
+    .map((event) => responsesSseToChatChunk(`data: ${JSON.stringify(event)}`, 'codex', state) || '')
+    .join('')
+  const chunks = output
+    .split('\n\n')
+    .filter((line) => line.startsWith('data: {'))
+    .map((line) => JSON.parse(line.slice(6)))
+  const calls = chunks.flatMap((chunk) => chunk.choices[0].delta.tool_calls || [])
+  for (let index = 0; index < items.length; index++) {
+    const tool = calls.filter((call) => call.index === index)
+    assert.equal(tool.filter((call) => call.type === 'function').length, 1)
+    assert.deepEqual(
+      JSON.parse(tool.map((call) => call.function?.arguments || '').join('')),
+      JSON.parse(items[index].arguments),
+    )
+  }
+  assert.equal(chunks.at(-1).choices[0].finish_reason, 'tool_calls')
+  assert.equal(responsesSseToChatChunk('data: [DONE]', 'codex', state), null)
+})
+
+test('done only appends missing suffix and rejects a conflicting streamed prefix', () => {
+  const state = createChatSseState()
+  responsesSseToChatChunk(
+    'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"call_a","id":"fc_a","name":"edit"}}',
+    'codex',
+    state,
+  )
+  responsesSseToChatChunk(
+    `data: ${JSON.stringify({ type: 'response.function_call_arguments.delta', item_id: 'fc_a', delta: '{"path":' })}`,
+    'codex',
+    state,
+  )
+  const full = { type: 'response.function_call_arguments.done', output_index: 0, arguments: '{"path":"a.txt"}' }
+  const tail = responsesSseToChatChunk(`data: ${JSON.stringify(full)}`, 'codex', state)
+  assert.equal(JSON.parse(tail.slice(6)).choices[0].delta.tool_calls[0].function.arguments, '"a.txt"}')
+  assert.equal(responsesSseToChatChunk(`data: ${JSON.stringify(full)}`, 'codex', state), null)
+  assert.throws(
+    () =>
+      responsesSseToChatChunk(
+        `data: ${JSON.stringify({ ...full, arguments: '{"path":"other.txt"}' })}`,
+        'codex',
+        state,
+      ),
+    { code: 'tool_arguments_mismatch' },
+  )
+})
+
+test('non-stream Anthropic conversion accepts object arguments and rejects non-object JSON', () => {
+  const call = { type: 'function_call', call_id: 'call_a', name: 'edit' }
+  const ok = codexBodyToAnthropicMessage({ output: [{ ...call, arguments: { path: 'a.txt' } }] })
+  assert.deepEqual(ok.content[0].input, { path: 'a.txt' })
+  for (const bad of ['{"path":', '[1]', '"text"']) {
+    assert.throws(() => codexBodyToAnthropicMessage({ output: [{ ...call, arguments: bad }] }), {
+      code: 'tool_arguments_invalid',
+    })
+  }
+})
+
+test('completed snapshots recover unregistered function and custom calls in every output shape', () => {
+  const output = [
+    { type: 'function_call', call_id: 'call_a', id: 'fc_a', name: 'edit', arguments: '{"path":"a.txt"}' },
+    { type: 'custom_tool_call', call_id: 'call_b', id: 'ct_b', name: 'patch', input: '*** Begin Patch\n你好' },
+  ]
+  const completed = `data: ${JSON.stringify({ type: 'response.completed', response: { id: 'resp_a', output } })}`
+  const chat = responsesSseToChatChunk(completed, 'codex', createChatSseState())
+  const chunk = JSON.parse(chat.split('\n\n')[0].slice(6))
+  const calls = chunk.choices[0].delta.tool_calls
+  assert.equal(calls.find((call) => call.index === 0 && !call.type).function.arguments, output[0].arguments)
+  assert.equal(calls.find((call) => call.index === 1 && !call.type).function.arguments, output[1].input)
+  const assembled = assembleCodexBodyFromSse([completed])
+  assert.deepEqual(assembled.output, output)
+  const message = codexBodyToAnthropicMessage(assembled)
+  assert.equal(message.stop_reason, 'tool_use')
+  assert.deepEqual(
+    message.content.map((block) => block.input),
+    [{ path: 'a.txt' }, { input: output[1].input }],
+  )
+  const anthropic = responsesSseToAnthropicEvents(completed, createAnthropicSseState())
+  const frames = anthropic
+    .split('\n')
+    .filter((line) => line.startsWith('data: '))
+    .map((line) => JSON.parse(line.slice(6)))
+  assert.deepEqual(
+    frames.filter((frame) => frame.type === 'content_block_start').map((frame) => frame.content_block.type),
+    ['tool_use', 'tool_use'],
+  )
+  for (let index = 0; index < 2; index++) {
+    const args = frames
+      .filter((frame) => frame.index === index && frame.delta?.type === 'input_json_delta')
+      .map((frame) => frame.delta.partial_json)
+      .join('')
+    assert.deepEqual(JSON.parse(args), message.content[index].input)
+    assert.equal(frames.filter((frame) => frame.type === 'content_block_stop' && frame.index === index).length, 1)
+  }
+  assert.equal(frames.find((frame) => frame.type === 'message_delta').delta.stop_reason, 'tool_use')
+})

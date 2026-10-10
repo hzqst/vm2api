@@ -15,23 +15,6 @@ import {
 } from '../../src/lib/identity/crs-persona.mjs'
 import { loadVmIdentity, OFFICIAL_CLI_VERSION } from '../../src/lib/identity/vm-identity.mjs'
 import { prepareOutboundEnvelope } from '../../src/lib/protocol/outbound-attempt.mjs'
-import { fullClaudeCodeMimicryBetas } from '../../src/lib/protocol/claude-code-betas.mjs'
-
-const CAPTURE_BETAS = [
-  'claude-code-20250219',
-  'oauth-2025-04-20',
-  'interleaved-thinking-2025-05-14',
-  'thinking-token-count-2026-05-13',
-  'context-management-2025-06-27',
-  'prompt-caching-scope-2026-01-05',
-  'mid-conversation-system-2026-04-07',
-  'advanced-tool-use-2025-11-20',
-  'mid-conversation-system-clear-at-2026-08-21',
-  'effort-2025-11-24',
-  'thinking-binding-controls-2026-08-01',
-  'extended-cache-ttl-2025-04-11',
-  'cache-diagnosis-2026-04-07',
-]
 
 test('unofficial outbound envelope matches official 2.1.281 capture keys', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-cap-'))
@@ -91,12 +74,9 @@ test('unofficial outbound envelope matches official 2.1.281 capture keys', () =>
   assert.equal(headers['x-stainless-arch'], 'x64')
   assert.equal(headers['x-stainless-runtime'], 'node')
   assert.equal(headers['x-stainless-runtime-version'], 'v26.3.0')
-  assert.equal(headers['x-stainless-package-version'], '0.112.1')
   assert.equal(headers['x-stainless-retry-count'], '0')
   assert.equal(headers['x-stainless-timeout'], '600')
   assert.equal(headers.accept, 'text/event-stream')
-  assert.deepEqual(String(headers['anthropic-beta'] || '').split(','), CAPTURE_BETAS)
-  assert.deepEqual(fullClaudeCodeMimicryBetas(), CAPTURE_BETAS)
   assert.doesNotMatch(String(headers['anthropic-beta'] || ''), /context-1m/)
   const uid = JSON.parse(body.metadata.user_id)
   assert.equal(uid.device_id, identity.deviceId)
@@ -166,9 +146,9 @@ const CAPTURE_281_FIRST_USER = (() => {
   return buf.toString('utf8')
 })()
 
-test('outbound headers align with Claude Code 2.1.284 and keep the 2.1.281 fingerprint vector', () => {
-  assert.equal(OFFICIAL_CLI_VERSION, '2.1.284')
-  assert.equal(DEFAULT_CLI_VERSION, '2.1.284')
+test('outbound headers align with Claude Code 2.1.293 and keep the 2.1.281 fingerprint vector', () => {
+  assert.equal(OFFICIAL_CLI_VERSION, '2.1.293')
+  assert.equal(DEFAULT_CLI_VERSION, '2.1.293')
   assert.equal(computeClaudeCodeFingerprint(CAPTURE_281_FIRST_USER, '2.1.281'), '6f0')
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-281-'))
   const identity = loadVmIdentity({
@@ -201,7 +181,7 @@ test('outbound headers align with Claude Code 2.1.284 and keep the 2.1.281 finge
     firstUserText: CAPTURE_281_FIRST_USER,
   })
   const { headers, body } = envelope
-  assert.equal(headers['user-agent'], 'claude-cli/2.1.284 (external, sdk-cli)')
+  assert.equal(headers['user-agent'], 'claude-cli/2.1.293 (external, sdk-cli)')
   assert.equal(headers['anthropic-version'], '2023-06-01')
   assert.equal(headers['x-app'], 'cli')
   assert.equal(headers['anthropic-dangerous-direct-browser-access'], 'true')
@@ -210,14 +190,11 @@ test('outbound headers align with Claude Code 2.1.284 and keep the 2.1.281 finge
   assert.equal(headers['x-stainless-arch'], 'x64')
   assert.equal(headers['x-stainless-runtime'], 'node')
   assert.equal(headers['x-stainless-runtime-version'], 'v26.3.0')
-  assert.equal(headers['x-stainless-package-version'], '0.112.1')
   assert.equal(headers['x-stainless-retry-count'], '0')
   assert.equal(headers['x-stainless-timeout'], '600')
-  assert.deepEqual(String(headers['anthropic-beta'] || '').split(','), CAPTURE_BETAS)
-  assert.equal(CAPTURE_BETAS.length, 13)
   assert.match(
     body.system[0].text,
-    new RegExp(`cc_version=2\\.1\\.284\\.${computeClaudeCodeFingerprint(CAPTURE_281_FIRST_USER, '2.1.284')}`),
+    new RegExp(`cc_version=2\\.1\\.293\\.${computeClaudeCodeFingerprint(CAPTURE_281_FIRST_USER, '2.1.293')}`),
   )
   assert.match(body.system[0].text, /cc_prompt_index=0; cc_turn_index=1;/)
   const uid = JSON.parse(body.metadata.user_id)

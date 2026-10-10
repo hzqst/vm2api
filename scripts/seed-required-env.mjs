@@ -33,8 +33,6 @@ for (const id of ids) {
   const next = defaultSeedPolicy({
     ...(vm.seed_policy || {}),
     telemetry_disabled: !enable,
-    disable_nonessential_traffic: enable,
-    do_not_track: enable ? false : vm.seed_policy?.do_not_track !== false,
   })
   vm.seed_policy = next
   vm.updated_at = new Date().toISOString()

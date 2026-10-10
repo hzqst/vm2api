@@ -3,13 +3,14 @@
  * Prefer the pool's internal credentials; never read username/password
  * from the redacted public snapshot.
  *
- * Local egress (`px-local`) is a bound exit with no SOCKS URL. Import and
- * host hops may then use the control-plane default route (`direct: true`);
- * a local Codex slot carries the deployment proxy its kernel also uses.
- * That is not "unbound".
+ * Local egress (`px-local`) is a bound exit with no SOCKS URL: the route of
+ * the VPS that runs the slot. A local slot's import and host hops use the
+ * control-plane default route (`direct: true`, a Codex slot carries the
+ * deployment proxy its kernel also uses); a node slot's leave from that node
+ * through its SSH link. That is not "unbound".
  */
-import { boundProxyUrl, isLocalEgressProxy, localEgressProxyUrl } from './egress.mjs'
-import { isCodexVm } from './vm-kind.mjs'
+import { boundProxyUrl, isLocalEgressProxy } from './egress.mjs'
+import { slotHost } from './slot-host.mjs'
 import { configuredIpv6Enabled, proxyBlockedReason } from './proxy-policy.mjs'
 
 function poolHitForVm(proxyPool, vm) {
@@ -56,13 +57,14 @@ export function resolveImportProxy({ vm, proxyPool, overrideUrl = null } = {}) {
   }
   const allocated = vm?.id && typeof proxyPool?.getProxyForVm === 'function' ? proxyPool.getProxyForVm(vm.id) : null
   if (isLocalEgressProxy(hit) || isLocalEgressProxy(allocated) || isLocalEgressProxy(vm?.proxy)) {
-    return {
-      ok: true,
-      proxyUrl: isCodexVm(vm) ? localEgressProxyUrl() : '',
-      blocked: false,
-      reason: null,
-      direct: true,
+    let proxyUrl
+    try {
+      proxyUrl = slotHost(vm).localExitProxyUrl(vm)
+    } catch {
+      // A node exit without its forwarder must not quietly become the control plane's route.
+      return { ok: false, proxyUrl: null, blocked: true, reason: 'proxy_unavailable' }
     }
+    return { ok: true, proxyUrl, blocked: false, reason: null, direct: true }
   }
   if (allocated?.url) {
     return {

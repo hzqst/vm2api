@@ -6,8 +6,8 @@
  *             Caller tools / tool_choice are kept. Gateway must not rewrite them.
  *             Console label: 默认.
  *   official_prompt — billing + identity + leftover + overlay. No environment,
- *             no client usage hide. Web search injects only when the last
- *             user prompt asks to 搜索 / search / web search.
+ *             no client usage hide. Web search is not added because the latest
+ *             user text contains 搜索 / search.
  *             Agent is not injected.
  *             If the caller already sent an agent prompt, that text occupies
  *             the official agent slot. Console label: 官方提示词.
@@ -24,9 +24,10 @@
  * Caller leftover system is appended after the official 4 blocks, matching
  * Claude Code `systemPrompt: { type:'preset', preset:'claude_code', append }`
  * (`--append-system-prompt` / `claude --system`). It is not sanitized away.
- * Inbound messages[].role=system are kept on models that support
- * mid-conversation-system. Haiku rejects that role (400), so leftover stays
- * in top-level system and the hop lifts any remaining mid-system turns.
+ * Inbound messages[].role=system are kept on models that accept
+ * mid-conversation-system (see modelSupportsMidConversationSystem). Sonnet 5,
+ * Haiku 4.5 and other Claude 4.x reject that role (400), so leftover stays in
+ * top-level system and the hop lifts any remaining turns.
  */
 import { createHash } from 'node:crypto'
 import { resolveWorkstationProfile } from './workstation-profile.mjs'
@@ -34,6 +35,7 @@ import fs from 'node:fs'
 import { uuidFromSeed } from './identity-rewrite.mjs'
 import { CCH_PLACEHOLDER } from './cch.mjs'
 import { CLAUDE_CLI_UA_RE, isOfficialClaudeUa } from './official-claude-ua.mjs'
+import { modelSupportsMidConversationSystem } from '../protocol/anthropic-policy.mjs'
 import {
   AGENT_EXPANSION_CACHE_CONTROL,
   CRS_AGENT_EXPANSION,
@@ -77,7 +79,7 @@ export const CRS_OFFICIAL_CLI_SYSTEM = "You are Claude Code, Anthropic's officia
 export const CRS_OFFICIAL_SYSTEM = CRS_OFFICIAL_AGENT_IDENTITY
 /** 0注入 prompt_version 短身份句。cl100k 计 8 token，必带 Anthropic 与 Claude。 */
 export const CRS_COMPACT_IDENTITY = 'You are Anthropic Claude Agent SDK.'
-export const DEFAULT_CLI_VERSION = '2.1.284'
+export const DEFAULT_CLI_VERSION = '2.1.293'
 export const PERSONA_MODES = Object.freeze(['rewrite', 'official_prompt', 'overwrite', 'zero', 'append', 'none'])
 export const DEFAULT_PERSONA_MODE = 'rewrite'
 export const DEFAULT_PERSONA_PARK = true
@@ -348,7 +350,7 @@ function boundedBillingIndex(value, min) {
   return n
 }
 
-/** 2.1.284 appends both indexes, or neither. Entrypoint stays sdk-cli. */
+/** 2.1.293 appends both indexes, or neither. Entrypoint stays sdk-cli. */
 export function billingTurnSuffix(promptIndex, turnIndex) {
   const prompt = boundedBillingIndex(promptIndex, 0)
   const turn = boundedBillingIndex(turnIndex, 1)
@@ -1613,9 +1615,9 @@ export function insertMidConversationSystem(messages, text) {
   return [...messages.slice(0, idx + 1), { role: 'system', content: t }, ...messages.slice(idx + 1)]
 }
 
-/** 2.1.263 leftover → messages role=system. Haiku 400s that role. */
+/** Leftover → messages role=system only when that model accepts the role. */
 function leftoverGoesToMidSystem(preset, modelId) {
-  if (/haiku/i.test(String(modelId || ''))) return false
+  if (!modelSupportsMidConversationSystem(modelId)) return false
   return preset === 'official' || preset === 'official_full'
 }
 

@@ -1,5 +1,5 @@
 import type { VmProxySnap } from '@/types/panel-vm'
-import { proxyHostLabel } from '@/lib/vm-status'
+import { localProxyText, proxyHostLabel } from '@/lib/vm-status'
 
 export type ProxySortKey = 'status' | 'latency' | 'seats' | 'geo' | 'host'
 
@@ -26,17 +26,28 @@ export function proxyIsLocal(prx: VmProxySnap): boolean {
   return prx.kind === 'local' || prx.scheme === 'local' || prx.id === 'px-local'
 }
 
-export function proxyHostText(prx: VmProxySnap): string {
-  if (proxyIsLocal(prx)) return '本地出口'
+/** 本地代理的含义：槽位所在 VPS（本机或集群节点）自身的出口，不是某一台固定机器。 */
+export const LOCAL_PROXY_HINT = '当前VPS的本地代理'
+
+/** 本地代理固定排第一，其余保持原相对顺序。 */
+function localFirst(a: VmProxySnap, b: VmProxySnap): number {
+  return (proxyIsLocal(b) ? 1 : 0) - (proxyIsLocal(a) ? 1 : 0)
+}
+
+/** `vpsIp` 只作用于本地代理：它的出口随槽位所在 VPS 变。 */
+export function proxyHostText(prx: VmProxySnap, vpsIp?: string | null): string {
+  if (proxyIsLocal(prx)) return localProxyText(vpsIp)
   if (!prx.host) return `?:${prx.port ?? '?'}`
   const endpoint = proxyHostLabel(prx)
   return prx.port == null ? `${endpoint}:?` : endpoint
 }
 
-/** 带代理名称的地址：`名称 · host:port`；没名称就退回纯地址。 */
-export function proxyLabel(prx: VmProxySnap): string {
+/** 带代理名称的地址：`名称 · host:port`；没名称就退回纯地址。本地代理附带含义说明。 */
+export function proxyLabel(prx: VmProxySnap, vpsIp?: string | null): string {
+  const host = proxyHostText(prx, vpsIp)
+  if (proxyIsLocal(prx)) return `${host} · ${LOCAL_PROXY_HINT}`
   const name = prx.label?.trim()
-  return name ? `${name} · ${proxyHostText(prx)}` : proxyHostText(prx)
+  return name ? `${name} · ${host}` : host
 }
 
 /**
@@ -89,12 +100,13 @@ export function proxyStatusLabel(prx: VmProxySnap): string {
  */
 export function proxyOptionLabel(
   prx: VmProxySnap,
-  poolBindLimit: number
+  poolBindLimit: number,
+  vpsIp?: string | null
 ): string {
   const lat = prx.latency_ms != null ? `${prx.latency_ms}ms` : '—'
   const used = proxyBoundIds(prx).length
   const limit = proxyBindLimit(prx, poolBindLimit)
-  return `${proxyLabel(prx)} · ${proxyStatusLabel(prx)} ${lat} · ${used}/${limit}`
+  return `${proxyLabel(prx, vpsIp)} · ${proxyStatusLabel(prx)} ${lat} · ${used}/${limit}`
 }
 
 /**
@@ -116,7 +128,7 @@ export function proxyRemaining(
 
 /**
  * 「能不能马上用」的排序，专给导入流程的代理下拉：
- * 健康优先 → 有余位优先 → 余位多的在前 → 延迟低的在前 → host:port。
+ * 本地代理固定第一 → 健康优先 → 有余位优先 → 余位多的在前 → 延迟低的在前 → host:port。
  *
  * 与 `sortedProxies()`（代理页的用户可切列排序）是两个用途，不要混用。
  * 对齐 index.html:7659 sortedProxiesByAvailability()。
@@ -127,6 +139,8 @@ export function sortedProxiesByAvailability(
   poolBindLimit: number
 ): VmProxySnap[] {
   return list.slice().sort((a, b) => {
+    const pinned = localFirst(a, b)
+    if (pinned) return pinned
     const ia = proxyIsInvalid(a) ? 1 : 0
     const ib = proxyIsInvalid(b) ? 1 : 0
     if (ia !== ib) return ia - ib
@@ -145,6 +159,25 @@ export function sortedProxiesByAvailability(
       'asc'
     )
   })
+}
+
+/**
+ * 单槽代理 tab 的出口下拉。
+ * 已绑到本槽的留在列表里：正在用本地代理时，SOCKS5 下拉也要看得到它。
+ * 绑满且不属于本槽的不列。本地代理仍固定第一。
+ */
+export function proxiesForVmBind(
+  list: VmProxySnap[],
+  vmId: string,
+  poolBindLimit = 5
+): VmProxySnap[] {
+  const open = list.filter((p) => {
+    if (!p.id || !p.enabled || p.status === 'dead' || p.blocked_reason) {
+      return false
+    }
+    return proxyRemaining(p, vmId, poolBindLimit) > 0
+  })
+  return sortedProxiesByAvailability(open, vmId, poolBindLimit)
 }
 
 function cmp(
@@ -173,6 +206,8 @@ export function sortedProxies(
 ): VmProxySnap[] {
   const rows = list.slice()
   rows.sort((a, b) => {
+    const pinned = localFirst(a, b)
+    if (pinned) return pinned
     const ia = proxyIsInvalid(a) ? 1 : 0
     const ib = proxyIsInvalid(b) ? 1 : 0
     if (ia !== ib) return ia - ib

@@ -13,15 +13,22 @@ describe('sidebar permissions', () => {
     expect(urls).toEqual(['/overview', '/logs'])
   })
 
-  it('shows statistics next to usage, ahead of logs', () => {
-    const groups = navGroupsFor(['usage', 'statistics', 'logs'])
-    const items = groups.flatMap((group) => group.items)
+  it('keeps the monitoring pages together in hub order', () => {
+    const groups = navGroupsFor([
+      'usage',
+      'logs',
+      'statistics',
+      'overview',
+      'vm',
+    ])
 
-    expect(items.map((item) => item.url)).toEqual([
-      '/usage',
+    expect(groups[0].title).toBe('监控')
+    expect(groups[0].items.map((item) => item.url)).toEqual([
+      '/overview',
       '/statistics',
       '/logs',
+      '/usage',
     ])
-    expect(items[1].title).toBe('统计')
+    expect(groups[1].items.map((item) => item.url)).toEqual(['/vm'])
   })
 })

@@ -9,6 +9,8 @@ const draft: KeyLimitsDraft = {
   quota_usd: 3.5,
   rpm: 60,
   expires_in_days: 30,
+  group_type: 'anthropic',
+  allowed_vms: ['vm-01', 'vm-01', ' '],
 }
 
 describe('API key limit payload', () => {
@@ -21,6 +23,8 @@ describe('API key limit payload', () => {
       quota_usd: 3.5,
       rpm: 60,
       expires_in_days: 30,
+      group_type: 'anthropic',
+      allowed_vms: ['vm-01'],
     })
   })
 
@@ -35,5 +39,17 @@ describe('API key limit payload', () => {
     expect(() =>
       keyLimitsPayload({ ...draft, quota_usd: -1 }, 'create')
     ).toThrow('USD 额度')
+    expect(
+      keyLimitsPayload(
+        { ...draft, group_type: 'all', allowed_vms: ['vm-01'] },
+        'create'
+      )
+    ).toMatchObject({
+      group_type: 'all',
+      allowed_vms: [],
+    })
+    expect(() =>
+      keyLimitsPayload({ ...draft, allowed_vms: [] }, 'create')
+    ).toThrow('至少选择一台 VM')
   })
 })

@@ -522,6 +522,7 @@ export class FailoverRunner {
     deviceKey = null,
     skipSessionSeat = false,
     ownerScope = null,
+    keyScope = null,
     countUsage = true,
   } = {}) {
     if (!this.scheduler) throw new Error('FailoverRunner requires a scheduler')
@@ -650,6 +651,7 @@ export class FailoverRunner {
           deviceVmId: currentDeviceVmId,
           skipSessionSlot: skipSessionSeat,
           ownerScope,
+          keyScope,
         }
         if (avoid) {
           const elsewhere = await this.scheduler.selectAndReserve({ ...selectArgs, avoid, allowWait: false })

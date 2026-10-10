@@ -24,18 +24,28 @@ export const OFFICIAL_RATES = {
   'sonnet-5': { input: 2, output: 10, cache_5m: 2.5, cache_1h: 4, cache_read: 0.2 },
   'sonnet-4.6': { input: 3, output: 15, cache_5m: 3.75, cache_1h: 6, cache_read: 0.3 },
   'sonnet-4': { input: 3, output: 15, cache_5m: 3.75, cache_1h: 6, cache_read: 0.3 },
+  // Claude Code 2.1.293 haiku_55. Over 100K prompt tokens uses the premium band below.
+  'haiku-5.5': { input: 0.1, output: 0.5, cache_5m: 0.125, cache_1h: 0.2, cache_read: 0.01 },
   'haiku-4.5': { input: 1, output: 5, cache_5m: 1.25, cache_1h: 2, cache_read: 0.1 },
   'haiku-3.5': { input: 0.8, output: 4, cache_5m: 1, cache_1h: 1.6, cache_read: 0.08 },
 }
 
 /**
- * Long-context premium: only Sonnet 4 / 4.5 (1M beta). Claude 4.6+ bill the full 1M
- * window at standard rates. Above 200K prompt tokens (input + cache read + cache write)
- * the whole request switches: input/cache 2×, output 1.5×.
+ * Long-context premium.
+ * Sonnet 4 / 4.5: above 200K prompt tokens (input + cache read + cache write),
+ * input/cache 2× and output 1.5×. Claude 4.6+ otherwise bill the full 1M at standard rates.
+ * Haiku 5.5: above 100K prompt tokens the whole request switches to $0.50 / $2.50,
+ * cache read $0.05. Cache writes stay 1.25× / 2× of that premium input.
  */
 export const ANTHROPIC_LONG_CONTEXT_THRESHOLD = 200_000
+export const HAIKU_55_LONG_CONTEXT_THRESHOLD = 100_000
 export const LONG_CONTEXT_RATES = {
   'sonnet-4': { input: 6, output: 22.5, cache_5m: 7.5, cache_1h: 12, cache_read: 0.6 },
+  'haiku-5.5': { input: 0.5, output: 2.5, cache_5m: 0.625, cache_1h: 1, cache_read: 0.05 },
+}
+const LONG_CONTEXT_THRESHOLDS = {
+  'sonnet-4': ANTHROPIC_LONG_CONTEXT_THRESHOLD,
+  'haiku-5.5': HAIKU_55_LONG_CONTEXT_THRESHOLD,
 }
 
 /**
@@ -108,6 +118,7 @@ export function resolvePricingKey(raw) {
   if (FAMILY_ALIASES[m]) return FAMILY_ALIASES[m]
   if (/fable/.test(m)) return 'fable-5'
   if (/mythos/.test(m)) return 'mythos-5'
+  if (/haiku-5(?:[-.]5)?(?:-|$)/.test(m)) return 'haiku-5.5'
   if (/haiku-3-5|haiku-3\.5/.test(m)) return 'haiku-3.5'
   if (/haiku/.test(m)) return 'haiku-4.5'
   if (/sonnet-5/.test(m)) return 'sonnet-5'
@@ -264,7 +275,8 @@ export function calculateCost(usage = {}, model = null) {
 
   const fastKey = billedSpeed(u) === 'fast' ? resolveFastModeKey(mid) : null
   const promptTokens = inputTokens + cacheRead + cache5m + cache1h
-  const longContext = !fastKey && !!LONG_CONTEXT_RATES[resolved.key] && promptTokens > ANTHROPIC_LONG_CONTEXT_THRESHOLD
+  const longThreshold = LONG_CONTEXT_THRESHOLDS[resolved.key]
+  const longContext = !fastKey && longThreshold != null && promptTokens > longThreshold
   if (fastKey) rates = { ...FAST_MODE_RATES[fastKey] }
   else if (longContext) rates = { ...LONG_CONTEXT_RATES[resolved.key] }
 

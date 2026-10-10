@@ -31,6 +31,14 @@ function safeFile(root, rel) {
   return resolved
 }
 
+// Vite 把内容哈希写进 assets/ 下的文件名，内容变了 URL 就变，可以永久缓存；
+// index.html 必须每次重新取，才能拿到新的哈希文件名。
+function cacheControl(rel, ext) {
+  if (ext === '.html') return 'no-store'
+  if (rel.startsWith('assets/')) return 'public, max-age=31536000, immutable'
+  return 'public, max-age=86400'
+}
+
 export function tryServeWebDist(res, projectRoot, pathname) {
   const root = distRoot(projectRoot)
   try {
@@ -49,7 +57,7 @@ export function tryServeWebDist(res, projectRoot, pathname) {
   const ext = path.extname(file).toLowerCase()
   res.writeHead(200, {
     'content-type': MIME[ext] || 'application/octet-stream',
-    'cache-control': ext === '.html' ? 'no-store' : 'public, max-age=86400',
+    'cache-control': cacheControl(rel, ext),
   })
   res.end(fs.readFileSync(file))
   return true

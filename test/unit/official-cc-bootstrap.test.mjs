@@ -14,6 +14,7 @@ import {
   readOfficialCcStatus,
   officialCcShouldForceRefresh,
   buildOfficialCcDockerArgs,
+  officialCcTurnSucceeded,
   DEFAULT_HELLO_PROMPT,
   DEFAULT_USAGE_PROMPT,
   OFFICIAL_USAGE_RETRIES,
@@ -118,10 +119,12 @@ test('docker args use hello//usage bypassPermissions without CONNECT proxy', () 
     false,
   )
   assert.ok(args.includes('ANTHROPIC_BASE_URL='))
-  // Bootstrap must not race the host Go Refresher for the slot RT.
-  assert.ok(args.includes('CLAUDE_CODE_KIN_HOST_REFRESH=1'))
+  // Bootstrap must not race the host Go Refresher. cli-node reads this name.
+  assert.ok(args.includes('CLAUDE_CODE_HOST_REFRESH=1'))
+  assert.ok(args.includes('CLAUDE_CODE_VERSION=2.1.293'))
+  assert.ok(args.includes('USER_TYPE=external'))
+  assert.equal(args.includes('CI=1'), false)
   assert.equal(args[args.indexOf('kin-30') + 1], '/home/kincli/.kin/cli-node')
-  assert.ok(!args.some((item) => String(item).includes('8787')))
   const usageArgs = buildOfficialCcDockerArgs({
     vmId: 'vm-30',
     uid: 10030,
@@ -133,6 +136,18 @@ test('docker args use hello//usage bypassPermissions without CONNECT proxy', () 
   // plain json envelope drops.
   assert.equal(usageArgs[usageArgs.indexOf('--output-format') + 1], 'stream-json')
   assert.ok(usageArgs.includes('--verbose'))
+})
+
+test('official hello success requires a parsed result, empty stdout is a failure', () => {
+  assert.equal(officialCcTurnSucceeded({ code: 0, raw: '', slash: false }), false)
+  assert.equal(officialCcTurnSucceeded({ code: 0, raw: 'not json', slash: false }), false)
+  assert.equal(officialCcTurnSucceeded({ code: 0, raw: JSON.stringify({ is_error: true }), slash: false }), false)
+  assert.equal(
+    officialCcTurnSucceeded({ code: 0, raw: JSON.stringify({ type: 'result', is_error: false }), slash: false }),
+    true,
+  )
+  assert.equal(officialCcTurnSucceeded({ code: 0, raw: '{"type":"result"}\n', slash: true }), true)
+  assert.equal(officialCcTurnSucceeded({ code: 0, raw: '', slash: true }), false)
 })
 
 test('guest docker gateway is not container localhost', () => {

@@ -11,10 +11,11 @@ export const PANEL_VIEWS = [
   'cluster',
   'vm',
   'import',
+  'specs',
   'usage',
   'proxies',
   'models',
-  'protocol',
+  'risk',
   'system',
   'keys',
   'api',
@@ -88,6 +89,7 @@ export function panelIdentity(req) {
 const USER_EXACT_GET = new Set([
   '/api/panel/me',
   '/api/panel/vms',
+  '/api/panel/vms/create-options',
   '/api/panel/pool/stream',
   '/api/panel/proxies',
   '/api/panel/proxies/config',
@@ -103,6 +105,7 @@ const USER_EXACT_POST = new Set(['/api/panel/vms/create', '/api/panel/vms/import
 const USER_VM_DENIED = new Set([
   'fleet-status',
   'fleet-update',
+  'create-options',
   'reconcile-fingerprints',
   'official-cc-bootstrap',
   'wrap-cli',
@@ -135,7 +138,7 @@ const LOG_STATS_GET = new Set([
 ])
 
 function isSuperVmRead(path) {
-  if (path === '/api/panel/vms/fleet-status') return false
+  if (path === '/api/panel/vms/fleet-status' || path === '/api/panel/vms/create-options') return false
   return /^\/api\/panel\/vms\/[^/]+$/.test(path)
 }
 
@@ -157,7 +160,7 @@ function userVmPathAllowed(method, path) {
   if (USER_VM_DENIED.has(id) || USER_VM_DENIED.has(head) || rest.startsWith('wrap-cli')) return false
   if (method === 'GET') {
     if (!rest) return true
-    if (rest === 'oauth/credential') return false
+    if (rest === 'oauth/credential' || rest === 'package') return false
     return (
       rest.startsWith('oauth/') ||
       rest === 'probe' ||
@@ -167,7 +170,7 @@ function userVmPathAllowed(method, path) {
     )
   }
   if (method === 'POST') {
-    if (id === 'create' || id === 'import') return true
+    if (id === 'create' || id === 'import' || id === 'package') return true
     if (!rest) return false
     if (head === 'official-cc-bootstrap' || head === 'wrap-cli' || head === 'reset-fingerprint') return false
     if (head === 'owner') return false
@@ -203,6 +206,7 @@ function userKeyPathAllowed(method, path) {
   if (path === '/api/panel/api-keys') return method === 'GET' || method === 'POST'
   if (/^\/api\/panel\/api-keys\/[^/]+$/.test(path)) return method === 'GET' || method === 'PATCH' || method === 'DELETE'
   if (/^\/api\/panel\/api-keys\/[^/]+\/reveal$/.test(path) && method === 'POST') return true
+  if (/^\/api\/panel\/api-keys\/[^/]+\/stats$/.test(path) && method === 'GET') return true
   if (/^\/api\/panel\/api-keys\/[^/]+\/reset$/.test(path) && method === 'POST') return true
   return false
 }

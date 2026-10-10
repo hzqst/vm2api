@@ -2,6 +2,7 @@ import {
   Boxes,
   Cable,
   ChartColumn,
+  Cpu,
   Database,
   Download,
   Gauge,
@@ -12,37 +13,45 @@ import {
   ScrollText,
   Server,
   Settings,
-  Shield,
+  ShieldAlert,
   Sparkles,
 } from 'lucide-react'
 import type { NavGroup, NavItem, SidebarData } from '../types'
 
+// 监控组对应 claude-code-hub 的 仪表盘 / 使用记录 / 限额管理：
+// 总览看集群健康，统计看趋势与排行，日志看逐条请求，用量看账号限额。
 const ALL_GROUPS: NavGroup[] = [
   {
-    title: '集群',
+    title: '监控',
     items: [
       { title: '总览', url: '/overview', icon: LayoutDashboard },
+      { title: '统计', url: '/statistics', icon: ChartColumn },
+      { title: '日志', url: '/logs', icon: ScrollText },
+      { title: '用量', url: '/usage', icon: Gauge },
+    ],
+  },
+  {
+    title: '资源',
+    items: [
       { title: '集群', url: '/cluster', icon: Boxes },
       { title: '虚拟机', url: '/vm', icon: Server },
       { title: '导入', url: '/import', icon: Download },
-      { title: '用量', url: '/usage', icon: Gauge },
-      { title: '统计', url: '/statistics', icon: ChartColumn },
+      { title: '规格', url: '/specs', icon: Cpu },
+      { title: '代理', url: '/proxies', icon: Cable },
     ],
   },
   {
     title: '协议',
     items: [
       { title: '模型', url: '/models', icon: Sparkles },
-      { title: '协议', url: '/protocol', icon: Shield },
+      { title: '风险审计', url: '/risk', icon: ShieldAlert },
       { title: 'system提示词', url: '/system', icon: MessageSquareText },
       { title: '密钥', url: '/keys', icon: KeyRound },
     ],
   },
   {
-    title: '运维',
+    title: '系统',
     items: [
-      { title: '代理', url: '/proxies', icon: Cable },
-      { title: '日志', url: '/logs', icon: ScrollText },
       { title: '设置', url: '/settings', icon: Settings },
       { title: '内核', url: '/wrap', icon: Layers },
       { title: '数据库', url: '/database', icon: Database },

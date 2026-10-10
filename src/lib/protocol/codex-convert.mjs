@@ -329,7 +329,7 @@ export function toCodexResponses(protocol, body, convert = {}) {
 }
 
 export function createChatSseState(id = 'codex') {
-  return { id, seq: 0, tools: new Map(), sawTool: false }
+  return { id, seq: 0, tools: new Map(), sawTool: false, finished: false }
 }
 
 function chatChunk(id, delta, finish, extra = {}) {
@@ -344,7 +344,7 @@ function chatChunk(id, delta, finish, extra = {}) {
 function bindTool(state, keys, fields = {}) {
   const names = keys.filter((key) => key != null && key !== '').map(String)
   const existing = names.map((key) => state.tools.get(key)).find(Boolean)
-  const slot = existing || { index: state.seq++, id: '', name: '', header: false }
+  const slot = existing || { index: state.seq++, id: '', name: '', header: false, args: '' }
   if (fields.id) slot.id = fields.id
   if (fields.name) slot.name = fields.name
   for (const key of names) state.tools.set(key, slot)
@@ -363,47 +363,59 @@ function toolHeaderDelta(slot) {
   }
 }
 
+function toolDoneDeltas(slot, full) {
+  const calls = []
+  const header = toolHeaderDelta(slot)
+  if (header) calls.push(header)
+  if (typeof full !== 'string' || full === slot.args) return calls
+  if (!full.startsWith(slot.args)) {
+    const error = new Error('Upstream tool arguments disagree with the streamed prefix')
+    error.code = 'tool_arguments_mismatch'
+    throw error
+  }
+  const piece = full.slice(slot.args.length)
+  slot.args = full
+  if (piece) calls.push({ index: slot.index, function: { arguments: piece } })
+  return calls
+}
+
 export function responsesSseToChatChunk(line, id = 'codex', state = null) {
   const session = state || createChatSseState(id)
-  if (!state && id) session.id = id
-  const trimmed = String(line || '').trim()
-  if (!trimmed.startsWith('data:')) return null
-  const data = trimmed.slice(5).trim()
-  if (!data || data === '[DONE]') return 'data: [DONE]\n\n'
-  let event
-  try {
-    event = JSON.parse(data)
-  } catch {
-    return null
+  if (session.finished) return null
+  const parsed = parseSseData(line)
+  if (parsed.skip) return null
+  if (parsed.done) {
+    session.finished = true
+    return 'data: [DONE]\n\n'
   }
+  const event = parsed.event || {}
   const type = event.type || ''
   if (
-    type === 'response.output_item.added' &&
+    (type === 'response.output_item.added' || type === 'response.output_item.done') &&
     (event.item?.type === 'function_call' || event.item?.type === 'custom_tool_call')
   ) {
-    const slot = bindTool(session, [event.output_index, event.item_id, event.item.call_id, event.item.id], {
-      id: event.item.call_id || event.item.id,
-      name: event.item.name,
+    const item = event.item
+    const slot = bindTool(session, [event.output_index, event.item_id, item.call_id, item.id], {
+      id: item.call_id || item.id,
+      name: item.name,
     })
-    const header = toolHeaderDelta(slot)
-    return header ? chatChunk(session.id, { tool_calls: [header] }) : null
+    const calls = toolDoneDeltas(slot, item.arguments ?? item.input)
+    return calls.length ? chatChunk(session.id, { tool_calls: calls }) : null
   }
   if (type === 'response.function_call_arguments.delta' || type === 'response.custom_tool_call_input.delta') {
     const slot = bindTool(session, [event.output_index, event.item_id])
-    const pieces = []
+    const calls = []
     const header = toolHeaderDelta(slot)
-    if (header) pieces.push(header)
-    const args = typeof event.delta === 'string' ? event.delta : ''
-    if (args) pieces.push({ index: slot.index, function: { arguments: args } })
-    return pieces.length ? chatChunk(session.id, { tool_calls: pieces }) : null
+    if (header) calls.push(header)
+    if (typeof event.delta === 'string' && event.delta) {
+      slot.args += event.delta
+      calls.push({ index: slot.index, function: { arguments: event.delta } })
+    }
+    return calls.length ? chatChunk(session.id, { tool_calls: calls }) : null
   }
   if (type === 'response.function_call_arguments.done' || type === 'response.custom_tool_call_input.done') {
     const slot = bindTool(session, [event.output_index, event.item_id], { name: event.name })
-    if (slot.header) return null
-    const header = toolHeaderDelta(slot)
-    const args = event.arguments || event.input || ''
-    const calls = header ? [header] : []
-    if (args) calls.push({ index: slot.index, function: { arguments: args } })
+    const calls = toolDoneDeltas(slot, event.arguments ?? event.input)
     return calls.length ? chatChunk(session.id, { tool_calls: calls }) : null
   }
   if (type.startsWith('response.reasoning_') && typeof event.delta === 'string' && event.delta) {
@@ -416,9 +428,16 @@ export function responsesSseToChatChunk(line, id = 'codex', state = null) {
     return chatChunk(session.id, { content: event.delta || event.text || '' })
   }
   if (type === 'response.completed' || type === 'response.done') {
+    const calls = []
+    for (const [index, item] of (event.response?.output || []).entries()) {
+      if (item?.type !== 'function_call' && item?.type !== 'custom_tool_call') continue
+      const slot = bindTool(session, [index, item.call_id, item.id], { id: item.call_id || item.id, name: item.name })
+      calls.push(...toolDoneDeltas(slot, item.arguments ?? item.input))
+    }
     const usage = openaiChatUsageFromExtract(extractOpenaiUsage(event.response?.usage || event.usage))
-    const finish = session.sawTool ? 'tool_calls' : 'stop'
-    return `${chatChunk(session.id, {}, finish, usage ? { usage } : {})}data: [DONE]\n\n`
+    const repaired = calls.length ? chatChunk(session.id, { tool_calls: calls }) : ''
+    session.finished = true
+    return `${repaired}${chatChunk(session.id, {}, session.sawTool ? 'tool_calls' : 'stop', usage ? { usage } : {})}data: [DONE]\n\n`
   }
   return null
 }
@@ -484,7 +503,7 @@ function outputTextFromCodex(body = {}) {
 }
 
 export function createAnthropicSseState() {
-  return { started: false, id: 'msg_codex', model: '', text: '' }
+  return { ...createChatSseState('msg_codex'), started: false, model: '', text: '', textIndex: null }
 }
 
 function anthropicEvent(type, payload) {
@@ -493,7 +512,7 @@ function anthropicEvent(type, payload) {
 
 export function responsesSseToAnthropicEvents(line, state = createAnthropicSseState()) {
   const parsed = parseSseData(line)
-  if (parsed.skip) return null
+  if (parsed.skip || state.finished) return null
   const event = parsed.event || {}
   const type = event.type || ''
   if (event.response?.id) state.id = event.response.id
@@ -515,86 +534,225 @@ export function responsesSseToAnthropicEvents(line, state = createAnthropicSseSt
         },
       }),
     )
-    frames.push(
-      anthropicEvent('content_block_start', {
-        index: 0,
-        content_block: { type: 'text', text: '' },
-      }),
-    )
+  }
+  const emitTool = (slot, calls) => {
+    ensureStart()
+    for (const call of calls) {
+      if (call.type === 'function') {
+        frames.push(
+          anthropicEvent('content_block_start', {
+            index: slot.index,
+            content_block: { type: 'tool_use', id: slot.id, name: slot.name, input: {} },
+          }),
+        )
+        if (slot.custom)
+          frames.push(
+            anthropicEvent('content_block_delta', {
+              index: slot.index,
+              delta: { type: 'input_json_delta', partial_json: '{"input":"' },
+            }),
+          )
+      } else {
+        const piece = call.function.arguments
+        frames.push(
+          anthropicEvent('content_block_delta', {
+            index: slot.index,
+            delta: { type: 'input_json_delta', partial_json: slot.custom ? JSON.stringify(piece).slice(1, -1) : piece },
+          }),
+        )
+      }
+    }
+  }
+  const closeTool = (slot) => {
+    if (slot.closed) return
+    if (slot.custom)
+      frames.push(
+        anthropicEvent('content_block_delta', {
+          index: slot.index,
+          delta: { type: 'input_json_delta', partial_json: '"}' },
+        }),
+      )
+    frames.push(anthropicEvent('content_block_stop', { index: slot.index }))
+    slot.closed = true
+  }
+  const fullItem = (item, index) => {
+    if (item?.type !== 'function_call' && item?.type !== 'custom_tool_call') return
+    const slot = bindTool(state, [index, item.call_id, item.id], { id: item.call_id || item.id, name: item.name })
+    slot.custom = item.type === 'custom_tool_call'
+    emitTool(slot, toolDoneDeltas(slot, item.arguments ?? item.input))
+    closeTool(slot)
   }
   if (
-    type === 'response.output_text.delta' ||
-    (event.delta && type !== 'response.completed' && type !== 'response.done')
+    (type === 'response.output_item.added' || type === 'response.output_item.done') &&
+    (event.item?.type === 'function_call' || event.item?.type === 'custom_tool_call')
   ) {
+    const item = event.item
+    const slot = bindTool(state, [event.output_index, event.item_id, item.call_id, item.id], {
+      id: item.call_id || item.id,
+      name: item.name,
+    })
+    slot.custom = item.type === 'custom_tool_call'
+    emitTool(slot, toolDoneDeltas(slot, item.arguments ?? item.input))
+    if (type === 'response.output_item.done') closeTool(slot)
+    return frames.join('') || null
+  }
+  if (type === 'response.function_call_arguments.delta' || type === 'response.custom_tool_call_input.delta') {
+    const slot = bindTool(state, [event.output_index, event.item_id])
+    slot.custom = type === 'response.custom_tool_call_input.delta'
+    const calls = []
+    const header = toolHeaderDelta(slot)
+    if (header) calls.push(header)
+    if (typeof event.delta === 'string' && event.delta) {
+      slot.args += event.delta
+      calls.push({ index: slot.index, function: { arguments: event.delta } })
+    }
+    emitTool(slot, calls)
+    return frames.join('') || null
+  }
+  if (type === 'response.function_call_arguments.done' || type === 'response.custom_tool_call_input.done') {
+    const slot = bindTool(state, [event.output_index, event.item_id], { name: event.name })
+    slot.custom = type === 'response.custom_tool_call_input.done'
+    emitTool(slot, toolDoneDeltas(slot, event.arguments ?? event.input))
+    closeTool(slot)
+    return frames.join('') || null
+  }
+  if (type === 'response.output_text.delta' || (type.startsWith('response.reasoning_') && event.delta)) {
     const content = event.delta || event.text || ''
     if (!content) return null
     ensureStart()
+    if (state.textIndex == null) {
+      state.textIndex = state.seq++
+      frames.push(
+        anthropicEvent('content_block_start', { index: state.textIndex, content_block: { type: 'text', text: '' } }),
+      )
+    }
     state.text += content
     frames.push(
-      anthropicEvent('content_block_delta', {
-        index: 0,
-        delta: { type: 'text_delta', text: content },
-      }),
+      anthropicEvent('content_block_delta', { index: state.textIndex, delta: { type: 'text_delta', text: content } }),
     )
     return frames.join('')
   }
   if (type === 'response.completed' || type === 'response.done' || parsed.done) {
     ensureStart()
-    const mapped = openaiAnthropicUsageFromExtract(extractOpenaiUsage(event.response?.usage || event.usage))
-    frames.push(anthropicEvent('content_block_stop', { index: 0 }))
+    for (const [index, item] of (event.response?.output || []).entries()) fullItem(item, index)
+    for (const slot of new Set(state.tools.values())) closeTool(slot)
+    if (state.textIndex != null) frames.push(anthropicEvent('content_block_stop', { index: state.textIndex }))
     frames.push(
       anthropicEvent('message_delta', {
-        delta: { stop_reason: 'end_turn' },
-        usage: mapped,
+        delta: { stop_reason: state.sawTool ? 'tool_use' : 'end_turn' },
+        usage: openaiAnthropicUsageFromExtract(extractOpenaiUsage(event.response?.usage || event.usage)),
       }),
     )
     frames.push(anthropicEvent('message_stop', {}))
+    state.finished = true
     return frames.join('')
   }
   return null
 }
 
 export function assembleCodexBodyFromSse(chunks = [], fallback = {}) {
-  let text = outputTextFromCodex(fallback)
-  let usage = fallback.usage || fallback.response?.usage || {}
-  let id = fallback.id || fallback.response?.id
-  let model = fallback.model || fallback.response?.model
+  let response = fallback.response || fallback
+  let usage = response.usage || {}
+  const state = createChatSseState()
   const deltas = []
+  let output = response.output || []
   for (const line of chunks) {
-    const parsed = parseSseData(line)
-    if (parsed.skip || !parsed.event) continue
-    const ev = parsed.event
-    if (ev.response?.id) id = ev.response.id
-    if (ev.response?.model) model = ev.response.model
+    const event = parseSseData(line).event
+    if (!event) continue
+    if (event.response) response = { ...response, ...event.response }
+    if (event.response?.usage || event.usage) usage = event.response?.usage || event.usage
+    if (event.type === 'response.output_text.delta') deltas.push(event.delta || '')
+    const item = event.item
     if (
-      ev.type === 'response.output_text.delta' ||
-      (ev.delta && ev.type !== 'response.completed' && ev.type !== 'response.done')
+      (event.type === 'response.output_item.added' || event.type === 'response.output_item.done') &&
+      (item?.type === 'function_call' || item?.type === 'custom_tool_call')
     ) {
-      const piece = ev.delta || ev.text || ''
-      if (piece) deltas.push(piece)
+      const slot = bindTool(state, [event.output_index, event.item_id, item.call_id, item.id], {
+        id: item.call_id || item.id,
+        name: item.name,
+      })
+      slot.type = item.type
+      slot.itemId = item.id
+      toolDoneDeltas(slot, item.arguments ?? item.input)
+    } else if (
+      event.type === 'response.function_call_arguments.delta' ||
+      event.type === 'response.custom_tool_call_input.delta'
+    ) {
+      const slot = bindTool(state, [event.output_index, event.item_id])
+      slot.type = event.type === 'response.custom_tool_call_input.delta' ? 'custom_tool_call' : 'function_call'
+      slot.args += event.delta || ''
+    } else if (
+      event.type === 'response.function_call_arguments.done' ||
+      event.type === 'response.custom_tool_call_input.done'
+    ) {
+      const slot = bindTool(state, [event.output_index, event.item_id], { name: event.name })
+      slot.type = event.type === 'response.custom_tool_call_input.done' ? 'custom_tool_call' : 'function_call'
+      toolDoneDeltas(slot, event.arguments ?? event.input)
     }
-    if (ev.response?.usage || ev.usage) usage = ev.response?.usage || ev.usage
+    if (event.response?.output) output = event.response.output
   }
-  if (deltas.length) text = deltas.join('')
-  return {
-    ...fallback,
-    id: id || fallback.id,
-    model: model || fallback.model,
-    output: [{ content: [{ type: 'output_text', text }] }],
-    usage,
+  const tools = [...new Set(state.tools.values())].map((slot) => ({
+    type: slot.type,
+    ...(slot.itemId ? { id: slot.itemId } : {}),
+    call_id: slot.id,
+    name: slot.name,
+    [slot.type === 'custom_tool_call' ? 'input' : 'arguments']: slot.args,
+  }))
+  // Complete output is authoritative; only repair tools absent from it.
+  const known = new Set(
+    output
+      .filter((item) => item?.type === 'function_call' || item?.type === 'custom_tool_call')
+      .map((item) => item.call_id || item.id),
+  )
+  output = [...output, ...tools.filter((item) => !known.has(item.call_id || item.id))]
+  if (!output.some((item) => item?.type === 'message' || item?.content?.length)) {
+    const text = deltas.length ? deltas.join('') : outputTextFromCodex(response)
+    if (text || !output.length)
+      output.unshift({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] })
   }
+  return { ...response, output, usage }
+}
+
+/** Conversion errors a client should see as a structured 502, not a crash. */
+export function isToolArgumentsError(error) {
+  return error?.code === 'tool_arguments_mismatch' || error?.code === 'tool_arguments_invalid'
+}
+
+function toolUseInput(item) {
+  if (item.type === 'custom_tool_call') return { input: item.input || '' }
+  const args = item.arguments
+  if (args && typeof args === 'object' && !Array.isArray(args)) return args
+  let parsed = null
+  try {
+    parsed = JSON.parse(args || '{}')
+  } catch {}
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed
+  const error = new Error(`Codex tool ${item.name || item.call_id || ''} arguments are not a JSON object`)
+  error.code = 'tool_arguments_invalid'
+  throw error
 }
 
 export function codexBodyToAnthropicMessage(body = {}, model = '') {
   const resp = body?.response && typeof body.response === 'object' ? body.response : body
-  const usage = openaiAnthropicUsageFromExtract(extractOpenaiUsage(resp?.usage || body?.usage || {}))
+  const content = []
+  for (const item of resp.output || []) {
+    if (item.type === 'function_call' || item.type === 'custom_tool_call') {
+      content.push({ type: 'tool_use', id: item.call_id || item.id, name: item.name, input: toolUseInput(item) })
+    } else {
+      for (const block of item.content || []) {
+        if (block.type === 'output_text' || block.type === 'text')
+          content.push({ type: 'text', text: block.text || '' })
+      }
+    }
+  }
+  if (!content.length) content.push({ type: 'text', text: outputTextFromCodex(resp) })
   return {
     id: resp?.id || 'msg_codex',
     type: 'message',
     role: 'assistant',
     model: resp?.model || model || 'gpt',
-    content: [{ type: 'text', text: outputTextFromCodex(resp) }],
-    stop_reason: 'end_turn',
-    usage,
+    content,
+    stop_reason: content.some((block) => block.type === 'tool_use') ? 'tool_use' : 'end_turn',
+    usage: openaiAnthropicUsageFromExtract(extractOpenaiUsage(resp?.usage || body?.usage || {})),
   }
 }

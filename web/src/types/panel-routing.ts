@@ -1,3 +1,5 @@
+import type { RuntimeType } from '@/types/panel-vm'
+
 /** `routing.compatibility.persona_preset`。PUT 严格匹配，不做别名归一化。 */
 export type PersonaPreset = 'official' | 'official_full' | 'zero' | 'custom'
 
@@ -46,7 +48,7 @@ export type DistillRules = {
     require_single_turn: boolean
   }
   needles: string[]
-  /** Hard regexes. Server reinserts built-in distillation / CoT patterns if omitted. */
+  /** Extra regexes. Built-in distillation / CoT patterns live on the hard rules. */
   patterns: string[]
   fingerprints: string[]
 }
@@ -94,6 +96,11 @@ export type PolicyQuestion = {
   builtin?: boolean
 }
 
+export type PolicyRule = {
+  category: string
+  source: string
+  enabled: boolean
+}
 /** `GET/PUT /api/panel/jev-intercept`。决策模型与硬正则。密钥只回 api_key_set。 */
 export type JevInterceptConfig = {
   enabled: boolean
@@ -135,6 +142,9 @@ export type JevInterceptConfig = {
   strip_reminders: boolean
   categories: string[]
   builtin_patterns: string[]
+  builtin_rules?: PolicyRule[]
+  rules?: PolicyRule[]
+  rules_customized?: boolean
   patterns: string[]
 }
 
@@ -182,4 +192,23 @@ export type NotifyStatus = {
 
 export type BackupsPayload = {
   items?: BackupItem[]
+}
+
+/** `routing.vm`：槽位默认形态与机器规格。创建时覆盖 memory/vcpus/disk_gb 后固化到槽。 */
+export type VmRoutingSmbios = {
+  manufacturer: string
+  product: string
+  version: string
+  family: string
+}
+
+export type VmRoutingConfig = {
+  default_runtime: RuntimeType
+  memory: string
+  vcpus: number
+  disk_gb: number
+  cpu_model: string
+  smbios: VmRoutingSmbios
+  mac_oui: string
+  allow_tcg: boolean
 }

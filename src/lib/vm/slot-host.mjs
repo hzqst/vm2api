@@ -16,6 +16,9 @@
  *   execUser(vm)    `docker exec -u` for in-slot kin-worker commands
  *   start/reload/stop/destroy   same result contract as vm-runtime
  *   setProxyEgressEnabled(vm, projectRoot, enabled) stop/resume only the proxy helper
+ *   localExitProxyUrl(vm)  host-side route for a slot on local egress: '' = this
+ *                   host's default route (or the deployment proxy of a Codex slot); a node
+ *                   slot gets a loopback SOCKS5 that dials from the node itself
  *   syncRun(vm, slotDir)        publish run/ (kernel.json, worker.json, token) where the slot reads it
  *   queueSyncRun(vm, slotDir)   fire-and-forget syncRun
  *   onImport(vm, slotDir)       an imported credential replaces the slot's copy
@@ -49,8 +52,17 @@ import {
   REMOTE_CLI_NODE_BIN,
 } from './slot-engine.mjs'
 import { destroyVmRuntime, officialCcUidGid, reloadSlotWorker, startVmRuntime, stopVmRuntime } from './vm-runtime.mjs'
-import { ensureProxyEgress, inspectEgressProcess, stopEgressProcess } from './egress.mjs'
+import {
+  boundProxyUrl,
+  ensureProxyEgress,
+  inspectEgressProcess,
+  isLocalEgressProxy,
+  localEgressProxyUrl,
+  stopEgressProcess,
+} from './egress.mjs'
 import { isCodexVm } from './vm-kind.mjs'
+import { nodeEgressProxyUrl } from '../cluster/node-egress-socks.mjs'
+import { isKvmRuntime } from './runtime-kind.mjs'
 import { stopCodexKernel } from '../transport/codex-kernel-supervisor.mjs'
 
 const noop = async () => ({ skipped: true })
@@ -99,6 +111,7 @@ const LOCAL_HOST = Object.freeze({
     }
     return stopEgressProcess(projectRoot, vm.proxy?.id)
   },
+  localExitProxyUrl: (vm) => (isCodexVm(vm) ? localEgressProxyUrl() : ''),
   // The container bind-mounts vms/<id>/ directly: every local write is already published.
   syncRun: noop,
   queueSyncRun: () => null,
@@ -124,6 +137,7 @@ function nodeHost(nodeId) {
     stop: (vm) => stopRemoteSlot(vm),
     destroy: (vm) => destroyRemoteSlot(vm),
     setProxyEgressEnabled: (vm, projectRoot, enabled) => setRemoteProxyEgressEnabled(vm, projectRoot, enabled),
+    localExitProxyUrl: () => nodeEgressProxyUrl(nodeId),
     syncRun: (vm, slotDir) => pushSlotFiles(vm, slotDir, ['run']),
     queueSyncRun: (vm, slotDir) => queueSlotPush(vm, slotDir, ['run']),
     onImport: (vm, slotDir) => pushSlotCredentials(vm, slotDir),
@@ -134,5 +148,18 @@ function nodeHost(nodeId) {
 
 export function slotHost(vm) {
   const nodeId = vmNodeId(vm)
-  return nodeId ? nodeHost(nodeId) : LOCAL_HOST
+  const base = nodeId ? nodeHost(nodeId) : LOCAL_HOST
+  if (!isKvmRuntime(vm)) return base
+  // Runner socat owns run/kernel.sock; deleting it severs the guest relay.
+  return { ...base, ownsSocketFiles: false }
+}
+
+/**
+ * Exit for a host-side request made for this VM: its bound SOCKS5, or for local
+ * egress the route of the VPS that runs the slot. A local Claude slot's container
+ * has no proxy env, so its requests stay direct; a node slot's must not leave from here.
+ */
+export function hostProxyUrlForVm(vm) {
+  if (!isLocalEgressProxy(vm?.proxy)) return boundProxyUrl(vm?.proxy)
+  return slotHost(vm).localExitProxyUrl(vm)
 }

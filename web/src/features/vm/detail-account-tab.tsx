@@ -36,6 +36,7 @@ import {
   probeSourceLabel,
   type ProbeCheck,
 } from '@/features/vm/probe-status'
+import { VmPackageButton } from '@/features/vm/vm-package-dialog'
 
 type VmAccountTabProps = {
   id: string
@@ -201,6 +202,7 @@ export function VmAccountTab(props: VmAccountTabProps) {
                   />
                 )}
                 {gpt ? null : <CredentialEditorButton vmId={id} />}
+                <VmPackageButton vmId={id} />
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <span>

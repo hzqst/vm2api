@@ -115,13 +115,16 @@ export function parseOAuthUsage(data = {}) {
     five_hour: windowOf(data.five_hour),
     seven_day: windowOf(data.seven_day),
     seven_day_sonnet: windowOf(data.seven_day_sonnet),
-    seven_day_opus: windowOf(data.seven_day_opus || data.seven_day_sonnet),
+    seven_day_opus: windowOf(data.seven_day_opus),
+    seven_day_oauth_apps: windowOf(data.seven_day_oauth_apps),
     seven_day_oi: parseFableScopedWindow(data),
     usage_has_fable: usageFablePresence(data),
     extra_usage:
       extra && typeof extra === 'object'
         ? {
             is_enabled: !!(extra.is_enabled ?? extra.enabled),
+            monthly_limit: extra.monthly_limit ?? extra.monthlyLimit ?? null,
+            used_credits: extra.used_credits ?? extra.usedCredits ?? null,
             utilization: normUsagePercent(extra.utilization),
             resets_at: extra.resets_at || extra.resetsAt || null,
             status: extra.status || extra.overage_status || extra.overageStatus || null,
@@ -134,6 +137,16 @@ export function isCompleteOAuthUsage(data = {}, parsed = null) {
   const p = parsed || parseOAuthUsage(data)
   if (!p.five_hour || !p.seven_day) return false
   if (p.usage_has_fable !== null) return true
+  // 2.1.293 GET /api/oauth/usage is a Utilization object: named windows, no limits[] catalog.
+  if (
+    data.seven_day_sonnet !== undefined ||
+    data.seven_day_opus !== undefined ||
+    data.seven_day_oauth_apps !== undefined ||
+    data.extra_usage !== undefined ||
+    data.extraUsage !== undefined
+  ) {
+    return true
+  }
   return (
     data.seven_day_fable === null ||
     data.seven_day_oi === null ||

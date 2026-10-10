@@ -3,7 +3,6 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { US_TIMEZONES } from '../../src/lib/core/timezone.mjs'
 import { buildRecreatedVmRecord, recreateVmFiles } from '../../src/lib/vm/vm-recreate.mjs'
 import { destroyVmRuntime } from '../../src/lib/vm/vm-runtime.mjs'
 
@@ -67,11 +66,11 @@ test('recreated records preserve and normalize non-US timezones', () => {
   }
 })
 
-test('recreated records use the generated US fallback for missing or invalid timezones', () => {
+test('recreated records leave a missing or invalid timezone unset', () => {
   for (const timezone of [undefined, 'Invalid/Zone', 'America/Not_A_Zone', '+09:00']) {
     const next = buildRecreatedVmRecord({ id: 'vm-07', timezone })
-    assert.ok(US_TIMEZONES.includes(next.timezone))
-    assert.equal(next.fingerprint.timezone, next.timezone)
+    assert.equal(next.timezone, null)
+    assert.equal(next.fingerprint.timezone, null)
   }
 })
 

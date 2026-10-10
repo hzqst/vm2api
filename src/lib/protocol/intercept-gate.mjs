@@ -5,7 +5,7 @@
  * persisted refusal/device cache, then the model. A block never hops.
  * Device bans and refusal rows are written here so both entry points share them.
  */
-import { detectDistill, distillBlockError } from '../core/distill-detect.mjs'
+import { detectDistill, distillBlockError, isOpenaiPlatformModel } from '../core/distill-detect.mjs'
 import {
   inboundRefusalDeviceId,
   matchStoredRefusal,
@@ -15,7 +15,16 @@ import {
   refusalPromptSignature,
 } from '../core/refusal-guard.mjs'
 import { RefusalDeviceBlocksRepo } from '../db/repos/refusal-device-blocks-repo.mjs'
-import { classifyJev, jevDocument, matchHardPolicy, policyBlockError } from './jev-intercept.mjs'
+import {
+  HARD_POLICY_RULES,
+  classifyJev,
+  isPolicyBlockMemory,
+  jevDocument,
+  jevModelDocument,
+  matchHardPolicy,
+  policyBlockError,
+} from './jev-intercept.mjs'
+import { gateVerdict } from './intercept-stats.mjs'
 import { prepareInterceptText } from './jev-prepare.mjs'
 
 function deviceStore(devices) {
@@ -25,6 +34,17 @@ function deviceStore(devices) {
   } catch {
     return null
   }
+}
+
+function hardRulesFor(inbound, body, jev, distillOn) {
+  const hardOn = jev?.hard_regex_enabled !== false
+  const base = Array.isArray(jev?.rules) ? jev.rules : HARD_POLICY_RULES
+  const openai = isOpenaiPlatformModel(inbound, body)
+  return base.filter((rule) => {
+    if (!rule || rule.enabled === false) return false
+    if (rule.category === 'distill') return distillOn && !openai
+    return hardOn
+  })
 }
 
 function similarityRatio(value) {
@@ -78,8 +98,8 @@ export function commitProtocolBlock(decision, { repo, devices, policy, requestId
   }
 }
 
-function pass() {
-  return { action: 'pass' }
+function pass(by) {
+  return { action: 'pass', intercept: gateVerdict({ kind: 'pass', by }) }
 }
 
 function block(fields) {
@@ -115,6 +135,7 @@ export async function evaluateProtocolIntercept({
       final_state: 'distill_blocked',
       error: distillBlockError(distillRules, requestId),
       errorMessage: evidence ? `${distill.error?.message || '不允许蒸馏'}: ${evidence}` : distill.error?.message,
+      intercept: gateVerdict({ kind: 'block', by: 'distill', keyword: evidence.slice(0, 40) }),
       deviceId: inboundRefusalDeviceId({ inbound, body, headers }),
       fingerprint: refusalFingerprint(body, inbound),
       banDevice: true,
@@ -127,16 +148,49 @@ export async function evaluateProtocolIntercept({
     stripReminders: jev?.strip_reminders !== false,
     expandBase64: jev?.expand_base64 !== false,
   })
-  if (jev?.hard_regex_enabled !== false) {
-    const hard = matchHardPolicy(document, jev?.patterns)
+  const modelDocument = prepareInterceptText(jevModelDocument(inbound, body), {
+    stripReminders: jev?.strip_reminders !== false,
+    expandBase64: jev?.expand_base64 !== false,
+  })
+  const distillOn = distillRules?.enabled !== false
+  const hardOn = jev?.hard_regex_enabled !== false
+  const rules = hardRulesFor(inbound, body, jev, distillOn)
+  const extra = hardOn ? jev?.patterns : []
+  const scanned = rules.length > 0 || (Array.isArray(extra) && extra.length > 0)
+  if (rules.length || (Array.isArray(extra) && extra.length)) {
+    const hard = matchHardPolicy(document, extra, rules)
+    if (hard?.category === 'distill') {
+      const keyword = hard.keyword || hard.category
+      const error = distillBlockError(distillRules, requestId)
+      return block({
+        kind: 'distill',
+        via: 'distill-detect',
+        final_state: 'distill_blocked',
+        error,
+        errorMessage: `${error.body?.error?.message || '不允许蒸馏'}: ${keyword}`,
+        intercept: gateVerdict({ kind: 'block', by: 'distill', keyword: keyword.slice(0, 40) }),
+        deviceId: inboundRefusalDeviceId({ inbound, body, headers }),
+        fingerprint: refusalFingerprint(body, inbound),
+        banDevice: true,
+        remember: false,
+        reason: 'distill',
+      })
+    }
     if (hard) {
       const error = policyBlockError(requestId)
+      const label = hard.keyword && hard.keyword !== hard.category ? `${hard.category}: ${hard.keyword}` : hard.category
       return block({
         kind: 'hard_regex',
         via: 'hard-regex',
         final_state: 'policy_blocked',
         error,
-        errorMessage: `${error.body?.error?.message}: ${hard.category}`,
+        errorMessage: `${error.body?.error?.message}: ${label}`,
+        intercept: gateVerdict({
+          kind: 'block',
+          by: 'hard-regex',
+          keyword: hard.keyword || hard.category,
+          rule: hard.evidence,
+        }),
         category: hard.category,
         deviceId: inboundRefusalDeviceId({ inbound, body, headers }),
         fingerprint: refusalFingerprint(body, inbound),
@@ -144,14 +198,14 @@ export async function evaluateProtocolIntercept({
         model: body?.model || inbound?.model || '',
         preview: refusalPreview(body, inbound),
         banDevice: true,
-        remember: true,
+        remember: false,
         reason: `hard_regex:${hard.category}`,
       })
     }
   }
 
   if (policy?.enabled && repo && typeof repo.get === 'function') {
-    const match = matchStoredRefusal({
+    let match = matchStoredRefusal({
       inbound,
       body,
       headers,
@@ -161,6 +215,8 @@ export async function evaluateProtocolIntercept({
       similarity: similarityRatio(policy.similarity),
       deviceBlockEnabled: policy.device_block_enabled,
     })
+    // Our own Jev/regex block used to be stored here and then blocked every retry.
+    if (match && match.kind !== 'device' && isPolicyBlockMemory(match.row?.error_message)) match = null
     if (match) {
       const error = refusalGuardError(requestId)
       return block({
@@ -170,6 +226,7 @@ export async function evaluateProtocolIntercept({
           match.kind === 'device' ? 'refusal_device' : match.kind === 'similar' ? 'refusal_similar' : 'refusal_guard',
         error,
         errorMessage: error.body?.error?.message,
+        intercept: gateVerdict({ kind: 'block', by: 'refusal', keyword: match.kind }),
         deviceId: match.deviceId,
         fingerprint: match.fingerprint,
         banDevice: match.kind !== 'device',
@@ -180,7 +237,7 @@ export async function evaluateProtocolIntercept({
   }
 
   if (jev?.enabled) {
-    const verdict = await classifyJev(document, jev, fetchImpl)
+    const verdict = await classifyJev(modelDocument, jev, fetchImpl)
     if (verdict.action === 'block') {
       const error = policyBlockError(requestId)
       return block({
@@ -189,6 +246,7 @@ export async function evaluateProtocolIntercept({
         final_state: 'policy_blocked',
         error,
         errorMessage: `${error.body?.error?.message}: ${verdict.category}`,
+        intercept: gateVerdict({ kind: 'block', by: 'jev', keyword: verdict.category }),
         category: verdict.category,
         deviceId: inboundRefusalDeviceId({ inbound, body, headers }),
         fingerprint: refusalFingerprint(body, inbound),
@@ -196,19 +254,28 @@ export async function evaluateProtocolIntercept({
         model: body?.model || inbound?.model || '',
         preview: refusalPreview(body, inbound),
         banDevice: true,
-        remember: true,
+        remember: false,
         reason: `jev:${verdict.category}`,
       })
     }
+    const by =
+      verdict.reason === 'safe' || verdict.reason === 'replay'
+        ? 'jev'
+        : verdict.reason === 'skip'
+          ? scanned
+            ? 'regex'
+            : 'unchecked'
+          : 'fail-open'
+    return pass(by)
   }
 
-  return pass()
+  return pass(scanned ? 'regex' : 'unchecked')
 }
 
-/** Block decision after side effects, or null when the request may hop. */
+/** Block decision after side effects, or the pass verdict when the request may hop. */
 export async function runProtocolIntercept(ctx = {}) {
   const decision = await evaluateProtocolIntercept(ctx)
-  if (decision.action !== 'block') return null
+  if (decision.action !== 'block') return decision
   commitProtocolBlock(decision, ctx)
   return decision
 }

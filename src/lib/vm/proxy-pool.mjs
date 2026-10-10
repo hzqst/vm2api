@@ -15,7 +15,7 @@ import { resolveStoreDb } from '../db/database.mjs'
 import { ProxiesRepo } from '../db/repos/proxies-repo.mjs'
 import { canBindProxyToVm, normalizeOwnerId, proxyOwnerId } from '../admin/resource-owner.mjs'
 import { validTimezone } from '../core/timezone.mjs'
-import { lookupProxyGeo } from './proxy-geo.mjs'
+import { lookupProxyGeo, lookupProxyGeoV6 } from './proxy-geo.mjs'
 import { DNS_PRIMARY_AUTO, DNS_UPSTREAMS, LOCAL_EGRESS_ID, isLocalEgressProxy, validDnsPrimary } from './egress.mjs'
 import { normalizeSocksHost, socksEndpoint, socksProxyUrl, socksProxyFamily } from './socks-address.mjs'
 import { proxyBlockedReason } from './proxy-policy.mjs'
@@ -117,6 +117,22 @@ export function proxyGeoOf(proxy) {
     timezone: proxy.geo_timezone || null,
     checked_at: proxy.geo_checked_at || null,
     error: proxy.geo_error || null,
+  }
+}
+
+export function proxyGeoV6Of(proxy) {
+  if (!proxy) return null
+  if (!proxy.geo_v6_checked_at && !proxy.geo_v6_ip && !proxy.geo_v6_error) return null
+  return {
+    ip: proxy.geo_v6_ip || null,
+    country: proxy.geo_v6_country || null,
+    country_code: proxy.geo_v6_country_code || null,
+    region: proxy.geo_v6_region || null,
+    city: proxy.geo_v6_city || null,
+    isp: proxy.geo_v6_isp || null,
+    timezone: proxy.geo_v6_timezone || null,
+    checked_at: proxy.geo_v6_checked_at || null,
+    error: proxy.geo_v6_error || null,
   }
 }
 
@@ -276,7 +292,17 @@ export function parseSocks5Line(line) {
 }
 
 export class ProxyPool {
-  constructor({ dataDir, db, onDisableVm, onDisconnectVm, onEnableVm, egressCheck, repairEgress, geoLookup } = {}) {
+  constructor({
+    dataDir,
+    db,
+    onDisableVm,
+    onDisconnectVm,
+    onEnableVm,
+    egressCheck,
+    repairEgress,
+    geoLookup,
+    geoV6Lookup,
+  } = {}) {
     this.db = resolveStoreDb({ db, dataDir })
     this.repo = new ProxiesRepo(this.db)
     this.onDisableVm = onDisableVm // (vmId, reason, proxyId) => void
@@ -286,10 +312,13 @@ export class ProxyPool {
     this.repairEgress = repairEgress
     // Injectable so geo detection is testable without leaving the machine.
     this.geoLookup = geoLookup || lookupProxyGeo
+    this.geoV6Lookup = geoV6Lookup || lookupProxyGeoV6
     this.state = { config: { ...DEFAULT_CONFIG }, proxies: [] }
     this._timer = null
     this._probing = false
     this._probeSockets = new Map()
+    // Node exits are not pool rows: px-local's geo is the control plane's, a node slot leaves elsewhere.
+    this._exitGeo = new Map()
     this.load()
   }
 
@@ -385,7 +414,9 @@ export class ProxyPool {
       created_at: p.created_at,
       kind: isLocalEgressProxy(p) ? 'local' : 'socks5',
       scheme: isLocalEgressProxy(p) ? 'local' : p.scheme || 'socks5',
+      domain_forward: !!p.domain_forward,
       geo: proxyGeoOf(p),
+      geo_v6: proxyGeoV6Of(p),
     }
   }
 
@@ -396,6 +427,39 @@ export class ProxyPool {
     this.state.proxies.unshift(proxy)
     this.save()
     return { ok: true, created: true, proxy: this.publicProxy(proxy) }
+  }
+  _findSocksRow(parsed) {
+    const key = (p) => JSON.stringify([p.host, p.port, p.username || '', p.password || ''])
+    const wanted = key(parsed)
+    return this.state.proxies.find((p) => key(p) === wanted) || null
+  }
+
+  /** Public view of the SOCKS row with these credentials, or null. Never creates. */
+  findSocks(fields = {}) {
+    const parsed = parseSocks5Fields(fields)
+    const found = parsed ? this._findSocksRow(parsed) : null
+    return found ? this.publicProxy(found) : null
+  }
+
+  /**
+   * Return the SOCKS row with this host/port/username/password, creating it
+   * when absent. Same credentials must not allocate a second id.
+   */
+  ensureSocks(fields = {}, { ownerUserId = null, label = null } = {}) {
+    const parsed = parseSocks5Fields(fields)
+    if (!parsed) return { ok: false, error: 'invalid_proxy' }
+    const found = this._findSocksRow(parsed)
+    if (found) return { ok: true, created: false, proxy: this._withAuth(found) }
+    const imported = this.importParsed([parsed], { ownerUserId })
+    const id = imported.items[0]?.id
+    const row = this.state.proxies.find((p) => p.id === id)
+    if (!row) return { ok: false, error: 'proxy_import_failed' }
+    const name = label == null ? '' : String(label).trim().slice(0, 80)
+    if (name) {
+      row.label = name
+      this.save()
+    }
+    return { ok: true, created: true, proxy: this._withAuth(row) }
   }
 
   importLines(text, extra = {}) {
@@ -608,7 +672,7 @@ export class ProxyPool {
     if (!p) return { ok: false, error: 'proxy_not_found' }
     const has = (k) => Object.prototype.hasOwnProperty.call(patch, k)
     const connection = ['host', 'port', 'username', 'password'].some(has)
-    if (!connection && !has('label')) {
+    if (!connection && !has('label') && !has('domain_forward')) {
       return { ok: false, error: 'no_editable_fields' }
     }
     let label = p.label || null
@@ -617,10 +681,18 @@ export class ProxyPool {
       label = String(patch.label || '').trim() || null
       if (label && label.length > PROXY_LABEL_MAX) return { ok: false, error: 'label_too_long', max: PROXY_LABEL_MAX }
     }
+    let domainForward = !!p.domain_forward
+    if (has('domain_forward')) {
+      if (typeof patch.domain_forward !== 'boolean') return { ok: false, error: 'invalid_domain_forward' }
+      if (patch.domain_forward && isLocalEgressProxy(p)) return { ok: false, error: 'domain_forward_unsupported' }
+      domainForward = patch.domain_forward
+    }
+    const domainChanged = domainForward !== !!p.domain_forward
     if (!connection) {
       p.label = label
+      p.domain_forward = domainForward
       this.save()
-      return { ok: true, proxy: this.publicProxy(p), connection_changed: false }
+      return { ok: true, proxy: this.publicProxy(p), connection_changed: false, domain_forward_changed: domainChanged }
     }
     const username = has('username') ? patch.username : p.username
     // SOCKS5 has no password-only auth: socks5Record() drops the password
@@ -648,8 +720,9 @@ export class ProxyPool {
     // store. Rewrite it to host:port so editing also cleans that up.
     p.raw = socksEndpoint(next.host, next.port)
     p.label = label
+    p.domain_forward = domainForward
     this.save()
-    return { ok: true, proxy: this.publicProxy(p), connection_changed: true }
+    return { ok: true, proxy: this.publicProxy(p), connection_changed: true, domain_forward_changed: domainChanged }
   }
 
   updateConfig(patch = {}) {
@@ -918,17 +991,43 @@ export class ProxyPool {
     if (!p) return { ok: false, error: 'proxy_not_found' }
     const blocked = proxyBlockedReason(p, this.state.config.ipv6_enabled)
     if (blocked) return { ok: false, error: blocked, proxy: this.publicProxy(p) }
-    if (!force && p.geo_checked_at && p.geo_ip) {
-      return { ok: true, cached: true, proxy: this.publicProxy(p), geo: proxyGeoOf(p) }
+    const v4Cached = !force && p.geo_checked_at && p.geo_ip
+    const v6Cached = !force && p.geo_v6_checked_at
+    if (v4Cached && v6Cached) {
+      return {
+        ok: true,
+        cached: true,
+        proxy: this.publicProxy(p),
+        geo: proxyGeoOf(p),
+        geo_v6: proxyGeoV6Of(p),
+      }
     }
     // Local egress has no SOCKS URL: the lookup then leaves over the host
     // default route, which is precisely that row's exit path.
     const url = isLocalEgressProxy(p) ? '' : this._withAuth(p).url
-    const result = await this.geoLookup(url, { timeoutMs: this.state.config?.geo_timeout_ms })
-    this._applyGeoResult(p, result)
+    const timeoutMs = this.state.config?.geo_timeout_ms
+    let v4Result = v4Cached ? { ok: true } : await this.geoLookup(url, { timeoutMs })
+    if (!v4Cached) this._applyGeoResult(p, v4Result)
+    let v6Result = v6Cached ? { ok: true } : await this.geoV6Lookup(url, { timeoutMs })
+    if (!v6Cached) this._applyGeoV6Result(p, v6Result)
     this.save()
-    if (!result?.ok) return { ok: false, error: result?.error || 'geo_lookup_failed', proxy: this.publicProxy(p) }
-    return { ok: true, cached: false, proxy: this.publicProxy(p), geo: proxyGeoOf(p) }
+    const pub = this.publicProxy(p)
+    if (!v4Result?.ok) {
+      return {
+        ok: false,
+        error: v4Result?.error || 'geo_lookup_failed',
+        proxy: pub,
+        geo: proxyGeoOf(p),
+        geo_v6: proxyGeoV6Of(p),
+      }
+    }
+    return {
+      ok: true,
+      cached: v4Cached && v6Cached,
+      proxy: pub,
+      geo: proxyGeoOf(p),
+      geo_v6: proxyGeoV6Of(p),
+    }
   }
 
   async detectGeoAll({ onlyEnabled = true, force = false } = {}) {
@@ -941,7 +1040,8 @@ export class ProxyPool {
         ok: !!result.ok,
         cached: !!result.cached,
         error: result.ok ? null : result.error || null,
-        geo: result.ok ? result.geo : null,
+        geo: result.geo ?? null,
+        geo_v6: result.geo_v6 ?? null,
       })
     }
     return { ok: true, total: results.length, results }
@@ -964,6 +1064,39 @@ export class ProxyPool {
     p.geo_city = geo.city || null
     p.geo_isp = geo.isp || null
     p.geo_timezone = validTimezone(geo.timezone) || null
+  }
+
+  _applyGeoV6Result(p, result) {
+    p.geo_v6_checked_at = new Date().toISOString()
+    if (!result?.ok) {
+      p.geo_v6_error = String(result?.error || 'geo_ipv6_lookup_failed').slice(0, 200)
+      return
+    }
+    const geo = result.geo || {}
+    p.geo_v6_error = null
+    p.geo_v6_ip = geo.ip || null
+    p.geo_v6_country = geo.country || null
+    p.geo_v6_country_code = geo.country_code || null
+    p.geo_v6_region = geo.region || null
+    p.geo_v6_city = geo.city || null
+    p.geo_v6_isp = geo.isp || null
+    p.geo_v6_timezone = validTimezone(geo.timezone) || null
+  }
+
+  /**
+   * Location of an exit that is not a pool row (a node slot on local egress,
+   * looked up through that node's forwarder). Cached per key for the process;
+   * failures are not cached so the next bind retries.
+   */
+  async exitGeo(key, url, { detect = true } = {}) {
+    const hit = this._exitGeo.get(key)
+    if (hit) return { ok: true, cached: true, geo: hit }
+    if (!detect) return { ok: false, error: 'exit_geo_unknown' }
+    const result = await this.geoLookup(url, { timeoutMs: this.state.config?.geo_timeout_ms })
+    if (!result?.ok) return { ok: false, error: result?.error || 'geo_lookup_failed' }
+    const geo = result.geo || {}
+    this._exitGeo.set(key, geo)
+    return { ok: true, cached: false, geo }
   }
 
   /** Detected IANA zone of one proxy, '' when unknown. */

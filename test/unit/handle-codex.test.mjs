@@ -1110,3 +1110,62 @@ test('openai.responses stream names each kernel SSE frame after its payload type
   assert.match(out, /^event: response\.completed\ndata: /m)
   fs.rmSync(root, { recursive: true, force: true })
 })
+
+test('tool argument disagreement terminates the client stream instead of recording token usage as success', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-codex-args-'))
+  writeGptVm(root, 'vm-gpt-tools')
+  let wire = ''
+  const res = {
+    headersSent: false,
+    write: (chunk) => {
+      wire += chunk
+    },
+    end() {},
+  }
+  const stats = { errors: 0, requests: 0, by_route: {} }
+  const logBag = {}
+  try {
+    await handleCodexProtocol({
+      req: { headers: {}, apiKeyKind: 'user' },
+      res,
+      protocol: 'openai.chat',
+      ctx: { body: { model: 'gpt-5.4', messages: [{ role: 'user', content: 'edit' }], stream: true } },
+      inbound: { stream: true },
+      logBag,
+      stats,
+      projectRoot: root,
+      routing: {},
+      json: (_res, status, body) => {
+        throw new Error(`Unexpected JSON ${status}: ${JSON.stringify(body)}`)
+      },
+      writeSSEHeaders: () => {
+        res.headersSent = true
+      },
+      ops: {
+        writeCodexKernelConfig() {},
+        ensureCodexKernel: async () => ({ ok: true }),
+        streamCodexKernel: async ({ onEvent }) => {
+          for (const event of [
+            {
+              type: 'response.output_item.added',
+              output_index: 0,
+              item: { type: 'function_call', call_id: 'call_a', id: 'fc_a', name: 'edit', arguments: '' },
+            },
+            { type: 'response.function_call_arguments.delta', output_index: 0, delta: '{"path":' },
+            { type: 'response.function_call_arguments.done', output_index: 0, arguments: '{"other":true}' },
+            { type: 'response.completed', response: { usage: { input_tokens: 20, output_tokens: 3 } } },
+          ])
+            await onEvent(`data: ${JSON.stringify(event)}`)
+          return { ok: true, status: 200, usage: { input_tokens: 20, output_tokens: 3 }, terminalState: 'verified' }
+        },
+      },
+    })
+    assert.match(wire, /"code":"tool_arguments_mismatch"/)
+    assert.doesNotMatch(wire, /"finish_reason":"tool_calls"/)
+    assert.equal(stats.errors, 1)
+    assert.equal(logBag.error_code, 'tool_arguments_mismatch')
+    assert.equal(logBag.upstream_status, 502)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})

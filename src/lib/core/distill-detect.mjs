@@ -30,21 +30,11 @@ export const HARVEST_NEEDLES = Object.freeze([
 ])
 
 /**
- * Distillation and chain-of-thought extraction.
- * Hard block, including official Claude Code and zero inject.
- * Bare "distill" is not enough: chemistry ("distill the solvent") must pass.
- * Bare 思维链 / 请分步解答 must pass; the verb has to be extract/export/distill.
+ * Deterministic distill regexes live in HARD_POLICY_RULES (category distill).
+ * This list stays empty so a saved distill config cannot grow a second copy.
+ * Needles, fingerprints, and harvest structure remain here.
  */
-export const HARD_DISTILL_PATTERNS = Object.freeze([
-  String.raw`\b(?:knowledge|model|teacher|student)\s+distill(?:ation|ing)?\b`,
-  String.raw`\bdistill(?:ation|ing)?\s+(?:of\s+)?(?:(?:the|your|a|an|reusable|durable|rollout|hidden|internal|full|complete)\s+)?(?:reasoning(?:\s+traces?)?|chain[- ]of[- ]thoughts?|teacher(?:\s+model)?)\b`,
-  String.raw`\b(?:extract|export|dump|reveal|harvest|exfiltrate)(?:ing|ed|ion|s)?\s+(?:(?:the|your|a|an|full|hidden|internal|complete|raw|durable|entire)\s+){0,4}(?:chain[- ]of[- ]thoughts?|reasoning\s+traces?|hidden\s+reasoning|internal\s+reasoning|internal\s+monologues?)\b`,
-  String.raw`\b(?:chain[- ]of[- ]thought|reasoning\s+trace)\s+extraction\b`,
-  String.raw`(?:知识蒸馏|模型蒸馏|思维链蒸馏|推理蒸馏|思考链蒸馏)`,
-  String.raw`(?:提取|导出|抽取|蒸馏|收割|扒取)\s*(?:出|取)?\s*(?:你的|本人的|完整|全部|隐藏|内部)?\s*(?:的)?\s*(?:思维链|思考链|推理链)`,
-  String.raw`(?:思维链|思考链|推理链)\s*(?:的)?\s*(?:提取|导出|抽取|蒸馏|收割)`,
-  String.raw`(?:提取|导出|抽取)\s*(?:出)?\s*(?:隐藏|内部)\s*(?:的)?\s*(?:推理|思维|思考)`,
-])
+export const HARD_DISTILL_PATTERNS = Object.freeze([])
 
 export const DEFAULT_DISTILL_RULES = {
   enabled: true,
@@ -62,8 +52,6 @@ export const DEFAULT_DISTILL_RULES = {
     require_single_turn: true,
   },
   needles: [
-    '<think>',
-    '</think>',
     '<answer>',
     '<|begin_of_thought|>',
     '<|end_of_thought|>',
@@ -176,7 +164,7 @@ function maxTokensOf(body) {
 }
 
 /** OpenAI platform models (gpt-*) never hit distill. Claude paths stay on the existing rules. */
-function isOpenaiPlatformModel(inbound, body) {
+export function isOpenaiPlatformModel(inbound, body) {
   const model = body?.model ?? inbound?.model
   const platform = detectInboundPlatform(model)
   return platform.ok === true && platform.platform === 'openai'
@@ -221,6 +209,13 @@ function matchFingerprints(text, fingerprints) {
     if (needle && hay.includes(needle)) return String(raw).slice(0, 80)
   }
   return ''
+}
+
+/** Pasted assistant transcripts contain these. They are not a distill template. */
+const BARE_THINK_NEEDLES = new Set(['<think>', '</think>'])
+
+function dropBareThinkNeedles(needles) {
+  return needles.filter((item) => !BARE_THINK_NEEDLES.has(String(item).trim().toLowerCase()))
 }
 
 function matchNeedles(text, needles) {
@@ -273,7 +268,7 @@ export function normalizeDistillRules(raw) {
   const err = src.error && typeof src.error === 'object' ? src.error : {}
   const st = src.structure && typeof src.structure === 'object' ? src.structure : {}
   const message = String(err.message || DISTILL_BLOCK_MESSAGE).trim() || DISTILL_BLOCK_MESSAGE
-  const needles = asStringList(src.needles, DEFAULT_DISTILL_RULES.needles)
+  const needles = dropBareThinkNeedles(asStringList(src.needles, DEFAULT_DISTILL_RULES.needles))
   const harvestMissing = HARVEST_NEEDLES.filter(
     (needle) => !needles.some((item) => String(item).toLowerCase() === needle.toLowerCase()),
   )

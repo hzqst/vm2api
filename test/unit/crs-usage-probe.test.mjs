@@ -28,8 +28,26 @@ test('oauth usage parse: official percent scale 1 = 1%', () => {
   assert.equal(p.five_hour.status, 'allowed')
   assert.equal(p.seven_day.utilization, 0.34)
   assert.equal(p.seven_day_sonnet.utilization, 0.08)
-  assert.equal(p.seven_day_opus.utilization, 0.08)
+  assert.equal(p.seven_day_opus, null)
+  assert.equal(p.seven_day_oauth_apps, null)
   assert.equal(p.extra_usage.is_enabled, true)
+})
+
+test('oauth usage parse: 2.1.293 windows stay separate', () => {
+  const p = parseOAuthUsage({
+    five_hour: { utilization: 12, resets_at: '2026-10-07T20:00:00Z' },
+    seven_day: { utilization: 34, resets_at: '2026-10-12T00:00:00Z' },
+    seven_day_sonnet: { utilization: 8, resets_at: '2026-10-12T00:00:00Z' },
+    seven_day_opus: { utilization: 2, resets_at: '2026-10-12T00:00:00Z' },
+    seven_day_oauth_apps: { utilization: 5, resets_at: '2026-10-12T00:00:00Z' },
+    extra_usage: { is_enabled: true, monthly_limit: 2000, used_credits: 100, utilization: 5 },
+  })
+  assert.equal(p.seven_day_sonnet.utilization, 0.08)
+  assert.equal(p.seven_day_opus.utilization, 0.02)
+  assert.equal(p.seven_day_oauth_apps.utilization, 0.05)
+  assert.equal(p.extra_usage.monthly_limit, 2000)
+  assert.equal(p.extra_usage.used_credits, 100)
+  assert.equal(p.extra_usage.utilization, 0.05)
 })
 
 test('oauth usage parse: Fable weekly_scoped from limits[]', () => {

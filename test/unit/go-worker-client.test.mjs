@@ -96,12 +96,12 @@ test('cli-hop envelope keeps role=system turns that the VM betas do not declare'
   const out = finalizeWorkerPayload({
     body,
     reqHeaders: {},
-    // setup-token betas omit mid-conversation-system; cli-node sends it on the wire.
+    // Request fields and their beta gates share the existing CLI body channel.
     exec: { homeDir: '', vm: { claude: { mode: 'setup-token', scope: 'user:inference' } } },
     identity: null,
     cliHop: true,
   })
-  assert.doesNotMatch(String(out.headers['anthropic-beta'] || ''), /mid-conversation-system/)
+  assert.ok(out.body.betas.includes('mid-conversation-system-2026-04-07'))
   assert.deepEqual(
     out.body.messages.map((message) => message.role),
     ['user', 'system', 'assistant', 'user'],
@@ -109,12 +109,12 @@ test('cli-hop envelope keeps role=system turns that the VM betas do not declare'
   assert.deepEqual(out.body.system, body.system)
 })
 
-test('setup-token cli-hop downgrades thinking.display updates and keeps summarized', () => {
+test('setup-token cli-hop preserves updates with its beta and isolates later requests', () => {
   const exec = { homeDir: '', vm: { claude: { mode: 'setup-token', scope: 'user:inference' } } }
   const updates = finalizeWorkerPayload({
     body: {
       model: 'claude-opus-5-5',
-      thinking: { type: 'adaptive', display: ' Updates ' },
+      thinking: { type: 'adaptive', display: 'updates' },
       messages: [{ role: 'user', content: 'hi' }],
     },
     reqHeaders: {},
@@ -123,8 +123,9 @@ test('setup-token cli-hop downgrades thinking.display updates and keeps summariz
     cliHop: true,
   })
   assert.equal(updates.body.thinking.type, 'adaptive')
-  assert.equal(updates.body.thinking.display, 'omitted')
-  assert.doesNotMatch(String(updates.headers['anthropic-beta'] || ''), /thinking-display-updates/)
+  assert.equal(updates.body.thinking.display, 'updates')
+  assert.ok(updates.body.betas.includes('thinking-display-updates-2026-08-18'))
+  assert.ok(!updates.body.betas.includes('claude-code-20250219'))
   const summarized = finalizeWorkerPayload({
     body: {
       model: 'claude-opus-5-5',
@@ -137,6 +138,7 @@ test('setup-token cli-hop downgrades thinking.display updates and keeps summariz
     cliHop: true,
   })
   assert.equal(summarized.body.thinking.display, 'summarized')
+  assert.ok(!summarized.body.betas.includes('thinking-display-updates-2026-08-18'))
 })
 
 const unix = process.platform !== 'win32'
@@ -177,7 +179,7 @@ async function fixture(handler) {
 
 unixTest('callGoWorker sends envelope over authenticated Unix socket', async () => {
   const fx = await fixture(async (req, res) => {
-    assert.equal(req.headers['x-kin-internal-token'], 'internal-test')
+    assert.equal(req.headers['x-internal-token'], 'internal-test')
     assert.equal(req.url, '/internal/v1/messages')
     const chunks = []
     for await (const chunk of req) chunks.push(chunk)
@@ -188,7 +190,7 @@ unixTest('callGoWorker sends envelope over authenticated Unix socket', async () 
     assert.equal(envelope.stream, false)
     assert.match(envelope.headers['user-agent'], /^claude-cli\//)
     res.setHeader('content-type', 'application/json')
-    res.setHeader('x-kin-terminal-state', 'verified')
+    res.setHeader('x-terminal-state', 'verified')
     res.end(
       JSON.stringify({
         type: 'message',
@@ -239,10 +241,10 @@ unixTest('callGoWorker marks null TTL as client-owned cache breakpoints', async 
 unixTest('streamGoWorker accepts message_stop before delayed EOF', async () => {
   const fx = await fixture((req, res) => {
     res.setHeader('content-type', 'text/event-stream')
-    res.setHeader('trailer', 'x-kin-terminal-state')
+    res.setHeader('trailer', 'x-terminal-state')
     res.write('event: message_start\ndata: {"type":"message_start","message":{}}\n\n')
     res.write('event: message_stop\ndata: {"type":"message_stop"}\n\n')
-    res.addTrailers({ 'x-kin-terminal-state': 'verified' })
+    res.addTrailers({ 'x-terminal-state': 'verified' })
     setTimeout(() => res.end(), 50)
   })
   try {
@@ -302,14 +304,14 @@ unixTest('streamGoWorker accepts message_stop with usage trailers', async () => 
   const fx = await fixture((req, res) => {
     assert.equal(req.headers.te, 'trailers')
     res.setHeader('content-type', 'text/event-stream')
-    res.setHeader('trailer', 'x-kin-terminal-state, x-kin-usage, x-kin-model, x-kin-stop-reason')
+    res.setHeader('trailer', 'x-terminal-state, x-usage, x-model, x-stop-reason')
     res.write('data: {"type":"message_start","message":{"model":"claude-haiku-4-5-20251001"}}\n\n')
     res.write('data: {"type":"message_stop"}\n\n')
     res.addTrailers({
-      'x-kin-terminal-state': 'verified',
-      'x-kin-usage': JSON.stringify({ input_tokens: 12, output_tokens: 0 }),
-      'x-kin-model': 'claude-haiku-4-5-20251001',
-      'x-kin-stop-reason': 'end_turn',
+      'x-terminal-state': 'verified',
+      'x-usage': JSON.stringify({ input_tokens: 12, output_tokens: 0 }),
+      'x-model': 'claude-haiku-4-5-20251001',
+      'x-stop-reason': 'end_turn',
     })
     res.end()
   })
@@ -333,12 +335,12 @@ unixTest('streamGoWorker accepts message_stop with usage trailers', async () => 
 unixTest('streamGoWorker keeps rate-limit trailers after message_stop', async () => {
   const fx = await fixture((req, res) => {
     res.setHeader('content-type', 'text/event-stream')
-    res.setHeader('trailer', 'x-kin-terminal-state, x-kin-rate-limit-headers')
+    res.setHeader('trailer', 'x-terminal-state, x-rate-limit-headers')
     res.write('data: {"type":"message_start","message":{}}\n\n')
     res.write('data: {"type":"message_stop"}\n\n')
     res.addTrailers({
-      'x-kin-terminal-state': 'verified',
-      'x-kin-rate-limit-headers': JSON.stringify({
+      'x-terminal-state': 'verified',
+      'x-rate-limit-headers': JSON.stringify({
         'anthropic-ratelimit-unified-5h-utilization': '0.81',
         'set-cookie': 'nope',
       }),
@@ -455,9 +457,9 @@ unixTest('streamGoWorker preserves organization permission denial before downstr
     'provider error: provider error: Your organization does not have access to Claude. Please login again or contact your administrator.'
   const fx = await fixture((req, res) => {
     res.setHeader('content-type', 'text/event-stream')
-    res.setHeader('trailer', 'x-kin-terminal-state')
+    res.setHeader('trailer', 'x-terminal-state')
     res.write(`event: error\ndata: ${JSON.stringify({ type: 'error', error: { type: 'api_error', message } })}\n\n`)
-    res.addTrailers({ 'x-kin-terminal-state': 'incomplete' })
+    res.addTrailers({ 'x-terminal-state': 'incomplete' })
     res.end()
   })
   try {
@@ -551,15 +553,15 @@ unixTest('streamGoWorker scrapes usage from SSE when trailers are missing', asyn
 unixTest('streamGoWorker merges SSE cache details into a totals-only usage trailer', async () => {
   const fx = await fixture((req, res) => {
     res.setHeader('content-type', 'text/event-stream')
-    res.setHeader('trailer', 'x-kin-terminal-state, x-kin-usage')
+    res.setHeader('trailer', 'x-terminal-state, x-usage')
     res.write('data: {"type":"response.created","response":{"id":"resp_1","model":"gpt-5.4"}}\n\n')
     res.write('data: {"type":"response.output_text.delta","delta":"hi"}\n\n')
     res.write(
       'data: {"type":"response.completed","response":{"id":"resp_1","model":"gpt-5.4","usage":{"input_tokens":120,"output_tokens":9,"total_tokens":129,"input_tokens_details":{"cached_tokens":8}}}}\n\n',
     )
     res.addTrailers({
-      'x-kin-terminal-state': 'verified',
-      'x-kin-usage': JSON.stringify({ input_tokens: 120, output_tokens: 9 }),
+      'x-terminal-state': 'verified',
+      'x-usage': JSON.stringify({ input_tokens: 120, output_tokens: 9 }),
     })
     res.end()
   })

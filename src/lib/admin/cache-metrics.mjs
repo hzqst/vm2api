@@ -2,6 +2,7 @@
  * Prompt-cache hit rate.
  * Anthropic `input_tokens` is the uncached slice; prompt = input + read + write.
  * OpenAI / Codex `input_tokens` already includes cached tokens.
+ * Per-row SQL twin over usage_logs: PROMPT_TOKENS_SQL in db/repos/usage-log-preds.mjs.
  */
 export function cacheHitStats({
   input_tokens = 0,

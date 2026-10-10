@@ -33,7 +33,7 @@ import { DEFAULT_AGENT_STANDING } from '../../src/lib/identity/persona-template.
 const SETTINGS_RADIOS = Object.freeze(['rewrite', 'official_prompt', 'overwrite', 'zero', 'none'])
 
 const UNOFFICIAL = {
-  model: 'claude-sonnet-5',
+  model: 'claude-sonnet-5-5',
   messages: [{ role: 'user', content: 'hello from settings switch' }],
 }
 

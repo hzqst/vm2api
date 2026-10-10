@@ -14,8 +14,6 @@
     "require_single_turn": true
   },
   "needles": [
-    "<think>",
-    "</think>",
     "<answer>",
     "<|begin_of_thought|>",
     "<|end_of_thought|>",

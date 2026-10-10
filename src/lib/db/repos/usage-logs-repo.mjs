@@ -20,6 +20,7 @@ import {
 import { cacheHitStats } from '../../admin/cache-metrics.mjs'
 import { extraWindowSince, WINDOW_5H_MS, WINDOW_7D_MS } from '../../pool/quota-window.mjs'
 import { ERROR_PRED, SUCCESS_PRED, SLA_ERROR_PRED, SLA_SUCCESS_PRED, ownerPred } from './usage-log-preds.mjs'
+import { collapseBlockKeywords, foldInterceptRows } from '../../protocol/intercept-stats.mjs'
 
 const SUMMARY_COLUMNS = [
   'id',
@@ -75,6 +76,7 @@ const SUMMARY_COLUMNS = [
   'session_id',
   'outbound_session_id',
   'reasoning_effort',
+  'intercept',
 ]
 
 function toRow(rec) {
@@ -171,12 +173,16 @@ function bucketEventsSince(rows = [], sinceMs) {
   )
 }
 
-function filterCond({ since = null, until = null, vmId = null, accountId = null } = {}) {
+function filterCond({ since = null, until = null, vmId = null, accountId = null, apiKeyId = null } = {}) {
   const { cond, params } = timeCond(since, until)
   const parts = cond ? [cond.replace(/^WHERE /, '')] : []
   if (vmId) {
     parts.push('vm_id = ?')
     params.push(vmId)
+  }
+  if (apiKeyId) {
+    parts.push('api_key_id = ?')
+    params.push(apiKeyId)
   }
   if (accountId) {
     parts.push('(account_id = ? OR final_account_id = ?)')
@@ -664,10 +670,32 @@ export class UsageLogsRepo {
    * is the inbound request path (usage_logs keeps no separate upstream endpoint).
    */
   vmUsageStats({ vmId, days = 30 } = {}) {
-    if (!vmId) return { days: 0, since: null, history: [], models: [], endpoints: [] }
+    return this._usageWindow({
+      vmId,
+      days,
+      rankExpr: "COALESCE(NULLIF(path, ''), '—')",
+      rankKey: 'endpoints',
+      rankLimit: 8,
+    })
+  }
+
+  /** Same window as vmUsageStats, isolated to one managed key. Third rank is the VM. */
+  keyUsageStats({ apiKeyId, days = 30 } = {}) {
+    return this._usageWindow({
+      apiKeyId,
+      days,
+      rankExpr: "COALESCE(NULLIF(vm_id, ''), '—')",
+      rankKey: 'vms',
+      rankLimit: 12,
+    })
+  }
+
+  _usageWindow({ vmId = null, apiKeyId = null, days = 30, rankExpr, rankKey, rankLimit = 8 } = {}) {
+    const empty = { days: 0, since: null, history: [], models: [], [rankKey]: [] }
+    if (!vmId && !apiKeyId) return empty
     const span = Math.max(1, Math.min(90, Math.floor(Number(days)) || 30))
     const since = new Date(Date.parse(shanghaiDayStartIso()) - (span - 1) * 86400_000).toISOString()
-    const { cond, params } = filterCond({ since, vmId })
+    const { cond, params } = filterCond({ since, vmId, apiKeyId })
     const history = this.db
       .prepare(`
       SELECT strftime('%Y-%m-%d', created_at, '+8 hours') AS day,
@@ -718,7 +746,72 @@ export class UsageLogsRepo {
       since,
       history,
       models: group("COALESCE(NULLIF(upstream_model, ''), NULLIF(model, ''), NULLIF(requested_model, ''), '—')", 12),
-      endpoints: group("COALESCE(NULLIF(path, ''), '—')", 8),
+      [rankKey]: group(rankExpr, rankLimit),
+    }
+  }
+
+  /**
+   * Shanghai-day protocol gate: blocks, passes, and the words that blocked.
+   * `total` is every inbound inference request (warmup answers included) plus
+   * gate blocks on other paths, so each stage's share uses one denominator.
+   */
+  protocolEntryStats({ since = shanghaiDayStartIso() } = {}) {
+    // COALESCE: a bare `col = x` on NULL yields NULL, and `NOT NULL` drops the row.
+    const block = `(
+      COALESCE(error_code, '') = 'policy_blocked'
+      OR COALESCE(via, '') IN ('hard-regex', 'jev', 'distill-detect', 'refusal-guard')
+      OR COALESCE(final_state, '') IN ('policy_blocked', 'distill_blocked', 'refusal_guard', 'refusal_similar', 'refusal_device')
+    )`
+    const inference = `path IN ('/v1/messages', '/v1/responses', '/v1/chat/completions')`
+    const row = this.db
+      .prepare(
+        `SELECT
+           SUM(CASE WHEN ${inference} OR ${block} THEN 1 ELSE 0 END) AS total,
+           SUM(CASE WHEN ${block} THEN 1 ELSE 0 END) AS blocked,
+           SUM(CASE WHEN ${inference}
+                     AND NOT ${block}
+                     AND COALESCE(via, '') != 'warmup-intercept'
+                THEN 1 ELSE 0 END) AS passed
+         FROM usage_logs
+         WHERE created_at >= ?`,
+      )
+      .get(since)
+    const keywords = this.db
+      .prepare(
+        `SELECT error_message AS message, COUNT(*) AS count
+         FROM usage_logs
+         WHERE created_at >= ?
+           AND ${block}
+           AND error_message IS NOT NULL
+           AND error_message != ''
+         GROUP BY error_message
+         ORDER BY count DESC
+         LIMIT 50`,
+      )
+      .all(since)
+    const grouped = this.db
+      .prepare(
+        `SELECT intercept, via, error_message AS message,
+                CASE WHEN ${block} THEN 1 ELSE 0 END AS blocked,
+                COUNT(*) AS count
+         FROM usage_logs
+         WHERE created_at >= ?
+           AND (
+             ${block}
+             OR (${inference} AND COALESCE(via, '') != 'warmup-intercept')
+           )
+         GROUP BY intercept, via, error_message, blocked`,
+      )
+      .all(since)
+    const folded = foldInterceptRows(grouped)
+    return {
+      since,
+      total: Number(row?.total || 0),
+      blocked: Number(row?.blocked || 0),
+      passed: Number(row?.passed || 0),
+      keywords: collapseBlockKeywords(keywords),
+      blocks: folded.blocks,
+      passes: folded.passes,
     }
   }
 

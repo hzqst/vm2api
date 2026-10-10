@@ -18,7 +18,7 @@ export function claudeCodeInboundHeaders({ sessionId, accept = 'text/event-strea
     'x-stainless-os': 'Linux',
     'x-stainless-arch': 'x64',
     'x-stainless-runtime': 'node',
-    'x-stainless-package-version': '0.112.1',
+    'x-stainless-package-version': '0.128.0',
     'x-stainless-runtime-version': 'v26.3.0',
     accept,
   }

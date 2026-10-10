@@ -2,11 +2,14 @@
  * Slot seed policy + inbound body sanitation.
  * The forwarding layer must never honor client-local settings/identity.
  *
- * Telemetry contract:
- *   telemetry_disabled === false → delete kill-switch keys; sidecar on
- *     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1"
- *   otherwise → kill-switch keys = "1"; sidecar off
- *     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "0"
+ * Telemetry has one read: `telemetry_disabled === false` means on
+ * (`isTelemetryEnabled`). Everything else is a mirror of that bit.
+ *   on  → delete kill-switch keys; sidecar on
+ *         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1"
+ *         do_not_track = false
+ *   off → kill-switch keys = "1"; sidecar off
+ *         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "0"
+ *         do_not_track = true (DO_NOT_TRACK=1)
  * grove_enabled is always false (Help improve Claude off).
  * Official CLI treats any set NONESSENTIAL value, including "0", as
  * essential-traffic (GitHub #84631). The seed still writes the requested
@@ -96,7 +99,7 @@ export function buildSlotSettingsEnv(pol = {}, { timezone, locale, extra } = {})
     env.LANG = String(locale)
     env.LC_ALL = String(locale)
   }
-  if (!isTelemetryEnabled(pol) && pol.do_not_track !== false) env.DO_NOT_TRACK = '1'
+  if (!isTelemetryEnabled(pol)) env.DO_NOT_TRACK = '1'
   else delete env.DO_NOT_TRACK
   const out = applyRequiredSeedEnv(env, pol)
   // 2.1.283+ sends x-claude-code-prompt-id only when this is set. Default on.
@@ -127,12 +130,13 @@ export function seedTelemetryContract(pol = {}) {
 }
 
 export function defaultSeedPolicy(partial = {}) {
-  const telemetryDisabled = partial.telemetry_disabled !== false
+  const telemetryDisabled = !isTelemetryEnabled(partial)
   return {
     telemetry_disabled: telemetryDisabled,
+    // Mirrors. Callers must not read these to decide if telemetry is on.
     disable_nonessential_traffic: !telemetryDisabled,
     grove_enabled: false,
-    do_not_track: telemetryDisabled ? partial.do_not_track !== false : false,
+    do_not_track: telemetryDisabled,
     reject_client_settings: partial.reject_client_settings !== false,
     reject_client_metadata_identity: partial.reject_client_metadata_identity !== false,
     theme: partial.theme || 'dark',
@@ -152,7 +156,6 @@ export function defaultSeedPolicy(partial = {}) {
 export function standardSeedPolicy(partial = {}) {
   return defaultSeedPolicy({
     telemetry_disabled: false,
-    do_not_track: false,
     ...partial,
   })
 }

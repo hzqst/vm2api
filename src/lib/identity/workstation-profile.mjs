@@ -4,6 +4,7 @@
  * hostname / 768m cgroup never go outbound. Hardware SKU is 2C4G or 4C8G
  * presentation only — the box cannot actually host those limits.
  */
+import { isTelemetryEnabled } from '../protocol/seed-policy.mjs'
 import { distroVersionFromPretty } from './telemetry-env.mjs'
 
 export const WORKSTATION_SKUS = Object.freeze({
@@ -130,7 +131,7 @@ export function buildKinSeedJson(vm = {}, pol = {}, extras = {}) {
     timezone: vm.timezone || extras.timezone || null,
     locale: vm.locale || extras.locale || null,
     seed_policy: pol && typeof pol === 'object' ? pol : {},
-    telemetry: pol.telemetry_disabled === false ? 'enabled' : 'disabled',
+    telemetry: isTelemetryEnabled(pol) ? 'enabled' : 'disabled',
     cli_version: extras.cli_version || null,
     seeded_at: extras.seeded_at || new Date().toISOString(),
   }

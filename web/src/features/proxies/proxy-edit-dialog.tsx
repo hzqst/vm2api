@@ -44,10 +44,12 @@ export function ProxyEditDialog({
   const [password, setPassword] = useState('')
   const [clearAuth, setClearAuth] = useState(false)
   const [label, setLabel] = useState('')
+  const [domainForward, setDomainForward] = useState(false)
 
   const boundCount = proxyBoundIds(proxy || undefined).length
   // 代理名称只影响显示：只改名称时网关不会重载已绑槽位的 worker。
   const labelChanged = label.trim() !== String(proxy?.label || '')
+  const localProxy = proxy?.kind === 'local' || proxy?.scheme === 'local'
 
   // 按 id 重置，而不是按对象身份。代理页每次 refetch 都会产出新的 proxy 对象，
   // 若依赖对象引用，编辑期间的一次后台刷新就会把用户正在输入的账密清空。
@@ -60,6 +62,7 @@ export function ProxyEditDialog({
     setPassword('')
     setClearAuth(false)
     setLabel(String(proxy?.label || ''))
+    setDomainForward(proxy?.domain_forward === true)
     // proxy 的其余字段刻意不入依赖：只有换了目标才该重置表单。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [proxyId])
@@ -80,6 +83,9 @@ export function ProxyEditDialog({
         if (password) patch.password = password
       }
       if (labelChanged) patch.label = label.trim()
+      if (!localProxy && domainForward !== (proxy?.domain_forward === true)) {
+        patch.domain_forward = domainForward
+      }
       return api<EditResult>(
         `/api/panel/proxies/${encodeURIComponent(String(proxy?.id || ''))}`,
         { method: 'PUT', body: JSON.stringify(patch) }
@@ -124,7 +130,9 @@ export function ProxyEditDialog({
     !password &&
     !clearAuth
   )
-  const nothingChanged = !connectionChanged && !labelChanged
+  const domainChanged =
+    !localProxy && domainForward !== (proxy?.domain_forward === true)
+  const nothingChanged = !connectionChanged && !labelChanged && !domainChanged
 
   return (
     <Dialog open={!!proxy} onOpenChange={onOpenChange}>
@@ -213,6 +221,16 @@ export function ProxyEditDialog({
           <p className='text-xs text-muted-foreground'>
             账密不会回显。留空表示保持原值。
           </p>
+          {localProxy ? null : (
+            <label className='flex items-center gap-2 text-sm'>
+              <input
+                type='checkbox'
+                checked={domainForward}
+                onChange={(e) => setDomainForward(e.target.checked)}
+              />
+              域名转发（IPv6-only 出口按主机名 CONNECT，不回落 IPv4）
+            </label>
+          )}
           {passwordWithoutUser ? (
             <p className='text-xs text-[color:var(--status-bad)]'>
               只填密码不生效，SOCKS5 需要同时有用户名。

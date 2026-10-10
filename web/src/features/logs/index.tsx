@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi } from '@tanstack/react-router'
-import { VIEW_TITLES } from '@/config/nav'
+import { VIEW_DESCRIPTIONS, VIEW_TITLES } from '@/config/nav'
 import type { ErrorCollection } from '@/types/panel-logs'
 import { ChevronDown, Download, Expand, Filter, RefreshCw } from 'lucide-react'
 import { toast } from 'sonner'
@@ -267,7 +267,11 @@ export function LogsPage() {
     .join(' · ')
 
   return (
-    <PageHeader title={VIEW_TITLES.logs} fluid>
+    <PageHeader
+      title={VIEW_TITLES.logs}
+      description={VIEW_DESCRIPTIONS.logs}
+      fluid
+    >
       <div className='space-y-3'>
         <ActiveSessionsList
           maxHeight='200px'

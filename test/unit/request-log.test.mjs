@@ -14,6 +14,7 @@ import {
 } from '../../src/lib/admin/request-log.mjs'
 import { ApiKeyStore } from '../../src/lib/admin/api-keys.mjs'
 import { GroupsRepo } from '../../src/lib/db/repos/groups-repo.mjs'
+import { gateVerdict } from '../../src/lib/protocol/intercept-stats.mjs'
 
 function tmpStore(mode = 'normal') {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-rlog-'))
@@ -245,6 +246,37 @@ test('vmUsageStats buckets by Shanghai day, isolates the slot and ranks models a
   )
   assert.equal(out.endpoints[0].tokens, 300)
   assert.deepEqual(store.repo.vmUsageStats({ vmId: null }).history, [])
+})
+
+test('keyUsageStats counts only that key and ranks VMs', () => {
+  const store = tmpStore('normal')
+  const insert = store.db.prepare(`
+    INSERT INTO usage_logs (id, request_id, created_at, path, model, upstream_model, status,
+      vm_id, api_key_id, input_tokens, output_tokens, total_cost, duration_ms)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 100, 50, ?, ?)
+  `)
+  const now = new Date().toISOString()
+  insert.run('k1', 'rk1', now, '/v1/messages', 'm-a', 'm-a', 200, 'vm-a', 'key_a', 1, 10)
+  insert.run('k2', 'rk2', now, '/v1/messages', 'm-b', 'm-b', 200, 'vm-b', 'key_a', 3, 20)
+  insert.run('k3', 'rk3', now, '/v1/messages', 'm-a', 'm-a', 200, 'vm-a', 'key_b', 99, 1)
+  const out = store.repo.keyUsageStats({ apiKeyId: 'key_a', days: 30 })
+  assert.equal(
+    out.history.reduce((n, row) => n + row.requests, 0),
+    2,
+  )
+  assert.equal(
+    out.history.reduce((n, row) => n + row.total_cost, 0),
+    4,
+  )
+  assert.deepEqual(
+    out.vms.map((row) => [row.name, row.requests]),
+    [
+      ['vm-b', 1],
+      ['vm-a', 1],
+    ],
+  )
+  assert.equal(out.endpoints, undefined)
+  assert.deepEqual(store.repo.keyUsageStats({ apiKeyId: null }).history, [])
 })
 
 test('zero group multiplier keeps usage and key counters but charges no USD', () => {
@@ -554,6 +586,38 @@ test('summaries persist in sqlite across store re-open', () => {
   assert.equal(listed.length, 1)
   assert.equal(listed[0].api_key_id, 'key_p')
   assert.equal(s2.snapshot().total_rows, 1)
+})
+
+test('gate stats count every inbound request and keep the stored verdict', () => {
+  const store = tmpStore()
+  // Plain successes: error_code and final_state stay NULL.
+  logOne(store, { intercept: gateVerdict({ kind: 'pass', by: 'jev' }) })
+  logOne(store, { intercept: gateVerdict({ kind: 'pass', by: 'regex' }) })
+  logOne(store, { path: '/v1/responses', intercept: gateVerdict({ kind: 'pass', by: 'regex' }) })
+  logOne(store, { status: 401, error_code: 'invalid_api_key' })
+  logOne(store, {
+    status: 403,
+    via: 'distill-detect',
+    final_state: 'distill_blocked',
+    error_code: 'distill_blocked',
+    intercept: gateVerdict({ kind: 'block', by: 'distill', keyword: 'Memory-stage-one extractor' }),
+  })
+  logOne(store, {
+    status: 503,
+    via: 'refusal-guard',
+    final_state: 'refusal_device',
+    error_code: 'refusal_guard',
+    intercept: gateVerdict({ kind: 'block', by: 'refusal', keyword: 'device' }),
+  })
+
+  const stats = store.protocolEntryStats({ since: '1970-01-01T00:00:00.000Z' })
+  assert.equal(stats.total, 6)
+  assert.equal(stats.blocked, 2)
+  assert.equal(stats.passed, 4)
+  const passBy = Object.fromEntries(stats.passes.map((row) => [row.by, row.count]))
+  assert.deepEqual(passBy, { jev: 1, regex: 2, unknown: 1 })
+  const blockBy = Object.fromEntries(stats.blocks.map((row) => [`${row.by}:${row.keyword}`, row.count]))
+  assert.deepEqual(blockBy, { 'distill:Memory-stage-one extractor': 1, 'refusal:device': 1 })
 })
 
 test('queryNormal filters + pagination + total', () => {

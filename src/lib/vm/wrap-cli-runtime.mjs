@@ -24,9 +24,26 @@ export const WRAP_GLIBC_LIBS = Object.freeze(['ld-linux-x86-64.so.2', 'libc.so.6
 
 const SECRET_NAMES = new Set(['credentials.json', '.credentials.json', 'oauth.json', '.claude.json', 'internal.token'])
 
+/**
+ * The kernel job watchdog reads the unprefixed env JOB_IDLE_SECS (default 180s)
+ * only at start; KIN_JOB_IDLE_SECS is ignored by the kernel. Take it from
+ * kernel.json idle_timeout_seconds so it follows the panel stream idle setting.
+ */
 export function wrapKernelWrapperScript() {
   return `#!/bin/sh
 DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+if [ -z "$JOB_IDLE_SECS" ]; then
+  CONF=
+  PREV=
+  for ARG in "$@"; do
+    [ "$PREV" = "--config" ] && CONF=$ARG
+    PREV=$ARG
+  done
+  if [ -n "$CONF" ] && [ -r "$CONF" ]; then
+    IDLE=$(grep -o '"idle_timeout_seconds": *[0-9]*' "$CONF" | head -n 1 | tr -dc '0-9')
+    [ -n "$IDLE" ] && [ "$IDLE" -gt 0 ] && export JOB_IDLE_SECS="$IDLE"
+  fi
+fi
 BIN="$DIR/${WRAP_KERNEL_BIN}"
 LOADER="$DIR/${WRAP_GLIBC_DIR}/ld-linux-x86-64.so.2"
 if [ -x "$LOADER" ] && [ -x "$BIN" ]; then

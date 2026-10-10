@@ -39,6 +39,26 @@ test('serves Vite index at /console and assets from web/dist', () => {
   assert.match(String(js.headers['content-type']), /javascript/)
 })
 
+test('caches hashed assets forever but never the index or unhashed files', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vm2api-web-cache-'))
+  const dist = path.join(root, 'web', 'dist')
+  fs.mkdirSync(path.join(dist, 'assets'), { recursive: true })
+  fs.mkdirSync(path.join(dist, 'model-icons'), { recursive: true })
+  fs.writeFileSync(path.join(dist, 'index.html'), 'x')
+  fs.writeFileSync(path.join(dist, 'assets', 'index-Ab12.js'), 'x')
+  fs.writeFileSync(path.join(dist, 'model-icons', 'openai.svg'), '<svg/>')
+
+  const serve = (p) => {
+    const res = mockRes()
+    assert.equal(tryServeWebDist(res, root, p), true)
+    return res.headers['cache-control']
+  }
+  assert.equal(serve('/console'), 'no-store')
+  assert.equal(serve('/index.html'), 'no-store')
+  assert.match(serve('/assets/index-Ab12.js'), /immutable/)
+  assert.doesNotMatch(serve('/model-icons/openai.svg'), /immutable/)
+})
+
 test('rejects missing dist, traversal, and /health', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vm2api-web-empty-'))
   assert.equal(tryServeWebDist(mockRes(), root, '/console'), false)

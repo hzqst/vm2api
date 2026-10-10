@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { createPanelHandler } from '../../src/lib/admin/panel-routes.mjs'
 import { createRoutingRuntime } from '../../src/lib/admin/routing-runtime.mjs'
 import { OFFICIAL_CLI_VERSION } from '../../src/lib/identity/vm-identity.mjs'
 
@@ -156,6 +157,43 @@ test('persistRoutingPatch writes compatibility cache_ttl into Claude kernel conf
   }
 })
 
+test('persistRoutingPatch writes a changed stream idle timeout into Claude kernel configs', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-routing-idle-'))
+  const vms = path.join(root, 'vms')
+  const routingFile = path.join(root, 'routing.json')
+  const kernelFile = path.join(vms, 'vm-claude', 'run', 'kernel.json')
+  fs.mkdirSync(vms, { recursive: true })
+  // Stopped slot: config is written, no kernel restart is queued.
+  fs.writeFileSync(path.join(vms, 'vm-claude.json'), JSON.stringify({ id: 'vm-claude', status: 'stopped', claude: {} }))
+  const routingConfig = { failover: { stream_idle_timeout_ms: 600000 }, concurrency: {}, tiers: {} }
+  fs.writeFileSync(routingFile, JSON.stringify(routingConfig))
+  try {
+    const runtime = createRoutingRuntime({
+      cfg: { paths: { project: root } },
+      routingConfigPath: routingFile,
+      routingConfig,
+      stickyRouter: { reloadConfig() {} },
+      accountQuota: {
+        reloadConfig() {},
+        applyTierConcurrency() {},
+        applyTierRpm() {},
+        repo: { get: () => null },
+      },
+      requestLog: { setConfig() {} },
+    })
+
+    const same = runtime.persistRoutingPatch({ failover: { stream_idle_timeout_ms: 600000 } })
+    assert.equal(same.kernel_persona, null)
+    assert.equal(fs.existsSync(kernelFile), false)
+
+    const changed = runtime.persistRoutingPatch({ failover: { stream_idle_timeout_ms: 900000 } })
+    assert.equal(changed.kernel_reload, 0)
+    assert.equal(JSON.parse(fs.readFileSync(kernelFile, 'utf8')).idle_timeout_seconds, 900)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('persistRoutingPatch writes persona_preset into Claude kernel system_layout', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-routing-persona-kernel-'))
   const vms = path.join(root, 'vms')
@@ -272,6 +310,26 @@ test('OpenAI legacy migration preserves effective pins and resumes before canoni
   }
 })
 
+test('shipped routing.json loads as canonical without the OpenAI legacy rewrite', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-shipped-routing-'))
+  const routingFile = path.join(root, 'routing.json')
+  const shipped = fs.readFileSync(new URL('../../src/config/routing.json', import.meta.url), 'utf8')
+  fs.mkdirSync(path.join(root, 'vms'), { recursive: true })
+  fs.writeFileSync(routingFile, shipped)
+  try {
+    const doc = createRoutingRuntime({
+      cfg: { paths: { project: root } },
+      routingConfigPath: routingFile,
+    }).loadRoutingConfig()
+    assert.equal(doc.codex.enabled, true)
+    assert.equal(doc.codex.protocols['openai.responses'].mode, 'native')
+    // A duplicate top-level key would drop codex.quota and make the shipped file look legacy.
+    assert.equal(fs.readFileSync(routingFile, 'utf8'), shipped)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('OpenAI per-slot limit writes never invoke the Claude quota holder', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-openai-isolation-'))
   fs.mkdirSync(path.join(root, 'vms'), { recursive: true })
@@ -294,4 +352,90 @@ test('OpenAI per-slot limit writes never invoke the Claude quota holder', () => 
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
   }
+})
+
+function persistHarness(root, routingFile, routingConfig) {
+  return createRoutingRuntime({
+    cfg: { paths: { project: root } },
+    routingConfigPath: routingFile,
+    routingConfig,
+    stickyRouter: { reloadConfig() {} },
+    accountQuota: {
+      setMaxConcurrency() {},
+      setMaxRpm() {},
+      reloadConfig() {},
+      applyTierConcurrency() {},
+      applyTierRpm() {},
+      repo: { get: () => null },
+    },
+    requestLog: { setConfig() {} },
+  })
+}
+
+test('loadRoutingConfig normalizes a missing or invalid vm section', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-routing-vm-load-'))
+  const file = path.join(root, 'routing.json')
+  try {
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        codex: { quota: { max_concurrency: 2 } },
+        vm: { memory: '3g', vcpus: 99, allow_tcg: 'yes' },
+      }),
+    )
+    const doc = runtimeFor(file).loadRoutingConfig()
+    assert.equal(doc.vm.memory, '512m')
+    assert.equal(doc.vm.vcpus, 2)
+    assert.equal(doc.vm.default_runtime, 'docker')
+    assert.equal(doc.vm.allow_tcg, false)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('persistRoutingPatch merges a valid vm patch', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-routing-vm-persist-'))
+  const routingFile = path.join(root, 'routing.json')
+  const routingConfig = { concurrency: {}, tiers: {}, vm: { memory: '1g', vcpus: 2 } }
+  fs.mkdirSync(root, { recursive: true })
+  fs.writeFileSync(routingFile, JSON.stringify(routingConfig))
+  try {
+    const runtime = persistHarness(root, routingFile, routingConfig)
+    runtime.persistRoutingPatch({ vm: { memory: '4g', vcpus: 4, smbios: { product: 'Precision 5860' } } })
+    const saved = JSON.parse(fs.readFileSync(routingFile, 'utf8'))
+    assert.equal(saved.vm.memory, '4g')
+    assert.equal(saved.vm.vcpus, 4)
+    assert.equal(saved.vm.smbios.product, 'Precision 5860')
+    assert.equal(saved.vm.smbios.manufacturer, 'Dell Inc.')
+    assert.equal(saved.vm.allow_tcg, false)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('PUT /api/panel/routing rejects an invalid vm patch before persist', async () => {
+  const response = {}
+  const handlePanel = createPanelHandler({
+    cfg: { paths: { project: os.tmpdir() }, limits: { max_body_bytes: 4096 } },
+    routingConfig: {},
+    stickyRouter: { stats: () => ({}) },
+    persistRoutingPatch() {
+      throw new Error('must not persist invalid vm')
+    },
+    requireAuth(req) {
+      req.apiKeyKind = 'master'
+      req.panelRole = 'admin'
+      return true
+    },
+    json(_res, status, payload) {
+      response.status = status
+      response.body = payload
+      return true
+    },
+    readBody: async () => ({ vm: { memory: '3g' } }),
+  })
+  await handlePanel({ method: 'PUT' }, {}, new URL('http://localhost/api/panel/routing'))
+  assert.equal(response.status, 400)
+  assert.equal(response.body?.error?.code, 'invalid_vm_config')
+  assert.match(response.body?.error?.message, /memory/)
 })

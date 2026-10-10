@@ -220,14 +220,24 @@ Claude PATCH `max_sessions` 返回 400 `claude_max_sessions_forbidden`；OpenAI 
 |------|------|
 | GET/POST | `/api-keys` |
 | PATCH/DELETE | `/api-keys/:id` |
+| GET | `/api-keys/:id/stats` |
 | GET | `/request-logs` |
 | GET | `/request-logs/stats` |
 | GET | `/request-logs/:request_id` |
 | GET | `/request-logs/:request_id/attempts` |
 
-创建密钥只在响应里明文出现一次。存储为 HMAC 索引。
+创建密钥只在响应里明文出现一次。存储为 HMAC 索引。`group_type` 为 `all`（默认，全局可调度）、`anthropic` 或 `openai`。后两个必须带 `allowed_vms`（该平台的 VM id，可多台）。`vm_pool_id` 绑定命名账号池：成员以池为准，不复制到密钥；`allowed_vms` 被清空。池停用、为空或不存在时请求返回 403 `vm_pool_unavailable`，不回落到全局池。改成员或解除绑定对下一次请求生效，包括已有粘性会话。一台槽只属于一个池。缺字段的旧密钥视为 `all`。`GET /api-keys/:id/stats` 是该密钥近 30 天用量：上海日桶、模型分布、VM 分布。不是 VM 的上游额度窗口。
 
 attempts：每次选中的 VM/账号、错误域、cooldown、提交边界、终态。`normal` 摘要；`debug` 另存脱敏 body。`X-Request-ID` 回写。`X-Kin-Debug` / `X-Kin-Log` 可单请求覆盖。
+
+### 账号池
+
+| 方法 | 路径 |
+|------|------|
+| GET/POST | `/vm-pools` |
+| PATCH/DELETE | `/vm-pools/:id` |
+
+仅 admin。POST/PATCH 字段：`name`（1–40）、`enabled`、`vm_ids`（整表替换；省略则不动成员）。槽不存在 400 `vm_pool_vm_unknown`；槽已在别的池 409 `vm_in_other_pool`；重名 409 `vm_pool_name_taken`。仍有密钥绑定时 DELETE 409 `vm_pool_in_use`，不会把这些密钥放开成全局。
 
 ### 协议字段（对齐 Sub2API usage_logs）
 
@@ -283,9 +293,9 @@ Claude 槽测试走官方 CC 入站（`/v1/messages`）。GPT/Codex 槽测试走
 
 ### `POST /proxies/geo` · `POST /proxies/:id/geo`
 
-经该代理本身去查出口 IP 的国家 / 城市 / 时区（本地出口走宿主机默认路由）。结果落在 `proxies.geo_*` 列，列表响应的 `geo` 字段回显。单条成功后，已绑槽位在 `follow_proxy_timezone` 开启且未被手动钉住时会改用该时区。
+经该代理本身去查出口 IP 的国家 / 城市 / 时区（本地出口走宿主机默认路由）。IPv4 结果落在 `proxies.geo_*` 列，IPv6 公网出口落在 `proxies.geo_v6_*` 列；列表响应分别回显 `geo` 与 `geo_v6`。IPv6 探测先经仅 AAAA 的 IP 探针（默认 `https://ipv6.icanhazip.com`，可用 `KIN_PROXY_GEO_V6_IP_URL` 覆盖）确认出口为 IPv6，再查该地址的地理信息；探针若返回 IPv4 记 `geo_v6.error=geo_ipv6_got_ipv4`，无 IPv6 出口时记传输 / HTTP 错误，不会把 IPv4 结果写入 `geo_v6`。单条 IPv4 成功后，已绑槽位在 `follow_proxy_timezone` 开启且未被手动钉住时会改用该时区（仍跟随 IPv4 出口时区，不用 IPv6 覆盖）。
 
-响应 `{ proxy, geo, cached, timezones }`（单条）或 `{ total, results }`（批量）。错误：`404 proxy_not_found`、`502 geo_lookup_failed`。`force: true` 忽略缓存重查。
+响应 `{ proxy, geo, geo_v6, cached, timezones }`（单条）或 `{ total, results }`（批量，每项含 `geo_v6`）。错误：`404 proxy_not_found`、`502 geo_lookup_failed`（IPv4 查询失败时 HTTP 502；IPv6 不可用时在 `geo_v6.error` 中体现，单条请求仍可能 HTTP 200）。`force: true` 忽略缓存重查。
 
 ### `PUT /proxies/:id`
 
